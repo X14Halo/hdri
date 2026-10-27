@@ -1105,10 +1105,19 @@ void main(){
       float muS = dot(up,Ls), muM = dot(up,Lm);
       if (kind == 0){
         float tsS = sheets ? sheetT(p, h, Ls) : 1.0, tsM = sheets ? sheetT(p, h, Lm) : 1.0;
+        // a sheet above (altostratus, cirrus) does not just remove the direct sun or moon: most of what it takes out of the beam
+        // it scatters onward, so the clouds below are lit by that diffused light (two-stream: flux below = E·μ0·(Tt − Td)).
+        // Without it, low clouds under a sunlit or moonlit deck came out as black silhouettes.
+        float dfS = 0.0, dfM = 0.0;
+        if (sheets){ float m0 = max(muS, 0.0); if (m0 > 0.0 && tsS < 0.999){ float tv = -log(max(tsS, 1e-6))*max(m0, 0.03); float mm = min(m0, 1.0);
+            dfS = max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*tsS)/(1.0 + 0.105*tv) - tsS, 0.0)*m0; }
+          m0 = max(muM, 0.0); if (m0 > 0.0 && tsM < 0.999){ float tv = -log(max(tsM, 1e-6))*max(m0, 0.03); float mm = min(m0, 1.0);
+            dfM = max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*tsM)/(1.0 + 0.105*tv) - tsM, 0.0)*m0; } }
         for (int g=0; g<NG+uZero; g++){
           // sky- and ground-light share the sun's diffuse normalisation (two-stream: a diffusely lit deck passes light like a
           // beam at ~50° does), and light from above is raised by the cloud-top ↔ sky inter-reflection (uCEnh, bluest at short λ)
-          vec4 Lc = (uLw0.y*(c0.x*uSunE[g]*transmittance(g,r,muS)*tsS + c0.y*uMoonE[g]*transmittance(g,r,muM)*tsM) + uLw0.z*c0.z*ambE(g,h)*(0.75/PI))*uCEnh[g] + uLw0.z*c1.y*uAlb[g]*uEground[g]*(0.75/PI);
+          vec4 sheetDiff = (dfS > 0.0 ? uSunE[g]*transmittance(g,r,muS)*dfS : vec4(0.0)) + (dfM > 0.0 ? uMoonE[g]*transmittance(g,r,muM)*dfM : vec4(0.0));
+          vec4 Lc = (uLw0.y*(c0.x*uSunE[g]*transmittance(g,r,muS)*tsS + c0.y*uMoonE[g]*transmittance(g,r,muM)*tsM + c0.z*sheetDiff*(0.75/PI)) + uLw0.z*c0.z*ambE(g,h)*(0.75/PI))*uCEnh[g] + uLw0.z*c1.y*uAlb[g]*uEground[g]*(0.75/PI);
           L[g] += w*T[g]*Lc; }
       } else {
         bool cir = kind == 1; float tv = ltau[s]; float gS = cir ? 0.75 : 0.86; float kk = 0.75*(1.0-gS);
