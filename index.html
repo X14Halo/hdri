@@ -585,9 +585,12 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   if (anvD > 0.0){
     // anvil ice: streaky, fibrous texture drawn out by the strong winds aloft (noise stretched horizontally), ragged thin edges,
     // and some sagging lumps on the underside, so it is shaded and textured instead of one flat colour
-    vec4 dA = textureLod(uDetail, vec3(qd.x/(1.6*uCScale), qd.y/(0.18*uCScale), qd.z/(1.6*uCScale)) + vec3(0.42, uEvolve*0.2, 0.77), max(lod + 3.5, 0.0));
+    // the streaks are thin in height, so they are bent up and down by a few hundred metres over a few km: level, evenly
+    // spaced layers cut the flat underside of the anvil in contour lines, which from below read as hard banding
+    float yA = qd.y + ((s.g - 0.5)*0.9 + (s.b - 0.5)*0.5 + (W1 - 0.56)*0.6)*uCScale;
+    vec4 dA = textureLod(uDetail, vec3(qd.x/(1.6*uCScale), yA/(0.3*uCScale), qd.z/(1.6*uCScale)) + vec3(0.42, uEvolve*0.2, 0.77), max(lod + 3.5, 0.0));
     float fib = smoothstep(0.25, 0.75, dA.a*0.6 + d2.a*0.25 + d3.a*0.15);
-    float aD = anvD*(0.35 + 1.0*fib)*(0.6 + 0.6*W1);
+    float aD = anvD*(0.7 + 0.45*fib)*(0.6 + 0.6*W1);   // gentle: strong layering made the underside a stack of sheets, each lit differently (banding)
     aD = max(aD - 0.12*(1.0 - smoothstep(0.05, 0.3, anvD))*d2.a, 0.0);   // eroded, translucent margins
     dens = max(dens, aD); }
   return dens * uCDens; }
@@ -743,7 +746,8 @@ float lightTau(vec3 p, vec3 L, float lod, float jit, int ch){ float tau=0.0, s=0
   // ...and through a tall cloud, march until the path is above the cloud tops: past the march, the rest comes from the shadow
   // map, whose column is the whole layer along the light (it counted the tower behind the point as if it lay toward the sun,
   // which put sunlit faces of tall towers in deep shadow)
-  float upL = max(L.y, 0.02); int nTop = int(ceil(log2(max((uCTop - (length(p - C0) - Rg))/upL/0.04 + 1.0, 1.0))));
+  // (the count is the same for every point of the layer: a count that changed with height split towers into horizontal bands)
+  int nTop = int(ceil(log2(max((uCTop - uCBot)/max(L.y, 0.05)/0.04 + 1.0, 1.0))));
   int nL = clamp(max(L.y < 0.12 ? 9 : 6, nTop), 6, 10);
   for (int k=0;k<nL+uZero;k++){ float jk = fract(jit + float(k)*0.7548777); float ang = (float(k) + jit)*2.39996; vec3 off = (a*cos(ang) + b*sin(ang))*(s + ds)*(k < 6 ? 0.08 : 0.03);
     vec3 q=p+L*(s+ds*jk)+off; float hq=length(q-C0)-Rg; float lk = max(lod, log2(ds/(0.0625*uCScale)));
@@ -1399,6 +1403,10 @@ void main(){
   vec3 col = agx(lin);
   if (madd + mrem > 0.0){ col = mix(col, vec3(0.35, 0.85, 0.55), 0.32*madd); col = mix(col, vec3(0.95, 0.35, 0.3), 0.32*mrem); }
   if (uWipe >= 0.0 && abs(fc.x - uWipe*uCanvas.x) < 1.0) col = mix(col, vec3(1.0), 0.85);
+  // dither before the screen's 8 bits: broad, smooth gradients (an overcast or anvil underside, twilight) otherwise show
+  // visible steps (banding)
+  vec2 dq = gl_FragCoord.xy; float n1 = fract(sin(dot(dq, vec2(12.9898, 78.233)))*43758.5453), n2 = fract(sin(dot(dq, vec2(39.3468, 11.135)))*24634.6345);
+  col += (n1 + n2 - 1.0)/255.0;
   o = vec4(col, 1.0); }`;
 
 
@@ -2119,7 +2127,8 @@ function agxJS(r,g,b){ const a0 = 0.842479062253094*r + 0.0784335999999992*g + 0
   return [1.19687900512017*c0 - 0.0980208811401368*c1 - 0.0990297440797205*c2, -0.0528968517574562*c0 + 1.15190312990417*c1 - 0.0989611768448433*c2, -0.0529716355144438*c0 - 0.0980434501171241*c1 + 1.15107367264116*c2].map(v=>clamp(v,0,1)); }
 async function pngFromRGB(rgb, W, H, k){
   const c = document.createElement('canvas'); c.width=W; c.height=H; const c2 = c.getContext('2d'); const id = c2.createImageData(W,H);
-  for (let i=0, j=0; i<W*H*3; i+=3, j+=4){ const t = agxJS(rgb[i]*k, rgb[i+1]*k, rgb[i+2]*k); id.data[j]=t[0]*255+0.5; id.data[j+1]=t[1]*255+0.5; id.data[j+2]=t[2]*255+0.5; id.data[j+3]=255; }
+  for (let i=0, j=0; i<W*H*3; i+=3, j+=4){ const t = agxJS(rgb[i]*k, rgb[i+1]*k, rgb[i+2]*k); const dz = Math.random() + Math.random() - 1;   // dither: no banding in smooth gradients
+    id.data[j]=t[0]*255+0.5+dz; id.data[j+1]=t[1]*255+0.5+dz; id.data[j+2]=t[2]*255+0.5+dz; id.data[j+3]=255; }
   c2.putImageData(id,0,0); const blob = await new Promise(r=>c.toBlob(r,'image/png')); return new Uint8Array(await blob.arrayBuffer()); }
 // minimal ZIP (stored) — the viewer's download allowlist accepts .zip, and it bundles sequences and sun lamps
 const CRC = (()=>{ const t=new Uint32Array(256); for (let n=0;n<256;n++){ let c=n; for (let k=0;k<8;k++) c = c&1 ? 0xEDB88320^(c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
