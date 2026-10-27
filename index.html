@@ -328,6 +328,9 @@ const VS = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
 const HDR = `#version 300 es
 precision highp float; precision highp int; precision highp sampler2DArray; precision highp sampler3D;
+// 2D samplers default to lowp in WebGL2 fragment shaders; desktop GPUs ignore it, but some mobile GPUs (PowerVR) honour it
+// and return HDR / optical-depth texture values with ~10-bit precision and a ±2 range
+precision highp sampler2D; precision highp usampler2D; precision highp isampler2D;
 #define PI 3.14159265358979
 #define NG 6
 const float Rg = 6360.0;
@@ -751,11 +754,11 @@ float octaves(float tau, float c, float p0, float tb, float mu){
   // light entering through optical depth τa with τb more cloud behind the point — see slab()
   return s + 0.75/PI*(1.0 - 0.4*exp(-2.0*tau))*slab(tau, tb)*mu; }
 // optical depth along a straight path (cheap density, doubling steps) — how deep inside the cloud a point sits
-float pathTau(vec3 p, vec3 dir, float lod, float ds, int n){ float tau = 0.0, s = 0.0, conn = 1.0;
+float pathTau(vec3 p, vec3 dir, float lod, float ds, int n, float cap){ float tau = 0.0, s = 0.0, conn = 1.0;
   // march all the way to the edge of the cloud layer (doubling steps, the last one stretched to the edge): a deep storm column
   // has to count all of its water, or its base would look as bright as a thin deck's
   vec3 upP = normalize(p - C0); float h0 = length(p - C0) - Rg, mu = dot(upP, dir);
-  float sMax = mu > 0.02 ? (uCTop - h0)/mu : (mu < -0.02 ? (h0 - uCBot)/(-mu) : 14.0*uCScale); sMax = min(sMax, 14.0*uCScale);
+  float sMax = mu > 0.02 ? (uCTop - h0)/mu : (mu < -0.02 ? (h0 - uCBot)/(-mu) : 14.0*uCScale); sMax = min(sMax, cap*uCScale);
   ds = min(ds, sMax/(exp2(float(n)) - 1.0));
   for (int k=0;k<n+uZero;k++){ if (s >= sMax) break; float d = k == n-1 ? sMax - s : min(ds, sMax - s);
     vec3 q = p + dir*(s + d*0.5); float hq = length(q-C0) - Rg;
@@ -769,7 +772,6 @@ void main(){
   vec2 px = pixelCoord(); vec3 rd = uOverride==1 ? uOvDir : dirFromPixel(px);
   vec3 ro = vec3(0.0, uCamH, 0.0); float r0 = Rg + uCamH; float mu = rd.y;
   float sunF=0.0, moonF=0.0, ambT=0.0, ambB=0.0, T=1.0, tm=1e9;
-  vec3 hdir = length(rd.xz) > 1e-4 ? normalize(vec3(-rd.x, 0.0, -rd.z)) : vec3(1.0, 0.0, 0.0);   // horizontal, toward the viewer
   if (uCloudOn > 0.5){
     float Ri=Rg+uCBot, Ro=Rg+uCTop; float gN,gF,iN,iF,oN,oF;
     bool hitG = sphereHit(r0,mu,Rg,gN,gF) && gN>0.0; bool hi = sphereHit(r0,mu,Ri,iN,iF); bool ho = sphereHit(r0,mu,Ro,oN,oF);
@@ -807,12 +809,16 @@ void main(){
             // high sun; for a low sun lighting a tower from the side or from behind it is the direction away from the sun —
             // measuring it downward lit every point of a tall tower as if it sat on top of the cloud, flattening all shading.
             vec3 LA = uSunOn > 0.5 ? uSunDir : uMoonDir; bool awayOn = LA.y < 0.85;
-            float tq[5]; tq[0] = 0.0; tq[1] = 0.0; tq[2] = 0.0; tq[3] = 0.0; tq[4] = 0.0;
-            for (int j=0; j<5+uZero; j++){
+            // sideways: two fixed horizontal directions (toward the bright part of the sky and across it), so how much side light a
+            // point gets is a property of the cloud, not of the direction it is seen from — a view-dependent side direction lit
+            // the same spot differently as the view turned, which drew a sharp seam across overcast bases
+            float tq[6]; tq[0] = 0.0; tq[1] = 0.0; tq[2] = 0.0; tq[3] = 0.0; tq[4] = 0.0; tq[5] = 0.0;
+            vec2 sh0 = length(uSkyKeyDir.xz) > 1e-3 ? normalize(uSkyKeyDir.xz) : vec2(1.0, 0.0);
+            for (int j=0; j<6+uZero; j++){
               if (j == 3 && uSkyKeyF <= 0.05) continue; if (j == 4 && !awayOn) continue;
-              vec3 dj = j == 0 ? up : (j == 1 ? hdir : (j == 2 ? -up : (j == 3 ? uSkyKeyDir : -LA)));
-              tq[j] = pathTau(p, dj, lod + 1.0, j == 0 || j == 3 ? 0.07 : 0.06, j == 0 ? 6 : (j == 3 || j == 4 ? 5 : 4)); }
-            float tU = tq[0], tS = tq[1], tB = tq[2];
+              vec3 dj = j == 0 ? up : (j == 1 ? normalize(vec3(sh0.x, 0.05, sh0.y)) : (j == 2 ? -up : (j == 3 ? uSkyKeyDir : (j == 4 ? -LA : normalize(vec3(-sh0.y, 0.05, sh0.x))))));
+              tq[j] = pathTau(p, dj, lod + 1.0, j == 0 || j == 3 ? 0.07 : 0.06, j == 0 ? 6 : (j == 3 || j == 4 ? 5 : 4), j == 1 || j == 5 ? 5.0 : 14.0); }
+            float tU = tq[0], tS = 0.5*(tq[1] + tq[5]), tB = tq[2];
             float tBL = awayOn ? mix(tq[4], tB, smoothstep(0.5, 0.85, LA.y)) : tB;
             // the face the light enters through: light diffusing into a thick cloud is the flux crossing its surface, E·cos(θ)
             // — a face turned away from the sun takes in less, so a tower shades like a solid (before, every lit face got
@@ -834,10 +840,10 @@ void main(){
             // Diffuse light that has entered a deck spreads sideways, so no entry path is darker than coming straight down
             // through the top (two-stream: a beam at elevation e passes ≈ (0.5 + 0.75·sin e) of what diffuse light does)
             float sU = slab(tU, tB);
-            float aT = 0.55*sU + 0.45*max(slab(tS, tB), sU);
+            float aT = 0.55*sU + 0.45*max(0.5*(slab(tq[1], tB) + slab(tq[5], tB)), sU);
             if (uSkyKeyF > 0.05) aT = mix(aT, max(slab(tq[3], tB), (0.5 + 0.75*uSkyKeyDir.y)*sU), uSkyKeyF);
             float sD = slab(tB, tU);
-            float aB = 0.7*sD + 0.3*max(slab(tS, tU), sD);
+            float aB = 0.7*sD + 0.3*max(0.5*(slab(tq[1], tU) + slab(tq[5], tU)), sD);
             float att = exp(-d*dt); float k = T*(1.0-att)/d;
             sunF += Ss*k; moonF += Sm*k; ambT += sS*aT*k; ambB += sS*aB*k;
             tw += t*T*(1.0-att); wsum += T*(1.0-att); T *= att;
@@ -904,7 +910,10 @@ uniform vec4 uCPh;
 uniform vec4 uCMFx[NG]; uniform vec4 uCMFy[NG]; uniform vec4 uCMFz[NG];
 uniform vec4 uMtRock[NG]; uniform vec4 uMtVeg[NG]; uniform vec4 uMtSnow[NG];
 ${TERR_GLSL}
-uniform int uOutMode; uniform int uOutG; uniform float uSegT; uniform float uDisks; uniform float uSunDisk; uniform float uSkyOnly; uniform int uAtmN;
+uniform int uOutMode; uniform int uOutG; uniform float uSegT;
+// light layers: which contributions this pass keeps — (sky, clouds lit by sun/moon, clouds lit by sky/ground, ground)
+// and (sun disc, moon disc, night sky); all 1 for the beauty, so the layers add up exactly to it
+uniform vec4 uLw0; uniform vec4 uLw1; uniform float uDisks; uniform float uSunDisk; uniform float uSkyOnly; uniform int uAtmN;
 out vec4 o;
 const vec3 C0 = vec3(0.0, -6360.0, 0.0);
 const vec4 MARIA[${MARIA.length}] = ${glv4(MARIA)};
@@ -1036,7 +1045,7 @@ void main(){
   float gN,gF; bool hitG = sphereHit(r0, mu, Rg, gN, gF) && gN > 0.0;
   float tEnd = hitG ? gN : distToTop(r0, mu);
   // haze lookup (modes 3, 4): only the air between the camera and a point uSegT km away — no clouds, ground or sky behind it
-  bool seg = uOutMode >= 3; if (seg) tEnd = min(tEnd, uSegT);
+  bool seg = uOutMode == 3 || uOutMode == 4; if (seg) tEnd = min(tEnd, uSegT);
   float tMt = -1.0; if (uMt0.w > 0.5 && !seg){ tMt = terrainHit(ro, rd, hitG ? gN : 1e9); if (tMt > 0.0) tEnd = tMt; }
   // collect cloud layers along the ray: 0 = volume (cloud pass), 1 = cirrus sheet, 2 = mid sheet
   float lt[3]; float lT[3]; float ltau[3]; int lk[3]; int n = 0;
@@ -1088,7 +1097,7 @@ void main(){
           if (uSunOn > 0.5) S += uSunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g,r,muS)*shS + sT*msLUT(g,h,muS)*msS);
           if (uMoonOn > 0.5) S += uMoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g,r,muM)*shM + sT*msLUT(g,h,muM)*msM);
           if (msS < 1.0) S += sT*(1.0-msS)*(uEdiff[g] + uAlb[g]*uEground[g])*(0.25/PI);
-          vec4 att = exp(-ext*dt); L[g] += w*T[g]*(S - S*att)/max(ext, vec4(1e-9)); T[g] *= att; }
+          vec4 att = exp(-ext*dt); L[g] += uLw0.x*w*T[g]*(S - S*att)/max(ext, vec4(1e-9)); T[g] *= att; }
       }
     }
     if (s < n){
@@ -1099,7 +1108,7 @@ void main(){
         for (int g=0; g<NG+uZero; g++){
           // sky- and ground-light share the sun's diffuse normalisation (two-stream: a diffusely lit deck passes light like a
           // beam at ~50° does), and light from above is raised by the cloud-top ↔ sky inter-reflection (uCEnh, bluest at short λ)
-          vec4 Lc = (c0.x*uSunE[g]*transmittance(g,r,muS)*tsS + c0.y*uMoonE[g]*transmittance(g,r,muM)*tsM + c0.z*ambE(g,h)*(0.75/PI))*uCEnh[g] + c1.y*uAlb[g]*uEground[g]*(0.75/PI);
+          vec4 Lc = (uLw0.y*(c0.x*uSunE[g]*transmittance(g,r,muS)*tsS + c0.y*uMoonE[g]*transmittance(g,r,muM)*tsM) + uLw0.z*c0.z*ambE(g,h)*(0.75/PI))*uCEnh[g] + uLw0.z*c1.y*uAlb[g]*uEground[g]*(0.75/PI);
           L[g] += w*T[g]*Lc; }
       } else {
         bool cir = kind == 1; float tv = ltau[s]; float gS = cir ? 0.75 : 0.86; float kk = 0.75*(1.0-gS);
@@ -1124,9 +1133,9 @@ void main(){
           if (cir && uCiHalo > 0.0){ for (int c=0;c<4+uZero;c++){
             phS[c] = mix(baseS, 0.9*haloLobe(thS,uHalo22[g][c],0.03)+0.1*haloLobe(thS,uHalo46[g][c],0.04), uCiHalo*0.02);   // full strength ≈ 1.8× the surrounding cirrus
             phM[c] = mix(baseM, 0.9*haloLobe(thM,uHalo22[g][c],0.03)+0.1*haloLobe(thM,uHalo46[g][c],0.04), uCiHalo*0.02); } }
-          vec4 Lc = ambE(g,h)*Aamb + uAlb[g]*uEground[g]*Abnc;
-          if (uSunOn > 0.5) Lc += uSunE[g]*transmittance(g,r,muS)*tsS*(phS*Gs.x + Gs.y);
-          if (uMoonOn > 0.5) Lc += uMoonE[g]*transmittance(g,r,muM)*tsM*(phM*Gm.x + Gm.y);
+          vec4 Lc = uLw0.z*(ambE(g,h)*Aamb + uAlb[g]*uEground[g]*Abnc);
+          if (uSunOn > 0.5) Lc += uLw0.y*uSunE[g]*transmittance(g,r,muS)*tsS*(phS*Gs.x + Gs.y);
+          if (uMoonOn > 0.5) Lc += uLw0.y*uMoonE[g]*transmittance(g,r,muM)*tsM*(phM*Gm.x + Gm.y);
           L[g] += w*T[g]*Lc; }
       }
       w *= lT[s];
@@ -1162,7 +1171,7 @@ void main(){
       vec4 E = ambE(g, ht)*(0.5 + 0.5*n.y)*ao + uAlb[g]*uEground[g]*(0.5 - 0.5*n.y);
       if (uSunOn > 0.5) E += uSunE[g]*transmittance(g, Rg + ht, muS)*cS*shS;
       if (uMoonOn > 0.5) E += uMoonE[g]*transmittance(g, Rg + ht, muM)*cM*shM;
-      bg[g] = alb*E/PI; }
+      bg[g] = uLw0.w*alb*E/PI; }
   } else if (hitG){
     if (uSkyOnly < 0.5){ vec3 pg = ro + rd*gN; vec3 up = normalize(pg-C0); float muS=dot(up,Ls), muM=dot(up,Lm);
       float shS = cloudShadow(pg, 0.0, Ls, 0), shM = cloudShadow(pg, 0.0, Lm, 1);
@@ -1173,10 +1182,10 @@ void main(){
       for (int g=0; g<NG+uZero; g++){ vec4 Ed = uEdiff[g];
         if (uSunOn>0.5) Ed += uSunE[g]*transmittance(g,Rg,muS)*max(muS,0.0)*shS;
         if (uMoonOn>0.5) Ed += uMoonE[g]*transmittance(g,Rg,muM)*max(muM,0.0)*shM;
-        bg[g] = clamp(uAlb[g]*gv, 0.0, 1.0)*Ed/PI; } }
+        bg[g] = uLw0.w*clamp(uAlb[g]*gv, 0.0, 1.0)*Ed/PI; } }
   } else {
     float vr = 1.0/sqrt(max(1.0 - pow(Rg/(Rg+95.0),2.0)*(1.0-mu*mu), 1e-4));
-    for (int g=0; g<NG+uZero; g++) bg[g] = uAirglow[g]*vr;
+    for (int g=0; g<NG+uZero; g++) bg[g] = uLw1.z*uAirglow[g]*vr;
     float pa = PI/uRes.y; bool inMoon = false;
     if (uDisks > 0.5 && !ov){
       if (uSunDisk > 0.5 && length(rd-Ls) < uSunRad/uSunSquash + 3.0*pa){
@@ -1185,7 +1194,7 @@ void main(){
         float sm[16];
         for (int k=0;k<16+uZero;k++){ vec2 of=(vec2(float(k%4), float(k/4))+0.5)/4.0-0.5; vec3 d=dirFromPixel(px+of); vec3 v = d - Ls*dot(d,Ls);
           float x = length(vec2(dot(v,rtT), dot(v,upT)/uSunSquash))/uSunRad; sm[k] = (x<1.0 && dot(d,Ls)>0.0) ? sqrt(1.0-x*x) : -1.0; }
-        for (int g=0; g<NG+uZero; g++){ vec4 acc=vec4(0.0); for (int k=0;k<16+uZero;k++) if (sm[k]>=0.0) acc += pow(vec4(max(sm[k],1e-4)), uSunAlpha[g]); bg[g] += uSunK[g]*acc/16.0; }
+        for (int g=0; g<NG+uZero; g++){ vec4 acc=vec4(0.0); for (int k=0;k<16+uZero;k++) if (sm[k]>=0.0) acc += pow(vec4(max(sm[k],1e-4)), uSunAlpha[g]); bg[g] += uLw1.x*uSunK[g]*acc/16.0; }
       }
       if (length(rd-Lm) < uMoonRad + 3.0*pa){
         vec3 zM = -Lm; vec3 yM = normalize(uPole - dot(uPole,zM)*zM); vec3 xM = cross(yM, Lm); float rho = sin(uMoonRad); float acc = 0.0;
@@ -1199,7 +1208,7 @@ void main(){
             float m0 = dot(nb, uMoonLight), mv = max(dot(nn,-d),0.0);
             acc += moonAlbedo(nm)*(m0 > 0.0 ? m0/(m0+mv) : 2e-4*mv)*smoothstep(-0.02, 0.03, dot(nn, uMoonLight) + 0.02); } }
         inMoon = length(rd-Lm) < uMoonRad;
-        for (int g=0; g<NG+uZero; g++) bg[g] += uMoonK[g]*acc/16.0;
+        for (int g=0; g<NG+uZero; g++) bg[g] += uLw1.y*uMoonK[g]*acc/16.0;
       }
     }
     if (uNight > 0.5 && !ov && !inMoon){
@@ -1209,7 +1218,7 @@ void main(){
         float bulge = exp(-(l*l)/(2.0*0.30*0.30) - (b*b)/(2.0*0.16*0.16));
         float nz = fbm3(q*7.0+3.1); float lanes = 1.0 - 0.75*exp(-abs(b + 0.015*sin(l*5.0))/radians(2.2))*smoothstep(0.35,0.75,fbm3(q*11.0+7.3))*exp(-lw*lw/(2.0*1.4*1.4));
         float Lv = 6e-4*uMW*(disk*(0.55+0.9*nz) + 1.3*bulge)*lanes;
-        int ti = int(uMWIdx); for (int g=0; g<NG+uZero; g++) bg[g] += Lv*texelFetch(uStarTex, ivec2(ti,g), 0); }
+        int ti = int(uMWIdx); for (int g=0; g<NG+uZero; g++) bg[g] += uLw1.z*Lv*texelFetch(uStarTex, ivec2(ti,g), 0); }
       if (uStars > 0.5) starSky = true;
       if (uStars > 0.5 && uStarSplit < 0.5){
         vec3 aq = abs(q); int face; vec2 fuv;
@@ -1224,7 +1233,7 @@ void main(){
           float kern = exp(-ang*ang/(2.0*sig*sig))/(2.0*PI*sig*sig); float Ev = 2.54e-6*pow(10.0,-0.4*m);
           float u = h2.x; float Tk = u<0.12 ? mix(3000.,3800.,h2.y) : u<0.42 ? mix(3900.,5200.,h2.y) : u<0.70 ? mix(5200.,6000.,h2.y) : u<0.85 ? mix(6000.,7500.,h2.y) : u<0.95 ? mix(7500.,10000.,h2.y) : mix(10000.,25000.,h2.y);
           int ti = clamp(int(floor(15.0*log(Tk/2500.0)/log(10.0)+0.5)),0,15);
-          for (int g=0; g<NG+uZero; g++) bg[g] += Ev*kern*texelFetch(uStarTex, ivec2(ti,g), 0); }
+          for (int g=0; g<NG+uZero; g++) bg[g] += uLw1.z*Ev*kern*texelFetch(uStarTex, ivec2(ti,g), 0); }
       }
     }
   }
@@ -1236,6 +1245,7 @@ void main(){
       a = starSky ? tn/max(td, 1e-9) : 0.0; }
     res = vec4(xyz, a); }
   else if (uOutMode == 3) res = vec4(xyz, 1.0);
+  else if (uOutMode == 5) res = vec4(vec3(1.0 - w), 1.0);   // cloud matte: 1 − light getting through all cloud layers
   else if (uOutMode == 4){ vec3 t = vec3(0.0); for (int g=0; g<NG+uZero; g++){ vec4 tw = w*T[g]; t += vec3(dot(tw,uCMFx[g]), dot(tw,uCMFy[g]), dot(tw,uCMFz[g])); } res = vec4(t, 1.0); }
   else if (uOutMode == 1) res = L[uOutG];
   else res = tMt > 0.0 ? vec4(0.0) : w*T[uOutG];   // (a mountain in the way blocks the sun completely)
@@ -1523,7 +1533,7 @@ const DEFAULTS = {
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
   tlStart:'19:00', tlEnd:'21:30', tlFrames:120, tlWind:20, tlWindDir:250, tlEvolve:0.6, tlFormat:'png', tlRes:1024, tlSpp:2, tlExpo:'auto',
-  previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, mtnOn:false, mtnDist:14, mtnDepth:40, mtnHeight:2.8, mtnCover:0.55, mtnDir:0, mtnRidge:0.7, mtnRough:0.55, mtnSeed:3, mtnSnow:2.2, mtnTree:1.3, mtnVeg:0.6, mtnRock:'granite', ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
+  previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:14, mtnDepth:40, mtnHeight:2.8, mtnCover:0.55, mtnDir:0, mtnRidge:0.7, mtnRough:0.55, mtnSeed:3, mtnSnow:2.2, mtnTree:1.3, mtnVeg:0.6, mtnRock:'granite', ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
 };
 const P = structuredClone(DEFAULTS);
 const G = {};      // shared uniform values
@@ -1701,7 +1711,7 @@ function buildAmbient(){ unbind(9, gl.TEXTURE_2D); gl.bindFramebuffer(gl.FRAMEBU
 function passUniforms(ctx, fullW, fullH, rowOff, n, q, extra){
   const jit = n===0 ? [0,0] : [((0.5+n*0.7548776662)%1)-0.5, ((0.5+n*0.5698402910)%1)-0.5];
   return {...G, uRes:[fullW, fullH], uRowOff:rowOff, uJit:jit, uFrame:n, uOverride:0, uOvDir:[0,1,0], uPixAng:Math.PI/fullH,
-    uStepK:q.k, uMinStep:q.mn, uMaxStep:q.mx, uMaxSteps:q.steps, uAtmN:q.atm, uOutMode:0, uOutG:0, uDisks:1, uStarSplit:0, uSkyOnly:P.groundMode==='black'?1:0, ...extra}; }
+    uStepK:q.k, uMinStep:q.mn, uMaxStep:q.mx, uMaxSteps:q.steps, uAtmN:q.atm, uOutMode:0, uOutG:0, uDisks:1, uStarSplit:0, uLw0:[1,1,1,1], uLw1:[1,1,1,1], uSkyOnly:P.groundMode==='black'?1:0, ...extra}; }
 function cloudPass(ctx, U, b){ unbind(5, gl.TEXTURE_2D); unbind(6, gl.TEXTURE_2D); gl.bindFramebuffer(gl.FRAMEBUFFER, ctx.fCloud); b ? gl.viewport(b[2]||0, b[0], b[3]||ctx.w, b[1]) : gl.viewport(0,0,ctx.w,ctx.h); setU(P_CLOUD, U); draw(); }
 function compPass(ctx, U, b){ bindTex(5, gl.TEXTURE_2D, ctx.cl0); bindTex(6, gl.TEXTURE_2D, ctx.cl1); gl.bindFramebuffer(gl.FRAMEBUFFER, ctx.fComp); b ? gl.viewport(b[2]||0, b[0], b[3]||ctx.w, b[1]) : gl.viewport(0,0,ctx.w,ctx.h); setU(P_COMP, U); draw(); }
 function accumPass(ctx, n, b){ const src = ctx.cur, dst = 1-ctx.cur; bindTex(12, gl.TEXTURE_2D, ctx.acc[src]); bindTex(13, gl.TEXTURE_2D, ctx.comp);
@@ -1915,25 +1925,30 @@ function renderFinal(o){
   return new Promise(resolve => {
     const W = o.W, H = W/2; const rows = W >= 8192 ? 16 : W >= 4096 ? 32 : 64;
     let rgb; try { rgb = new Float32Array(W*H*3); } catch(e){ setStatus('Not enough memory for this resolution. Choose a smaller output size.'); resolve(null); return; }
-    finalJob = { W, H, rows, y:0, s:0, spp:o.spp, q:QUALITY[o.quality], ctx:makeCtx(W, rows, true), rgb, t0:performance.now(), units:o.units, ghi:S.ghi, label:o.label||'Rendering', resolve, prog:o.prog }; }); }
+    const J = { W, H, rows, y:0, s:0, spp:o.spp, q:QUALITY[o.quality], ctx:makeCtx(W, rows, true), rgb, t0:performance.now(), units:o.units, ghi:S.ghi, label:o.label||'Rendering', resolve, prog:o.prog };
+    // layers in 32-bit float (half floats top out at 65 504: the sun, its aureole and silver linings are far brighter in nits)
+    if (o.layers){ J.lhalf = !!o.layersHalf; try { J.lrgb = LAYERS.map(() => J.lhalf ? new Uint16Array(W*H*3) : new Float32Array(W*H*3)); J.matte = new Float32Array(W*H); } catch(e){ freeCtx(J.ctx); setStatus('Not enough memory for light layers at this resolution. Choose a smaller output size.'); resolve(null); return; }
+      J.lctx = LAYERS.map(() => layerCtx(J.ctx)); J.mctx = layerCtx(J.ctx); }
+    finalJob = J; }); }
 async function startFinal(){
   if (finalJob || TL.rendering) return;
   $('#renderBtn').disabled = true; $('#cancelBtn').hidden = false; $('#dlBtn').disabled = true; lastRender = null; const tStart = performance.now();
   const meta = { units:P.units, ghi:S.ghi, includeSun:P.includeSun, sunAz:P.sunAz, sunEl:P.sunEl, azOff:P.azOff, sunRGB:(S.sunRGB||[0,0,0]).slice(), dni:S.dni||0, dniClear:S.dniClear||0, lat:P.lat, lon:P.lon, date:P.date, time:P.time, utc:P.utc, mode:P.mode };
-  const rgb = await renderFinal({W:P.outRes, spp:P.outSpp, quality:P.quality, units:P.units, prog:'#prog i'});
+  const layers = P.layersOn && P.format !== 'hdr' && P.outRes <= 4096;
+  const rgb = await renderFinal({W:P.outRes, spp:P.outSpp, quality:P.quality, units:P.units, prog:'#prog i', layers, layersHalf:P.format === 'exr16'});
   $('#renderBtn').disabled = false; $('#cancelBtn').hidden = true;
   if (!rgb){ $('#prog i').style.width = '0'; return; }
-  const W = P.outRes, H = W/2; lastRender = {W, H, rgb, ...meta, secs:(performance.now()-tStart)/1000};
+  const W = P.outRes, H = W/2; lastRender = {W, H, rgb, layers:rgb.layers || null, matte:rgb.matte || null, ...meta, secs:(performance.now()-tStart)/1000};
   $('#prog i').style.width='100%'; $('#dlBtn').disabled=false;
   let mx=0; for (let i=0;i<rgb.length;i+=3){ const y = 0.2126*rgb[i]+0.7152*rgb[i+1]+0.0722*rgb[i+2]; if (y>mx) mx=y; }
-  $('#renderInfo').innerHTML = `Rendered <b>${W}×${H}</b> in ${fmtTime(lastRender.secs)}. Peak ${sci(mx)} ${unitLabel(P.units)}. Ready to download.` + (P.includeSun ? '' : ' The sun disc is hidden, so the download also contains a matching sun lamp (.json and a Blender script).');
+  $('#renderInfo').innerHTML = `Rendered <b>${W}×${H}</b> in ${fmtTime(lastRender.secs)}. Peak ${sci(mx)} ${unitLabel(P.units)}. Ready to download.` + (lastRender.layers ? ` Includes ${LAYERS.length} light layers and a cloud matte.` : '') + (P.includeSun ? '' : ' The sun disc is hidden, so the download also contains a matching sun lamp (.json and a Blender script).');
   setStatus(`Final render done · ${fmtTime(lastRender.secs)}`); }
 function stepFinal(){
   if (finalJob && finalJob.y === 0 && finalJob.s === 0) BOOT.stage('rendering the final HDRI');
   const J = finalJob; const budget = 28; const t0 = performance.now();
   while (performance.now() - t0 < budget){
     const rowsNow = Math.min(J.rows, J.H - J.y);
-    renderSample(J.ctx, J.s, J.q, J.W, J.H, J.y); gpuSync(J.ctx.fAcc[J.ctx.cur], 0); J.s++;
+    if (J.lctx) renderSampleLayers(J); else renderSample(J.ctx, J.s, J.q, J.W, J.H, J.y); gpuSync(J.ctx.fAcc[J.ctx.cur], 0); J.s++;
     if (J.s >= J.spp){
       gl.bindFramebuffer(gl.FRAMEBUFFER, J.ctx.fAcc[J.ctx.cur]); const buf = new Float32Array(J.W*rowsNow*4); gl.readPixels(0,0,J.W,rowsNow,gl.RGBA,gl.FLOAT,buf);
       const k = unitScale(J.units, J.ghi);
@@ -1941,8 +1956,9 @@ function stepFinal(){
         J.rgb[d]   = Math.max(0, 3.2404542*X - 1.5371385*Y - 0.4985314*Z)*k;
         J.rgb[d+1] = Math.max(0,-0.9692660*X + 1.8760108*Y + 0.0415560*Z)*k;
         J.rgb[d+2] = Math.max(0, 0.0556434*X - 0.2040259*Y + 1.0572252*Z)*k; } }
+      if (J.lctx) readLayers(J, rowsNow);
       J.y += rowsNow; J.s = 0;
-      if (J.y >= J.H){ freeCtx(J.ctx); finalJob = null; J.resolve(J.rgb); return; }
+      if (J.y >= J.H){ freeCtx(J.ctx); if (J.lctx){ J.lctx.forEach(freeLayerCtx); freeLayerCtx(J.mctx); J.rgb.layers = J.lrgb; J.rgb.matte = J.matte; } finalJob = null; J.resolve(J.rgb); return; }
     }
   }
   const done = (J.y + J.s/J.spp*Math.min(J.rows,J.H-J.y))/J.H; const el = (performance.now()-J.t0)/1000; const eta = done>0.02 ? el/done - el : NaN;
@@ -1951,7 +1967,7 @@ function stepFinal(){
 }
 const fmtTime = s => { s=Math.max(0,Math.round(s)); return s>=60 ? `${Math.floor(s/60)}m ${String(s%60).padStart(2,'0')}s` : `${s}s`; };
 let lastRender = null;
-function cancelFinal(){ TL.cancel = true; if (!finalJob) return; freeCtx(finalJob.ctx); const r = finalJob.resolve; finalJob=null; r(null); setStatus('Render cancelled'); }
+function cancelFinal(){ TL.cancel = true; if (!finalJob) return; freeCtx(finalJob.ctx); if (finalJob.lctx){ finalJob.lctx.forEach(freeLayerCtx); freeLayerCtx(finalJob.mctx); } const r = finalJob.resolve; finalJob=null; r(null); setStatus('Render cancelled'); }
 const unitLabel = u => u==='watts' ? 'W·m⁻²·sr⁻¹' : u==='normalized' ? '(normalized)' : 'cd/m²';
 
 // --- encoders
@@ -2497,11 +2513,84 @@ function terrUniforms(){
   const [rS, rE] = terrRange(); const spec = t => f32(LAM.map(l => lerpT(t, l)));
   return { uMt0:[rS, rE, P.mtnHeight*1.15 + 0.05, P.mtnOn ? 1 : 0], uMt1:[P.mtnSnow, P.mtnTree, P.mtnVeg, P.mtnRidge], uMt2:[P.mtnRough, P.lat >= 0 || P.mode !== 'location' ? 1 : -1, 0, P.mtnSeed],
     uMtRock:spec((ROCKS[P.mtnRock] || ROCKS.granite).t), uMtVeg:spec(FOREST), uMtSnow:spec(SURFACES.snow.t) }; }
+/* ---------- light layers: the final render split by light source, for comp ----------
+   Each layer is the same render with only one kind of light switched on (same samples, same clouds), so the layers add up
+   to the beauty. Stored as half floats; a cloud matte (1 − light getting through all clouds) comes with them. */
+const LAYERS = [
+  {name:'sky',        w0:[1,0,0,0], w1:[0,0,0,0], what:'the air: blue sky, haze, twilight glow, light shafts'},
+  {name:'clouds_sun', w0:[0,1,0,0], w1:[0,0,0,0], what:'clouds lit by the sun and moon'},
+  {name:'clouds_sky', w0:[0,0,1,0], w1:[0,0,0,0], what:'clouds lit by the sky and the ground'},
+  {name:'ground',     w0:[0,0,0,1], w1:[0,0,0,0], what:'ground plane and mountains'},
+  {name:'sun',        w0:[0,0,0,0], w1:[1,0,0,0], what:'the sun disc'},
+  {name:'moon',       w0:[0,0,0,0], w1:[0,1,0,0], what:'the moon disc'},
+  {name:'night',      w0:[0,0,0,0], w1:[0,0,1,0], what:'stars, Milky Way and airglow'},
+];
+function layerCtx(base){ const c = {w:base.w, h:base.h, cl0:base.cl0, cl1:base.cl1, cur:0};
+  c.comp = tex2D(c.w, c.h, gl.RGBA32F); c.fComp = fboFor([c.comp]);
+  c.acc = [tex2D(c.w, c.h, gl.RGBA32F), tex2D(c.w, c.h, gl.RGBA32F)]; c.fAcc = c.acc.map(t => fboFor([t])); return c; }
+function freeLayerCtx(c){ [c.comp, ...c.acc].forEach(t => gl.deleteTexture(t)); [c.fComp, ...c.fAcc].forEach(f => gl.deleteFramebuffer(f)); }
+// one sample of a strip: the cloud pass once, then the beauty, every layer and the matte from it
+function renderSampleLayers(J){
+  const ctx = J.ctx, U = passUniforms(ctx, J.W, J.H, J.y, J.s, J.q, {}); const B = 32;
+  for (let y=0; y<ctx.h; y+=B){ const b = [y, Math.min(B, ctx.h - y), 0, ctx.w]; cloudPass(ctx, U, b); compPass(ctx, U, b);
+    LAYERS.forEach((L, k) => compPass(J.lctx[k], {...U, uLw0:L.w0, uLw1:L.w1}, b));
+    compPass(J.mctx, {...U, uOutMode:5}, b); gl.flush(); }
+  accumPass(ctx, J.s); J.lctx.forEach(c => accumPass(c, J.s)); accumPass(J.mctx, J.s); }
+function readLayers(J, rowsNow){
+  const k = unitScale(J.units, J.ghi); const buf = new Float32Array(J.W*rowsNow*4);
+  J.lctx.forEach((c, n) => { gl.bindFramebuffer(gl.FRAMEBUFFER, c.fAcc[c.cur]); gl.readPixels(0, 0, J.W, rowsNow, gl.RGBA, gl.FLOAT, buf); const out = J.lrgb[n];
+    for (let j=0;j<rowsNow;j++){ const dst = (J.y+j)*J.W*3; for (let x=0;x<J.W;x++){ const o = (j*J.W + x)*4, X = buf[o], Y = buf[o+1], Z = buf[o+2], d = dst + x*3;
+      const r = ( 3.2404542*X - 1.5371385*Y - 0.4985314*Z)*k, g = (-0.9692660*X + 1.8760108*Y + 0.0415560*Z)*k, bl = ( 0.0556434*X - 0.2040259*Y + 1.0572252*Z)*k;
+      if (J.lhalf){ out[d] = toHalf(clamp(r, -65504, 65504)); out[d+1] = toHalf(clamp(g, -65504, 65504)); out[d+2] = toHalf(clamp(bl, -65504, 65504)); }
+      else { out[d] = r; out[d+1] = g; out[d+2] = bl; } } } });
+  gl.bindFramebuffer(gl.FRAMEBUFFER, J.mctx.fAcc[J.mctx.cur]); gl.readPixels(0, 0, J.W, rowsNow, gl.RGBA, gl.FLOAT, buf);
+  for (let j=0;j<rowsNow;j++) for (let x=0;x<J.W;x++) J.matte[(J.y+j)*J.W + x] = clamp(buf[(j*J.W + x)*4], 0, 1); }
+// multi-channel EXR (single part, scanlines, ZIP): chans = [{name, type:'half'|'float', get(y, x) → number or raw half bits}]
+async function encodeEXRChannels(chans, W, H, onProg){
+  chans = chans.slice().sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const zip = typeof CompressionStream !== 'undefined'; const lines = zip ? 16 : 1;
+  const enc = new TextEncoder(); const hdr = []; const pushStr = s => hdr.push(...enc.encode(s), 0);
+  const i32 = v => { const b=new Uint8Array(4); new DataView(b.buffer).setInt32(0,v,true); hdr.push(...b); };
+  const f32v = v => { const b=new Uint8Array(4); new DataView(b.buffer).setFloat32(0,v,true); hdr.push(...b); };
+  hdr.push(0x76,0x2f,0x31,0x01, 2,0,0,0);
+  const chl = chans.reduce((s, c) => s + c.name.length + 1 + 16, 0) + 1;
+  pushStr('channels'); pushStr('chlist'); i32(chl); for (const c of chans){ pushStr(c.name); i32(c.type === 'half' ? 1 : 2); hdr.push(0,0,0,0); i32(1); i32(1); } hdr.push(0);
+  pushStr('compression'); pushStr('compression'); i32(1); hdr.push(zip?3:0);
+  pushStr('dataWindow'); pushStr('box2i'); i32(16); i32(0); i32(0); i32(W-1); i32(H-1);
+  pushStr('displayWindow'); pushStr('box2i'); i32(16); i32(0); i32(0); i32(W-1); i32(H-1);
+  pushStr('lineOrder'); pushStr('lineOrder'); i32(1); hdr.push(0);
+  pushStr('pixelAspectRatio'); pushStr('float'); i32(4); f32v(1);
+  pushStr('screenWindowCenter'); pushStr('v2f'); i32(8); f32v(0); f32v(0);
+  pushStr('screenWindowWidth'); pushStr('float'); i32(4); f32v(1);
+  hdr.push(0);
+  const rowBytes = chans.reduce((s, c) => s + W*(c.type === 'half' ? 2 : 4), 0);
+  const nChunks = Math.ceil(H/lines); const chunks = [];
+  for (let ci=0; ci<nChunks; ci++){
+    const y0 = ci*lines, n = Math.min(lines, H - y0); const raw = new Uint8Array(n*rowBytes); const dv = new DataView(raw.buffer); let o = 0;
+    for (let j=0;j<n;j++){ const y = y0 + j; for (const c of chans){
+      if (c.type === 'half'){ for (let x=0;x<W;x++){ dv.setUint16(o, c.get(y, x), true); o += 2; } } else { for (let x=0;x<W;x++){ dv.setFloat32(o, c.get(y, x), true); o += 4; } } } }
+    let data = raw;
+    if (zip){ const t = new Uint8Array(raw.length); const h2 = (raw.length+1)>>1; for (let i=0,a=0,b=h2; i<raw.length; i+=2){ t[a++]=raw[i]; if (i+1<raw.length) t[b++]=raw[i+1]; }
+      let p = t[0]; for (let i=1;i<t.length;i++){ const d = (t[i] - p + 384) & 255; p = t[i]; t[i] = d; }
+      const z = await deflate(t); if (z.length < raw.length) data = z; }
+    const head = new Uint8Array(8); const hv = new DataView(head.buffer); hv.setInt32(0, y0, true); hv.setInt32(4, data.length, true);
+    chunks.push(head, data); if (ci % 8 === 0){ onProg && onProg(ci/nChunks); await new Promise(r => setTimeout(r, 0)); } }
+  const header = new Uint8Array(hdr); const table = new Uint8Array(nChunks*8); const tv = new DataView(table.buffer);
+  let off = header.length + table.length; for (let c=0;c<nChunks;c++){ tv.setBigUint64(c*8, BigInt(off), true); off += chunks[c*2].length + chunks[c*2+1].length; }
+  return [header, table, ...chunks]; }
+function layeredEXR(R, half, onProg){
+  const W = R.W, H = R.H, chans = [];
+  ['R','G','B'].forEach((ch, i) => chans.push(half ? {name:ch, type:'half', get:(y, x) => toHalf(Math.min(R.rgb[(y*W + x)*3 + i], 65504))} : {name:ch, type:'float', get:(y, x) => R.rgb[(y*W + x)*3 + i]}));
+  const lh = R.layers[0] instanceof Uint16Array;
+  LAYERS.forEach((L, n) => ['R','G','B'].forEach((ch, i) => chans.push({name:`${L.name}.${ch}`, type:lh ? 'half' : 'float', get:(y, x) => R.layers[n][(y*W + x)*3 + i]})));
+  chans.push({name:'cloud_matte.A', type:'half', get:(y, x) => toHalf(R.matte[y*W + x])});
+  return encodeEXRChannels(chans, W, H, onProg); }
 async function download(){
   if (!lastRender) return; const btn = $('#dlBtn'); btn.disabled = true; const R = lastRender;
   try {
     let parts, name;
     if (P.format === 'hdr'){ setStatus('Encoding Radiance HDR…'); await new Promise(r=>setTimeout(r,20)); parts = encodeHDR(R.rgb, R.W, R.H); name = baseName(R)+'.hdr'; }
+    else if (R.layers){ parts = await layeredEXR(R, P.format==='exr16', p=>setStatus(`Encoding layered OpenEXR… ${Math.round(p*100)}%`)); name = baseName(R)+'_layers.exr'; }
     else { parts = await encodeEXR(R.rgb, R.W, R.H, P.format==='exr16', p=>setStatus(`Encoding OpenEXR… ${Math.round(p*100)}%`)); name = baseName(R)+'.exr'; }
     setStatus('Preparing file…'); let res; const enc = new TextEncoder(); const files = [{name, parts}];
     if (P.rigUSD) files.push({name: name.replace(/\.(exr|hdr)$/, '_rig.usda'), parts:[enc.encode(usdRig(R, name, rigExtras(R)))]});
@@ -2980,6 +3069,8 @@ const SECTIONS = [
     {k:'units', label:'Pixel units', type:'select', opts:[['nits','Luminance · cd/m² (physical)'],['watts','Radiometric · W·m⁻²·sr⁻¹ (÷683)'],['normalized','Normalized · white ground = 1']], noScene:true},
     {k:'format', label:'File format', type:'select', opts:[['exr32','OpenEXR · 32-bit float'],['exr16','OpenEXR · 16-bit half'],['hdr','Radiance HDR · RGBE']], noScene:true},
     {type:'info', id:'fmtInfo'},
+    {k:'layersOn', label:'Light layers in the EXR (for comp)', type:'check', noScene:true},
+    {type:'info', id:'layersInfo', show:()=>P.layersOn},
     {type:'render'},
   ]},
 ];
@@ -3029,6 +3120,7 @@ function updateInfo(){
   { const hi = $('#hazeInfo'); if (hi) hi.innerHTML = 'How much haze and light the air adds between the camera and anything in the shot, by direction and distance (10 m to 100 km), matching this sky. Comes with a BlinkScript node that applies it from a world-position pass. <i>Placeholder for the pipeline: the lookup is general, but the node is written for stock Nuke and would need adapting to the studio\'s own volume node.</i>';
     const rn = $('#rigNote'); if (rn) rn.innerHTML = 'Not active. The HDRI is meant for the studio\'s own dome light, and the sun for its own light. What this could export later, and is easy to wire to those lights: the dome orientation, and the sun as a separate light with its exact direction, 0.53° size, colour and brightness (with and without clouds, for use with the cloud-shadow gobo).';
     renderChecks();
+  const li = $('#layersInfo'); if (li) li.innerHTML = P.format === 'hdr' ? 'Light layers need OpenEXR: choose an EXR file format.' : P.outRes > 4096 ? 'Light layers are available up to 4K output (8K would need several GB of memory).' : `One EXR with the beauty (RGB) and ${LAYERS.length} layers that add up to it: ${LAYERS.map(L => `<b>${L.name}</b> (${L.what})`).join(', ')}; plus <b>cloud_matte</b> (how much the clouds block what is behind them). Layers use the chosen bit depth (with 16-bit half, very bright parts such as the sun clip in physical units). Rendering takes several times longer and needs more memory (about 0.8 GB at 4K, 32-bit).`;
   const cn = $('#camNote'); if (cn) cn.innerHTML = 'Not active. A shot camera would let you frame the sky through the real lens and aspect ratio, and place the sun relative to the shot (backlight, rim left or right, three-quarter, front) instead of by compass direction. It would also set the yaw that the haze node and the gobo need.'; }
   { const gi = $('#goboInfo'); if (gi) gi.innerHTML = `Shadows of these clouds on the ground around the camera, as a texture for your sun light. ${Math.round(P.goboExt)} m across at ${P.goboRes} px is <b>${(P.goboExt/P.goboRes*100).toPrecision(2)} cm per pixel</b>. The sequence follows the timelapse settings (dates, frames, drift). Light the sun at its <i>without clouds</i> brightness (given in the .json) when you use it.`; }
   const ci = $('#celInfo'); if (ci){ const ph = S.illum!=null ? `${Math.round(S.illum*100)}% lit` : '';
