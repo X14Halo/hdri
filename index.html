@@ -23,7 +23,8 @@ button,select,input{font:inherit;color:inherit}
 #stage{min-width:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;border-right:1px solid var(--line)}
 /* the tool strip sits over the top of the image on large screens and in its own row above it on small ones */
 #stage>*{grid-column:1} #stage>.bar{grid-row:1} #stage>.view{grid-row:2/4} #stage>.tools{grid-row:2} #stage>.readouts{grid-row:4}
-.bar{display:flex;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line);min-width:0}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:10px 16px;border-bottom:1px solid var(--line);min-width:0}
+@media (max-width:1250px){.brand .tag{display:none}}
 .brand{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
 .brand b{font-weight:600;font-size:15px;letter-spacing:.01em}
 .brand .tag{font:11px var(--mono);color:var(--muted);letter-spacing:.04em}
@@ -64,6 +65,9 @@ button,select,input{font:inherit;color:inherit}
 .tchip span{font:10px var(--ui);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .tchip:hover{border-color:var(--faint)}
 .btn.rand{flex:none;padding:5px 12px;border-radius:999px}
+.variety{flex:none;display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
+.variety input[type=range]{width:84px}
+.variety b{font:600 11px var(--mono);color:var(--fg);min-width:62px}
 .legend{position:absolute;left:12px;bottom:10px;display:flex;align-items:center;gap:6px;font:10px var(--mono);color:var(--muted);background:rgba(10,13,17,.8);padding:4px 8px;border-radius:6px}
 .legend i{display:block;width:180px;height:8px;border-radius:2px;background:linear-gradient(90deg,#30123b,#4662d7,#36aaf9,#1ae4b6,#72fe5e,#c7ef34,#faba39,#f66b19,#ca2a04,#7a0403)}
 .readouts{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--line);background:var(--panel)}
@@ -166,6 +170,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
       </div>
       <button class="btn rand" id="randAll" title="Random time of day, sun and moon, ground, atmosphere and clouds">Randomize all</button>
       <button class="btn rand" id="randWx" title="Random atmosphere and clouds; keeps the sun, moon and ground">Randomize weather</button>
+      <label class="variety" title="How far the randomize buttons stray from real-world weather. Realistic: weather types whose settings belong together, at the rates they really occur, matched to the time of day, season and (with a place picked) the local climate. Wild: anything goes."><span>Variety</span><input type="range" id="variety" min="0" max="1" step="0.05" value="0" aria-label="Randomize variety, realistic to wild"><b id="varVal">Realistic</b></label>
     </header>
     <div class="tools" id="tools">
       <div class="seg" id="viewSeg" role="group" aria-label="View">
@@ -1542,7 +1547,7 @@ const DEFAULTS = {
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
   tlStart:'19:00', tlEnd:'21:30', tlFrames:120, tlWind:20, tlWindDir:250, tlEvolve:0.6, tlFormat:'png', tlRes:1024, tlSpp:2, tlExpo:'auto',
-  previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:14, mtnDepth:40, mtnHeight:2.8, mtnCover:0.55, mtnDir:0, mtnRidge:0.7, mtnRough:0.55, mtnSeed:3, mtnSnow:2.2, mtnTree:1.3, mtnVeg:0.6, mtnRock:'granite', ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
+  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:14, mtnDepth:40, mtnHeight:2.8, mtnCover:0.55, mtnDir:0, mtnRidge:0.7, mtnRough:0.55, mtnSeed:3, mtnSnow:2.2, mtnTree:1.3, mtnVeg:0.6, mtnRock:'granite', ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
 };
 const P = structuredClone(DEFAULTS);
 const G = {};      // shared uniform values
@@ -2825,16 +2830,103 @@ function renderSunTimes(){
    Randomize
    ===================================================================== */
 const rnd = (a,b) => a + Math.random()*(b-a);
+const gauss = () => Math.sqrt(-2*Math.log(1 - Math.random()))*Math.cos(2*Math.PI*Math.random());
 function weighted(list){ let s = list.reduce((a,b)=>a+b[1],0)*Math.random(); for (const [v,w] of list){ s -= w; if (s <= 0) return v; } return list[0][0]; }
-function randomizeWeather(){
-  dropMask(); Object.assign(P, BASEWX);
+/* The Variety slider runs from Realistic (0) to Wild (1). Realistic skies come from weather types whose settings belong
+   together, at roughly the rates they occur, tied to the time of day, the season and (with a place picked) the local climate.
+   Wild is the old behaviour: any weather type, each cloud setting rolled on its own. In between, the two are blended. */
+const WX_KINDS = ['clear','cumulus','strato','overcast','storm','cirrus','alto','mixed'];
+const WILD_W = {clear:0.12, cumulus:0.24, strato:0.12, overcast:0.08, storm:0.1, cirrus:0.12, alto:0.12, mixed:0.1};
+const wxKeys = () => [...Object.keys(BASEWX), 'seed', 'windX', 'windZ', 'evolve', 'surface', 'siteAlt'];   // (BASEWX is defined further down)
+const snapWx = () => { const o = {}; for (const k of wxKeys()) o[k] = P[k]; return o; };
+let lastWxKind = '';
+function varietyName(v){ return v < 0.15 ? 'Realistic' : v < 0.45 ? 'Varied' : v < 0.8 ? 'Unusual' : 'Wild'; }
+// what the sky "knows" before weather is picked: time of day, season, climate
+function wxContext(){
+  const el = P.sunEl, am = Math.sin(P.sunAz*D2R) > 0;   // sun in the eastern half of the sky: morning, or before dawn
+  // daytime heating drives cumulus and storms: builds through the morning, peaks in the afternoon, fades after sunset
+  const heat = el > 0 ? smooth(4, 45, el)*(am ? 0.55 : 1) : (am ? 0 : 0.25*smooth(-12, 0, el));
+  const loc = P.mode === 'location';
+  const c = loc && P.climate ? climateAt(P.lat, P.lon, monthOf(P.date), P.place) : null;
+  const surf = c ? c.s : P.surface; const m = monthOf(P.date);
+  // season: 1 in midsummer, 0 in midwinter (snow on the ground means winter whatever the date says)
+  const s = surf === 'snow' ? 0.05 : (P.lat >= 0 ? pk(m, 6.5, 2.2) : pk(m, 0.5, 2.2));
+  const desert = c ? c.t === 'desert' || c.h < 35 : surf === 'sand';
+  return { el, am, heat, s, c, surf, desert, snow: surf === 'snow', maritime: c ? c.t === 'maritime' : false,
+    tropics: loc && Math.abs(P.lat) < 23, dawn: am && el > -6 && el < 14, rh0: c ? c.h : surf === 'sand' ? 30 : surf === 'drygrass' ? 45 : 62 }; }
+function realWeights(X){
+  const {heat, s} = X;
+  const w = { clear:0.13, cumulus:0.24*(0.35 + 1.3*heat)*(0.5 + 0.7*s), strato:0.14*(1.25 - 0.5*heat), overcast:0.09*(1.4 - 0.8*s),
+    storm:0.1*(0.08 + heat)*(0.1 + 1.5*s*s)*(X.tropics ? 2.5 : 1), cirrus:0.10, alto:0.10*(1.2 - 0.4*s), mixed:0.09 };
+  const dry = clamp((60 - X.rh0)/40, -0.6, 1);   // > 0 in dry air, < 0 in humid air
+  w.clear *= 1 + 2*Math.max(dry, 0); w.overcast *= 1 - 0.8*dry; w.strato *= 1 - 0.6*dry; w.storm *= 1 - 0.5*dry;
+  if (X.desert){ w.strato *= 0.3; w.overcast *= 0.3; w.cumulus *= 0.7; }
+  if (X.maritime){ w.strato *= 1.5; w.overcast *= 1.3; }
+  if (X.snow){ w.storm = 0; w.cumulus *= 0.3; }
+  return w; }
+function pickKind(v, X){
+  const r = realWeights(X), rs = WX_KINDS.reduce((a, k) => a + r[k], 0), ws = WX_KINDS.reduce((a, k) => a + WILD_W[k], 0);
+  return weighted(WX_KINDS.map(k => [k, (1 - v)*r[k]/rs + v*WILD_W[k]/ws])); }
+// a realistic sky of the given kind
+function realWeather(kind, X){
+  Object.assign(P, BASEWX); const r2 = x => +x.toFixed(2);
+  if (X.c){ applyClimate(); P.aod = +clamp(P.aod*Math.exp(rnd(-0.35, 0.35)), 0.01, 2.5).toFixed(3); P.humidity = Math.round(clamp(P.humidity + rnd(-8, 8), 10, 95)); }
+  else {
+    P.aerosol = X.desert ? weighted([['desert',0.5],['continental',0.5]]) : X.snow ? weighted([['continental',0.6],['clean',0.4]])
+      : weighted([['continental',0.55],['maritime',0.22],['clean',0.1],['urban',0.11],['smoke',0.02]]);
+    const med = {clean:0.04, maritime:0.08, continental:0.11, urban:0.22, desert:0.3, smoke:0.45}[P.aerosol]*(X.snow ? 0.6 : 1);
+    P.aod = +clamp(med*Math.exp(0.45*gauss()), 0.02, 1.2).toFixed(3);
+    P.aerH = r2({clean:rnd(1,1.4), maritime:rnd(0.7,1.1), continental:rnd(1,1.6), urban:rnd(0.8,1.3), desert:rnd(2,3), smoke:rnd(1.8,2.8)}[P.aerosol]);
+    P.ozone = Math.round(rnd(280, 340)/5)*5; P.humidity = Math.round(clamp(X.rh0 + rnd(-12, 12), 15, 92)); }
+  const rh = h => { P.humidity = Math.round(clamp(h, 10, 97)); };
+  // cumulus form where rising air cools to its dew point: about 125 m per °C of spread, ≈ (100 − RH)/5 °C
+  const lcl = () => clamp(0.125*(100 - P.humidity)/5 + rnd(-0.15, 0.15), 0.35, 2.6);
+  const set = o => { for (const k in o) P[k] = Array.isArray(o[k]) ? r2(rnd(o[k][0], o[k][1])) : o[k]; };
+  const h = X.heat;
+  const fairCu = () => set({ctype:[0.66 + 0.1*h, 0.7 + 0.1*h], cdm:[0.7,1.1], cscale:[0.5,0.8], cclump:[0.2,0.4], cbillow:[0.55 + 0.15*h, 0.7 + 0.15*h], cvar:[0.35,0.55],
+    cairy:[0.2,0.4], cbasevar:[0.25,0.45], cscud:[0.05,0.15], cerode:[0.5,0.7]});
+  const stratoCu = () => set({ctype:[0.32,0.45], cdm:[0.9,1.2], cscale:[0.6,0.9], cclump:[0.3,0.5], cbillow:[0.6,0.8], cvar:[0.6,0.8], cairy:[0.3,0.5], cbasevar:[0.3,0.5], cscud:[0.1,0.3], cerode:[0.5,0.6]});
+  if (kind === 'clear'){
+    if (Math.random() < 0.4){ P.aod = +Math.max(0.02, P.aod*0.5).toFixed(3); rh(P.humidity - 15); }   // fresh air behind a cold front
+    if (h > 0.3 && Math.random() < 0.4){ fairCu(); set({cov:[0.04,0.1], cthick:[0.6,1]}); P.cbase = r2(lcl()); }
+    P.ciCov = Math.random() < 0.5 ? 0 : r2(rnd(0.03, 0.15)); }
+  if (kind === 'cumulus'){
+    fairCu(); P.cov = r2(clamp(0.1 + 0.32*h + rnd(-0.06, 0.08), 0.06, 0.48)); P.cbase = r2(lcl()); P.cthick = r2(clamp(0.7 + 1.8*h + rnd(-0.2, 0.4), 0.5, 3));
+    P.ciCov = Math.random() < 0.5 ? 0 : r2(rnd(0.05, 0.3));
+    if (Math.random() < 0.15) set({midCov:[0.1,0.3], midType:[0.7,0.95], midTau:[1.5,3], midH:[3.5,5]}); }
+  if (kind === 'strato'){
+    rh(Math.max(P.humidity, rnd(65, 85))); stratoCu(); set({cov:[0.55,0.85], cthick:[0.6,1.1]}); P.cbase = r2(clamp(lcl()*0.8, 0.5, 1.5));
+    if (Math.random() < 0.25) set({ciCov:[0.1,0.3]}); }
+  if (kind === 'overcast'){
+    rh(Math.max(P.humidity, rnd(80, 95)));
+    set({cov:1, ctype:[0.08,0.18], cbase:[0.4,0.9], cthick:[0.9,1.6], cdm:[1.2,1.6], cscale:[0.8,1.1], cerode:[0.45,0.55], cbillow:[0.2,0.35], cvar:[0.35,0.5], cairy:[0.15,0.25], cbasevar:[0.5,0.7], cscud:[0.35,0.6], cclump:[0.3,0.5]}); }
+  if (kind === 'storm'){
+    rh(Math.max(P.humidity, rnd(60, 80)));
+    set({cov:[0.34,0.5], ctype:[0.92,0.98], cthick:[7,10.5], cdm:1, cscale:[1.4,2], cerode:[0.35,0.5], cclump:[0.75,0.9], cbillow:[0.9,1], cvar:[0.45,0.55], cairy:[0.25,0.35], cbasevar:[0.5,0.6], cscud:[0.2,0.3], ciCov:[0.1,0.4], ciTau:[0.3,0.6]});
+    P.cbase = r2(clamp(lcl(), 0.8, 1.6)); }
+  if (kind === 'cirrus'){
+    rh(clamp(P.humidity, 35, 65)); set({ciCov:[0.4,0.85], ciTau:[0.2,0.6], ciH:[8.5,10.5]});
+    if (Math.random() < 0.6){ fairCu(); set({cov:[0.02,0.08], cthick:[0.6,1]}); P.cbase = r2(lcl()); }
+    if (Math.random() < 0.25) set({midCov:[0.1,0.3], midType:[0.1,0.4], midTau:[1,2.5]}); }
+  if (kind === 'alto'){
+    rh(Math.max(P.humidity, rnd(55, 75))); const acu = Math.random() < 0.55;
+    set({midCov:[0.55,0.95], midType:acu ? [0.65,0.95] : [0.05,0.3], midTau:acu ? [2,4.5] : [4,9], midH:[3.2,5.5], midScale:[0.8,1.3], ciCov:[0.1,0.4]});
+    if (Math.random() < 0.4){ stratoCu(); set({cov:[0.05,0.2], ctype:[0.4,0.55], cthick:[0.5,0.8]}); P.cbase = r2(lcl()); } }
+  if (kind === 'mixed'){
+    stratoCu(); set({cov:[0.2,0.45], ctype:[0.55,0.72], cthick:[0.8,1.6], midCov:[0.25,0.55], midType:[0.6,0.95], midTau:[1.5,4], midH:[3.5,5.5], ciCov:[0.25,0.6]}); P.cbase = r2(lcl()); }
+  // ground fog: forms in still, humid air overnight and lingers into the early morning
+  const fogOdds = X.desert || !['clear','strato','overcast'].includes(kind) ? 0 : (X.dawn ? 0.3 : X.el < -6 ? 0.15 : 0)*(X.rh0 > 50 ? 1 : 0.3);
+  if (Math.random() < fogOdds){ set({fogVis:[0.3,3], fogH:[0.05,0.3]}); rh(rnd(92, 97)); if (kind === 'clear') P.cov = 0; }
+  P.seed = Math.floor(Math.random()*997); P.windX = +rnd(-20,20).toFixed(1); P.windZ = +rnd(-20,20).toFixed(1); P.ciRot = Math.round(rnd(0,180)); P.evolve = +rnd(0,20).toFixed(2); }
+// the old, anything-goes randomizer for a given kind
+function wildWeather(kind){
+  Object.assign(P, BASEWX);
   P.aerosol = weighted([['continental',0.45],['maritime',0.25],['urban',0.1],['clean',0.1],['desert',0.05],['smoke',0.05]]);
   P.aod = +Math.exp(rnd(Math.log(0.03), Math.log(P.aerosol==='smoke'||P.aerosol==='desert' ? 1.4 : 0.4))).toFixed(3);
   P.humidity = Math.round(rnd(25,90)); P.ozone = Math.round(rnd(260,360)/5)*5; P.aerH = +rnd(0.8,2.2).toFixed(2);
   // a real place: vary the air around what is typical there in that season instead of anything at all
   if (P.mode === 'location' && P.climate){ applyClimate(); if (Math.random() < 0.15) P.aerosol = weighted([['continental',0.4],['maritime',0.3],['urban',0.15],['clean',0.15]]);
     P.aod = +clamp(P.aod*Math.exp(rnd(-0.7, 0.7)), 0.01, 2.5).toFixed(3); P.humidity = Math.round(clamp(P.humidity + rnd(-15, 15), 10, 95)); }
-  const kind = weighted([['clear',0.12],['cumulus',0.24],['strato',0.12],['overcast',0.08],['storm',0.1],['cirrus',0.12],['alto',0.12],['mixed',0.1]]);
   P.cclump = +rnd(0.15, 0.85).toFixed(2); P.cbillow = +rnd(0.3, 0.95).toFixed(2); P.cvar = +rnd(0.3, 0.8).toFixed(2); P.cairy = +rnd(0, 0.6).toFixed(2); P.cbasevar = +rnd(0.1, 0.8).toFixed(2); P.cscud = +rnd(0, 0.5).toFixed(2);
   const cu = () => Object.assign(P, {cov:+rnd(0.15,0.5).toFixed(2), ctype:+rnd(0.6,0.84).toFixed(2), cbase:+rnd(0.8,2).toFixed(2), cthick:+rnd(1,2.6).toFixed(2), cdm:+rnd(0.6,1.5).toFixed(2), cscale:+rnd(0.5,1.1).toFixed(2), cerode:+rnd(0.45,0.8).toFixed(2)});
   if (kind==='clear') P.ciCov = +rnd(0,0.15).toFixed(2);
@@ -2846,14 +2938,48 @@ function randomizeWeather(){
   if (kind==='alto') Object.assign(P, {midCov:+rnd(0.5,1).toFixed(2), midType:+rnd(0,1).toFixed(2), midH:+rnd(3,5.5).toFixed(1), midTau:+rnd(2,10).toFixed(1), midScale:+rnd(0.7,1.5).toFixed(2), cov:+rnd(0,0.2).toFixed(2), ciCov:+rnd(0,0.4).toFixed(2)});
   if (kind==='mixed'){ cu(); Object.assign(P, {midCov:+rnd(0.2,0.6).toFixed(2), midType:+rnd(0.5,1).toFixed(2), midTau:+rnd(1.5,5).toFixed(1), ciCov:+rnd(0.2,0.6).toFixed(2)}); }
   if (Math.random() < 0.08){ P.fogVis = +rnd(0.4,6).toFixed(1); P.fogH = +rnd(0.05,0.4).toFixed(2); }
-  P.seed = Math.floor(Math.random()*997); P.windX = +rnd(-20,20).toFixed(1); P.windZ = +rnd(-20,20).toFixed(1); P.ciRot = Math.round(rnd(0,180)); P.evolve = +rnd(0,20).toFixed(2);
-  dirtyCirrus = true; afterBulk(); }
+  P.seed = Math.floor(Math.random()*997); P.windX = +rnd(-20,20).toFixed(1); P.windZ = +rnd(-20,20).toFixed(1); P.ciRot = Math.round(rnd(0,180)); P.evolve = +rnd(0,20).toFixed(2); }
+function randomizeWeather(){
+  dropMask(); const v = clamp(Number(P.variety) || 0, 0, 1); const X = wxContext(); const kind = pickKind(v, X);
+  const before = snapWx(); wildWeather(kind);
+  if (v < 0.999){ const W = snapWx(); Object.assign(P, before); realWeather(kind, X); const R = snapWx();
+    // blend: numbers part-way from the realistic value toward the wild one, choices picked one way or the other
+    for (const k of wxKeys()){ const a = R[k], b = W[k];
+      if (k === 'fogVis' || k === 'aod') P[k] = +Math.exp(Math.log(a) + (Math.log(b) - Math.log(a))*v).toFixed(3);   // ratios blend on a log scale
+      else if (typeof a === 'number' && typeof b === 'number') P[k] = ['seed','ciRot','humidity','ozone'].includes(k) ? Math.round(a + (b - a)*v) : +(a + (b - a)*v).toFixed(3);
+      else P[k] = Math.random() < v ? b : a; } }
+  lastWxKind = kind; dirtyCirrus = true; afterBulk(); }
+// realistic sun and moon: a real date and time, so the sun's height, direction and the moon's place and phase all agree
+function realTime(lat, lon, utc, date){
+  const [y, m, d] = date.split('-').map(Number); const base = Date.UTC(y, m - 1, d) - utc*3600e3;
+  const bands = {golden:[], day:[], twilight:[], night:[]};
+  for (let i=0; i<96; i++){ const el = ephemeris(base + i*15*60e3, lat, lon).sel;
+    bands[el >= 10 ? 'day' : el >= -1 ? 'golden' : el >= -8 ? 'twilight' : 'night'].push(i*15); }
+  const bw = {golden:0.35, day:0.42, twilight:0.12, night:0.11}; const opts = Object.keys(bands).filter(b => bands[b].length).map(b => [b, bw[b]]);
+  const list = bands[weighted(opts)]; return hhmm(list[Math.floor(Math.random()*list.length)] + Math.floor(rnd(0, 15))); }
+function randomDate(){ const y = Number(String(P.date).slice(0, 4)) || 2026; const t = new Date(Date.UTC(y, 0, 1 + Math.floor(rnd(0, 365))));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth()+1).padStart(2,'0')}-${String(t.getUTCDate()).padStart(2,'0')}`; }
 function randomizeAll(){
-  const band = weighted([['golden',0.35],['day',0.42],['twilight',0.12],['night',0.11]]);
-  P.mode = 'manual'; P.moonOverride = false;
-  P.sunEl = +(band==='golden' ? rnd(-1,10) : band==='day' ? rnd(10,70) : band==='twilight' ? rnd(-8,-1) : rnd(-40,-15)).toFixed(1);
-  P.sunAz = +rnd(0,360).toFixed(1); P.moonAz = +rnd(0,360).toFixed(1); P.moonEl = +rnd(-20,70).toFixed(1);
-  P.surface = weighted([['grey',0.3],['grass',0.25],['drygrass',0.15],['sand',0.1],['soil',0.1],['snow',0.05],['concrete',0.05]]);
+  const v = clamp(Number(P.variety) || 0, 0, 1); P.moonOverride = false;
+  if (Math.random() >= v){
+    // realistic: a real day and time. With a place picked, keep the place and pick the date and time there; otherwise use
+    // the current latitude and set the sun and moon by hand from that moment
+    const date = randomDate(), time = realTime(P.lat, P.lon, P.utc, date);
+    if (P.mode === 'location'){ P.date = date; P.time = time; }
+    else { const [h, mi] = time.split(':').map(Number); const [y, mo, d] = date.split('-').map(Number);
+      const e = ephemeris(Date.UTC(y, mo - 1, d, h, mi) - P.utc*3600e3, P.lat, P.lon);
+      P.date = date; P.time = time; P.sunAz = +e.saz.toFixed(1); P.sunEl = +e.sel.toFixed(1); P.moonAz = +e.maz.toFixed(1); P.moonEl = +e.mel.toFixed(1);
+      const s = P.lat >= 0 ? pk(monthOf(date), 6.5, 2.2) : pk(monthOf(date), 0.5, 2.2);   // ground that fits the season
+      P.surface = s < 0.25 ? weighted([['snow', Math.abs(P.lat) > 35 ? 0.3 : 0],['grey',0.25],['soil',0.2],['drygrass',0.15],['grass',0.1]])
+        : s > 0.7 ? weighted([['grass',0.35],['drygrass',0.25],['grey',0.15],['soil',0.1],['sand',0.08],['concrete',0.07]])
+        : weighted([['grass',0.4],['soil',0.2],['grey',0.2],['drygrass',0.1],['concrete',0.05],['sand',0.05]]); }
+    computePhysics();
+  } else {
+    const band = weighted([['golden',0.35],['day',0.42],['twilight',0.12],['night',0.11]]);
+    P.mode = 'manual';
+    P.sunEl = +(band==='golden' ? rnd(-1,10) : band==='day' ? rnd(10,70) : band==='twilight' ? rnd(-8,-1) : rnd(-40,-15)).toFixed(1);
+    P.sunAz = +rnd(0,360).toFixed(1); P.moonAz = +rnd(0,360).toFixed(1); P.moonEl = +rnd(-20,70).toFixed(1);
+    P.surface = weighted([['grey',0.3],['grass',0.25],['drygrass',0.15],['sand',0.1],['soil',0.1],['snow',0.05],['concrete',0.05]]); }
   randomizeWeather(); }
 function afterBulk(){ dirtyLUT = true; computePhysics(); dirtyScene = true; lastChange = 0; syncUI(); $('#presets').querySelectorAll('.chip').forEach(c=>c.classList.remove('on')); setPresetName('Custom'); }
 
@@ -3123,7 +3249,7 @@ function buildPanel(){
   $('#tlPlay').onclick = togglePlay; $('#tlRender').onclick = renderSequence; $('#tlCancel').onclick = cancelFinal;
 }
 function syncResSeg(){ const g = document.getElementById('resSeg'); if (g) g.querySelectorAll('button').forEach(b => b.classList.toggle('on', Number(b.dataset.r) === P.previewRes)); }
-function syncUI(){ syncResSeg(); for (const k in ctrls){ const c=ctrls[k]; if (c.sync) c.sync(); if (c.it.show) c.row.hidden = !c.it.show(); } updateInfo(); drawMap(); renderSunTimes(); }
+function syncUI(){ syncResSeg(); if (typeof syncVariety === "function") syncVariety(); for (const k in ctrls){ const c=ctrls[k]; if (c.sync) c.sync(); if (c.it.show) c.row.hidden = !c.it.show(); } updateInfo(); drawMap(); renderSunTimes(); }
 function updateInfo(){
   updateClimInfo();
   { const hi = $('#hazeInfo'); if (hi) hi.innerHTML = 'How much haze and light the air adds between the camera and anything in the shot, by direction and distance (10 m to 100 km), matching this sky. Comes with a BlinkScript node that applies it from a world-position pass. <i>Placeholder for the pipeline: the lookup is general, but the node is written for stock Nuke and would need adapting to the studio\'s own volume node.</i>';
@@ -3257,6 +3383,8 @@ $('#exSlider').oninput = e => { view.expoComp = Number(e.target.value); exLabel(
 $('#randAll').onclick = () => randomizeAll();
 $('#resSeg').querySelectorAll('button').forEach(b => b.onclick = () => { P.previewRes = Number(b.dataset.r); changed(false, true); syncUI(); });
 $('#randWx').onclick = () => randomizeWeather();
+$('#variety').oninput = e => { P.variety = Number(e.target.value); $('#varVal').textContent = varietyName(P.variety); };
+function syncVariety(){ const el = $('#variety'); if (el){ el.value = P.variety; $('#varVal').textContent = varietyName(P.variety); } }
 function exLabel(){ $('#exVal').textContent = view.auto ? `${view.expoComp>=0?'+':'−'}${Math.abs(view.expoComp).toFixed(1)} EV` : `EV₁₀₀ ${view.expoComp.toFixed(1)}`; }
 let drag = null;
 function dirAtPointer(e){ const r = canvas.getBoundingClientRect(); const dpr = canvas.width/r.width; const x = (e.clientX-r.left)*dpr, y = (r.height-(e.clientY-r.top))*dpr;
