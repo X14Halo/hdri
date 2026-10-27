@@ -745,13 +745,13 @@ float hgP(float c, float g){ float g2 = g*g; return (1.0 - g2)/(4.0*PI*pow(max(1
 // (1 + k·τb)/(1 + k·(τa + τb)), k = 0.75(1−g) ≈ 0.105 for cloud droplets. At the lit face it is 1; at the far face it is the
 // slab's diffuse transmission 1/(1 + k·τ). This is why overcast decks with τ ≈ 10–40 still pass 20–50 % of the daylight.
 float slab(float ta, float tb){ return (1.0 + 0.105*tb)/(1.0 + 0.105*(ta + tb)); }
-float octaves(float tau, float c, float p0, float tb){
+float octaves(float tau, float c, float p0, float tb, float mu){
   float s = p0*exp(-tau) + 0.5*exp(-0.5*tau)*hgP(c, 0.43) + 0.25*exp(-0.25*tau)*hgP(c, 0.215);
   // multiply-scattered field: two-stream solution for a conservative slab (cloud droplets absorb almost nothing),
   // light entering through optical depth τa with τb more cloud behind the point — see slab()
-  return s + 0.75/PI*(1.0 - 0.4*exp(-2.0*tau))*slab(tau, tb); }
+  return s + 0.75/PI*(1.0 - 0.4*exp(-2.0*tau))*slab(tau, tb)*mu; }
 // optical depth along a straight path (cheap density, doubling steps) — how deep inside the cloud a point sits
-float pathTau(vec3 p, vec3 dir, float lod, float ds, int n){ float tau = 0.0, s = 0.0;
+float pathTau(vec3 p, vec3 dir, float lod, float ds, int n){ float tau = 0.0, s = 0.0, conn = 1.0;
   // march all the way to the edge of the cloud layer (doubling steps, the last one stretched to the edge): a deep storm column
   // has to count all of its water, or its base would look as bright as a thin deck's
   vec3 upP = normalize(p - C0); float h0 = length(p - C0) - Rg, mu = dot(upP, dir);
@@ -759,7 +759,11 @@ float pathTau(vec3 p, vec3 dir, float lod, float ds, int n){ float tau = 0.0, s 
   ds = min(ds, sMax/(exp2(float(n)) - 1.0));
   for (int k=0;k<n+uZero;k++){ if (s >= sMax) break; float d = k == n-1 ? sMax - s : min(ds, sMax - s);
     vec3 q = p + dir*(s + d*0.5); float hq = length(q-C0) - Rg;
-    tau += cloudDensity(q, hq, false, max(lod, log2(d/(0.0625*uCScale))))*d; s += d; ds *= 2.0; }
+    // only this cloud counts: past a clear stretch of a few hundred metres the path has left it. A low sun's "away" path is
+    // nearly horizontal and ran through other towers kilometres away, which made every tower look backed by solid cloud,
+    // so all of it was lit almost evenly (bright and flat, no shaded side)
+    float dq = cloudDensity(q, hq, false, max(lod, log2(d/(0.0625*uCScale))));
+    conn *= mix(1.0, smoothstep(0.0, 0.025*uCDens, dq), smoothstep(0.12, 0.3, d)); tau += dq*d*conn; s += d; ds *= 2.0; }
   return tau; }
 void main(){
   vec2 px = pixelCoord(); vec3 rd = uOverride==1 ? uOvDir : dirFromPixel(px);
@@ -810,8 +814,20 @@ void main(){
               tq[j] = pathTau(p, dj, lod + 1.0, j == 0 || j == 3 ? 0.07 : 0.06, j == 0 ? 6 : (j == 3 || j == 4 ? 5 : 4)); }
             float tU = tq[0], tS = tq[1], tB = tq[2];
             float tBL = awayOn ? mix(tq[4], tB, smoothstep(0.5, 0.85, LA.y)) : tB;
+            // the face the light enters through: light diffusing into a thick cloud is the flux crossing its surface, E·cos(θ)
+            // — a face turned away from the sun takes in less, so a tower shades like a solid (before, every lit face got
+            // the full flux of one squarely facing the sun, and the whole tower came out evenly bright and flat). The surface
+            // direction comes from the smoothed density around the point (four samples, ~100 m apart, in one loop)
+            float hg = clamp(1.2*dt, 0.12*uCScale, 1.5); vec3 gsum = vec3(0.0); float fsum = 0.0;
+            for (int j=0; j<4+uZero; j++){ vec3 o = j == 0 ? vec3(1.0,1.0,1.0) : (j == 1 ? vec3(1.0,-1.0,-1.0) : (j == 2 ? vec3(-1.0,1.0,-1.0) : vec3(-1.0,-1.0,1.0)));
+              vec3 q = p + o*hg; float fq = cloudDensity(q, length(q - C0) - Rg, false, lod + 1.6); gsum += o*fq; fsum += fq; }
+            float conf = smoothstep(0.12, 0.5, length(gsum)/max(fsum, 1e-4)); vec3 nrm = -gsum/max(length(gsum), 1e-6);
             for (int c = uSunOn > 0.5 ? 0 : 1; c < (uMoonOn > 0.5 ? 2 : 1); c++){
-              float o = sS*octaves(lightTau(p, c == 0 ? uSunDir : uMoonDir, lod, lj, c), c == 0 ? cS : cM, c == 0 ? pS : pM, (c == 0) == (uSunOn > 0.5) ? tBL : tB);
+              vec3 Lc = c == 0 ? uSunDir : uMoonDir; float ta = lightTau(p, Lc, lod, lj, c);
+              // only on faces turned toward the light (light reaching a face turned away has crossed the body, which the
+              // long path toward the light already dims; this also leaves the undersides of decks alone)
+              float dn = dot(nrm, Lc); float mu = mix(1.0, max(dn, 0.15), conf*smoothstep(-0.05, 0.15, dn));
+              float o = sS*octaves(ta, c == 0 ? cS : cM, c == 0 ? pS : pM, (c == 0) == (uSunOn > 0.5) ? tBL : tB, mu);
               if (c == 0) Ss = o; else Sm = o; }
             // skylight: a uniform part entering through the top and the sides, and a directional part from the brightest
             // region of the sky (the twilight glow, the bright sky around the sun) that lights one side of a cloud more.
