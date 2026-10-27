@@ -740,7 +740,11 @@ float lightTau(vec3 p, vec3 L, float lod, float jit, int ch){ float tau=0.0, s=0
   vec3 a = normalize(cross(L, abs(L.y) < 0.95 ? vec3(0.0,1.0,0.0) : vec3(1.0,0.0,0.0))); vec3 b = cross(L, a);
   // low sun: the shadow map only covers sun elevations above ~1°, so march on to ~20 km instead (a tower lit at sunset
   // must be shadowed by its own far side and by the clouds between it and the sun)
-  int nL = L.y < 0.12 ? 9 : 6;
+  // ...and through a tall cloud, march until the path is above the cloud tops: past the march, the rest comes from the shadow
+  // map, whose column is the whole layer along the light (it counted the tower behind the point as if it lay toward the sun,
+  // which put sunlit faces of tall towers in deep shadow)
+  float upL = max(L.y, 0.02); int nTop = int(ceil(log2(max((uCTop - (length(p - C0) - Rg))/upL/0.04 + 1.0, 1.0))));
+  int nL = clamp(max(L.y < 0.12 ? 9 : 6, nTop), 6, 10);
   for (int k=0;k<nL+uZero;k++){ float jk = fract(jit + float(k)*0.7548777); float ang = (float(k) + jit)*2.39996; vec3 off = (a*cos(ang) + b*sin(ang))*(s + ds)*(k < 6 ? 0.08 : 0.03);
     vec3 q=p+L*(s+ds*jk)+off; float hq=length(q-C0)-Rg; float lk = max(lod, log2(ds/(0.0625*uCScale)));
     tau += cloudDensity(q,hq,k<4,lk)*ds; s+=ds; ds*=2.0; }
@@ -753,24 +757,30 @@ float hgP(float c, float g){ float g2 = g*g; return (1.0 - g2)/(4.0*PI*pow(max(1
 // (1 + k·τb)/(1 + k·(τa + τb)), k = 0.75(1−g) ≈ 0.105 for cloud droplets. At the lit face it is 1; at the far face it is the
 // slab's diffuse transmission 1/(1 + k·τ). This is why overcast decks with τ ≈ 10–40 still pass 20–50 % of the daylight.
 float slab(float ta, float tb){ return (1.0 + 0.105*tb)/(1.0 + 0.105*(ta + tb)); }
-float octaves(float tau, float c, float p0, float tb, float mu){
+float octaves(float tau, float c, float p0, float tb, float mu, float leak){
   float s = p0*exp(-tau) + 0.5*exp(-0.5*tau)*hgP(c, 0.43) + 0.25*exp(-0.25*tau)*hgP(c, 0.215);
   // multiply-scattered field: two-stream solution for a conservative slab (cloud droplets absorb almost nothing),
   // light entering through optical depth τa with τb more cloud behind the point — see slab()
-  return s + 0.75/PI*(1.0 - 0.4*exp(-2.0*tau))*slab(tau, tb)*mu; }
+  return s + 0.75/PI*(1.0 - 0.4*exp(-2.0*tau))*slab(tau, tb)*mu*leak; }
 // optical depth along a straight path (cheap density, doubling steps) — how deep inside the cloud a point sits
-float pathTau(vec3 p, vec3 dir, float lod, float ds, int n, float cap){ float tau = 0.0, s = 0.0, conn = 1.0;
+float pathTau(vec3 p, vec3 dir, float lod, float ds, int n, float cap, float jit){ float tau = 0.0, s = 0.0, conn = 1.0;
   // march all the way to the edge of the cloud layer (doubling steps, the last one stretched to the edge): a deep storm column
   // has to count all of its water, or its base would look as bright as a thin deck's
   vec3 upP = normalize(p - C0); float h0 = length(p - C0) - Rg, mu = dot(upP, dir);
   float sMax = mu > 0.02 ? (uCTop - h0)/mu : (mu < -0.02 ? (h0 - uCBot)/(-mu) : 14.0*uCScale); sMax = min(sMax, cap*uCScale);
   ds = min(ds, sMax/(exp2(float(n)) - 1.0));
   for (int k=0;k<n+uZero;k++){ if (s >= sMax) break; float d = k == n-1 ? sMax - s : min(ds, sMax - s);
-    vec3 q = p + dir*(s + d*0.5); float hq = length(q-C0) - Rg;
-    // only this cloud counts: past a clear stretch of a few hundred metres the path has left it. A low sun's "away" path is
-    // nearly horizontal and ran through other towers kilometres away, which made every tower look backed by solid cloud,
-    // so all of it was lit almost evenly (bright and flat, no shaded side)
-    float dq = cloudDensity(q, hq, false, max(lod, log2(d/(0.0625*uCScale))));
+    // the last step is stretched to the edge of the layer and can be kilometres long: one sample at its middle either hit a
+    // cloud or missed it, which switched the depth (and the light) abruptly between neighbouring pixels and drew hard lines
+    // across clouds. It now takes the mean of three samples spread along the step, and every sample sits at a jittered spot.
+    int m = k == n-1 && d > 0.3 ? 3 : 1; float dq = 0.0;
+    for (int j=0;j<3+uZero;j++){ if (j >= m) break;
+      vec3 q = p + dir*(s + d*(float(j) + fract(jit + float(k)*0.618034 + float(j)*0.381966))/float(m)); float hq = length(q-C0) - Rg;
+      // only this cloud counts: past a clear stretch of a few hundred metres the path has left it. A low sun's "away" path is
+      // nearly horizontal and ran through other towers kilometres away, which made every tower look backed by solid cloud,
+      // so all of it was lit almost evenly (bright and flat, no shaded side)
+      dq += cloudDensity(q, hq, false, max(lod, log2(d/(float(m)*0.0625*uCScale)))); }
+    dq /= float(m);
     conn *= mix(1.0, smoothstep(0.0, 0.025*uCDens, dq), smoothstep(0.12, 0.3, d)); tau += dq*d*conn; s += d; ds *= 2.0; }
   return tau; }
 void main(){
@@ -822,8 +832,9 @@ void main(){
             for (int j=0; j<6+uZero; j++){
               if (j == 3 && uSkyKeyF <= 0.05) continue; if (j == 4 && !awayOn) continue;
               vec3 dj = j == 0 ? up : (j == 1 ? normalize(vec3(sh0.x, 0.05, sh0.y)) : (j == 2 ? -up : (j == 3 ? uSkyKeyDir : (j == 4 ? -LA : normalize(vec3(-sh0.y, 0.05, sh0.x))))));
-              tq[j] = pathTau(p, dj, lod + 1.0, j == 0 || j == 3 ? 0.07 : 0.06, j == 0 ? 6 : (j == 3 || j == 4 ? 5 : 4), j == 1 || j == 5 ? 5.0 : 14.0); }
+              tq[j] = pathTau(p, dj, lod + 1.0, j == 0 || j == 3 ? 0.07 : 0.06, j == 0 ? 6 : (j == 3 || j == 4 ? 5 : 4), j == 1 || j == 5 ? 5.0 : 14.0, fract(lj + float(j)*0.27)); }
             float tU = tq[0], tS = 0.5*(tq[1] + tq[5]), tB = tq[2];
+            float Wsd = tq[1] + tq[5] + min(tU, tB);   // optical size of the body around the point (sideways, and the thinner way vertically)
             float tBL = awayOn ? mix(tq[4], tB, smoothstep(0.5, 0.85, LA.y)) : tB;
             // the face the light enters through: light diffusing into a thick cloud is the flux crossing its surface, E·cos(θ)
             // — a face turned away from the sun takes in less, so a tower shades like a solid (before, every lit face got
@@ -835,10 +846,17 @@ void main(){
             float conf = smoothstep(0.12, 0.5, length(gsum)/max(fsum, 1e-4)); vec3 nrm = -gsum/max(length(gsum), 1e-6);
             for (int c = uSunOn > 0.5 ? 0 : 1; c < (uMoonOn > 0.5 ? 2 : 1); c++){
               vec3 Lc = c == 0 ? uSunDir : uMoonDir; float ta = lightTau(p, Lc, lod, lj, c);
-              // only on faces turned toward the light (light reaching a face turned away has crossed the body, which the
-              // long path toward the light already dims; this also leaves the undersides of decks alone)
-              float dn = dot(nrm, Lc); float mu = mix(1.0, max(dn, 0.15), conf*smoothstep(-0.05, 0.15, dn));
-              float o = sS*octaves(ta, c == 0 ? cS : cM, c == 0 ? pS : pM, (c == 0) == (uSunOn > 0.5) ? tBL : tB, mu);
+              // only where the light got in through this nearby face, i.e. its path inside the cloud is short (light reaching a
+              // point through the body has crossed some other face, which the long path toward the light already dims; this also
+              // leaves the undersides of decks alone). Weighting by that path keeps it continuous: switching it on and off by the
+              // face's angle drew a hard line along every place where a surface turned from the light
+              float dn = dot(nrm, Lc); float mu = mix(1.0, clamp(dn, 0.15, 1.0), conf*exp(-0.25*ta));
+              // a finite cloud loses diffusing light out of its sides: the two-stream slab assumes a deck that goes on forever,
+              // which lit the far, shaded side of a cumulus almost as well as its sunny side (pale, flat clouds). Diffusion across
+              // a body of optical half-width W decays like its lowest mode, e^(−(π/2)·τ/(W + 2·0.71/(1−g))) — negligible for decks,
+              // a stop or more of shading through the core of a heap cloud
+              float leak = exp(-1.5708*max(ta - 3.0, 0.0)/(Wsd + 10.0));   // (the first few optical depths below the lit face are not affected)
+              float o = sS*octaves(ta, c == 0 ? cS : cM, c == 0 ? pS : pM, (c == 0) == (uSunOn > 0.5) ? tBL : tB, mu, leak);
               if (c == 0) Ss = o; else Sm = o; }
             // skylight: a uniform part entering through the top and the sides, and a directional part from the brightest
             // region of the sky (the twilight glow, the bright sky around the sun) that lights one side of a cloud more.
@@ -897,6 +915,42 @@ float terrainShadow(vec3 p, vec3 L){
     if (hq > uMt0.z) break; if (r > uMt0.y && dot(q.xz, L.xz) > 0.0) break;
     res = min(res, clamp((hq - terrH(q.xz, 1.0))/(s*0.0093) + 0.5, 0.0, 1.0)); if (res <= 0.0) break; s *= 1.2; }
   return res; }
+/* ----- distant tree lines: belts of woodland and hedgerow on the flat ground, each at a distance that wanders with azimuth.
+   A view ray keeps one azimuth, so each belt is a curtain at one distance with a crown-shaped top edge ----- */
+uniform vec4 uTr0; uniform vec4 uTr1;   // (on, tree height km, nearest km, farthest km) (coverage, shape 0 broadleaf..1 conifer, seed, —)
+float trHash(float a, float b){ return fract(sin(a*127.1 + b*311.7)*43758.5453); }
+// top of belt k's canopy above the ground along unit horizontal direction cs; R = its distance (km)
+float treeTop(int k, vec2 cs, float az, out float R, out float side, out float rnd){
+  float fk = float(k), sd = uTr1.z*7.31 + fk*19.7, h = uTr0.y, sh = uTr1.y;
+  R = mix(uTr0.z, uTr0.w, (fk + 0.5)/3.0)*exp(0.3*tnoise(cs*1.3 + sd));
+  // woods, copses and hedgerows with open fields between them (features ~250 m and ~80 m long)
+  float gp = 0.65*tnoise(cs*(R/0.25) + sd) + 0.35*tnoise(cs*(R/0.08) + sd*1.7);
+  float thr = mix(0.55, -0.75, uTr1.x) + 0.15*fk;
+  float e = smoothstep(thr, thr + 0.12, gp); if (e <= 0.0){ side = 0.0; rnd = 0.0; return -1.0; }
+  float hk = h*(0.8 + 0.4*(0.5 + 0.5*tnoise(cs*(R/0.06) + sd*2.3)))*(0.35 + 0.65*e);
+  // clumps of trees (groups of crowns that rise and fall together) and the crowns themselves: a whole number of each around
+  // the circle (no seam), every crown with its own size and place, neighbours overlapping into one canopy
+  float az01 = az/6.2831853 + 0.5;
+  float Nc = max(floor(6.2831853*R/(h*6.0)), 3.0); float cu = az01*Nc; float cf = fract(cu), cj = floor(cu);
+  float clump = mix(0.68 + 0.32*trHash(cj, sd + 7.7), 0.68 + 0.32*trHash(cj + 1.0, sd + 7.7), smoothstep(0.0, 1.0, cf));
+  float cw = h*mix(1.0, 0.42, sh); float N = max(floor(6.2831853*R/cw), 3.0); float u = az01*N;
+  float ci = floor(u), best = 0.0; side = 0.0; rnd = 0.0;
+  for (int j=-1;j<=1+uZero;j++){ float c = ci + float(j); float r1 = trHash(c, sd), r2 = trHash(c + 0.37, sd + 3.1);
+    float x = (u - (c + 0.5 + 0.45*(r1 - 0.5)))/(0.75 + 0.6*r2);
+    float pr = mix(sqrt(max(1.0 - 4.0*x*x, 0.0)), pow(max(1.0 - 2.0*abs(x), 0.0), 1.2), sh)*(0.62 + 0.38*r2);
+    if (pr > best){ best = pr; side = clamp(-2.0*x, -1.0, 1.0); rnd = r1; } }
+  return hk*clump*(mix(0.8, 0.5, sh) + mix(0.2, 0.5, sh)*best); }
+// nearest tree-line hit along a view ray (km along the ray), or −1; info = (height in the canopy 0..1, crown side −1..1, random, conifer)
+float treeHit(vec3 ro, vec3 rd, float tLimit, out vec4 info){
+  info = vec4(0.0); if (uTr0.x < 0.5) return -1.0;
+  float ch = length(rd.xz); if (ch < 1e-4) return -1.0; float tanE = rd.y/ch;
+  if (tanE > (uTr0.y*1.6 - ro.y)/(uTr0.z*0.7)) return -1.0;   // above the tallest tree of the nearest belt
+  vec2 cs = rd.xz/ch; float az = atan(rd.x, rd.z); float best = 1e9;
+  for (int k=0;k<3+uZero;k++){ float R, side, rnd; float top = treeTop(k, cs, az, R, side, rnd);
+    if (top <= 0.0 || R >= best || R > tLimit*ch) continue;
+    float y = ro.y + R*tanE - R*R/(2.0*Rg);   // ray height above the local ground there
+    if (y < top && y > -0.002){ best = R; info = vec4(clamp(y/top, 0.0, 1.0), side, rnd, uTr1.y); } }
+  return best < 1e8 ? best/ch : -1.0; }
 `;
 const FS_COMP = HDR + ATM + LIGHTS + PIXEL + `
 uniform int uZero;   // always 0: added to loop bounds so the Direct3D compiler cannot unroll big loops (unrolled, this shader took minutes to compile and froze Chrome)
@@ -1052,6 +1106,7 @@ void main(){
   // haze lookup (modes 3, 4): only the air between the camera and a point uSegT km away — no clouds, ground or sky behind it
   bool seg = uOutMode == 3 || uOutMode == 4; if (seg) tEnd = min(tEnd, uSegT);
   float tMt = -1.0; if (uMt0.w > 0.5 && !seg){ tMt = terrainHit(ro, rd, hitG ? gN : 1e9); if (tMt > 0.0) tEnd = tMt; }
+  vec4 trI; float tTr = seg ? -1.0 : treeHit(ro, rd, tMt > 0.0 ? tMt : (hitG ? gN : 1e9), trI); if (tTr > 0.0){ tEnd = tTr; tMt = -1.0; }
   // collect cloud layers along the ray: 0 = volume (cloud pass), 1 = cirrus sheet, 2 = mid sheet
   float lt[3]; float lT[3]; float ltau[3]; int lk[3]; int n = 0;
   for (int i=0;i<3;i++){ lt[i]=tEnd; lT[i]=1.0; ltau[i]=0.0; lk[i]=-1; }
@@ -1157,21 +1212,40 @@ void main(){
   }
   // background: ground or space (sun, moon, stars, Milky Way, airglow)
   vec4 bg[NG]; for (int g=0; g<NG+uZero; g++) bg[g]=vec4(0.0); bool starSky = false;
-  if (seg){ } else if (tMt > 0.0){
+  if (seg){ } else if (tTr > 0.0){
+    // tree line: rounded (or pointed) crowns face up at the top and along the belt at their sides; the lower canopy sits in
+    // the shade of the crowns, so a belt reads as a dark band with lit tops, under the same sun, sky and cloud shadows
+    vec3 pt = ro + rd*tTr; float yf = trI.x;
+    vec3 toC = normalize(vec3(-rd.x, 0.0, -rd.z)); vec3 tg = vec3(toC.z, 0.0, -toC.x);
+    vec3 n = normalize(toC*(1.0 - 0.55*yf*yf) + vec3(0.0, 0.2 + 1.1*yf*yf, 0.0) + tg*trI.y*0.15*yf);
+    vec3 upT = normalize(pt - C0); float muS = dot(upT, Ls), muM = dot(upT, Lm);
+    float hT = max(yf*uTr0.y, 0.0);
+    float shS = uSunOn > 0.5 ? cloudShadow(pt, hT, Ls, 0)*(sheets ? sheetT(pt, hT, Ls) : 1.0) : 0.0;
+    float shM = uMoonOn > 0.5 ? cloudShadow(pt, hT, Lm, 1)*(sheets ? sheetT(pt, hT, Lm) : 1.0) : 0.0;
+    float inner = 0.45 + 0.55*yf;
+    float cS = max(dot(n, Ls), 0.0)*inner + 0.06*max(-dot(toC, Ls), 0.0)*yf, cM = max(dot(n, Lm), 0.0)*inner;   // + light through the leaves when backlit
+    for (int g=0; g<NG+uZero; g++){
+      vec4 alb = uMtVeg[g]*mix(1.0, 0.65, trI.w)*(0.9 + 0.2*trI.z);
+      vec4 E = ambE(g, 0.0)*(0.25 + 0.55*max(n.y, 0.0))*inner + uAlb[g]*uEground[g]*0.12;
+      if (uSunOn > 0.5) E += uSunE[g]*transmittance(g, Rg + hT, muS)*cS*shS;
+      if (uMoonOn > 0.5) E += uMoonE[g]*transmittance(g, Rg + hT, muM)*cM*shM;
+      bg[g] = uLw0.w*alb*E/PI; }
+  } else if (tMt > 0.0){
     // mountains: lit by the same sun, sky and ground light as everything else, shadowed by themselves and the clouds
     vec3 pt = ro + rd*tMt; float ht = terrH(pt.xz, 0.0); float fpx = tMt*uPixAng;
     float e = max(0.03, fpx*1.5); vec2 ex = vec2(e, 0.0), ez = vec2(0.0, e);
     vec3 n0 = normalize(vec3(-(terrH(pt.xz + ex, 0.0) - terrH(pt.xz - ex, 0.0))/(2.0*e), 1.0, -(terrH(pt.xz + ez, 0.0) - terrH(pt.xz - ez, 0.0))/(2.0*e)));
     vec3 n = n0;
     // relief finer than the height map (scree, ledges, gullies), fading out once it is smaller than a pixel
-    float a1 = (0.25 + 0.5*uMt2.x)*(1.0 - smoothstep(0.03, 0.15, fpx));
+    float a1 = (0.1 + 0.25*uMt2.x)*(1.0 - smoothstep(0.03, 0.15, fpx));
     if (a1 > 0.0){ const float s1 = 0.06, dd = 0.015; vec2 q1 = pt.xz/s1;
       vec2 g = vec2(tFbm(q1 + vec2(dd, 0.0), 0.55, 3) - tFbm(q1 - vec2(dd, 0.0), 0.55, 3), tFbm(q1 + vec2(0.0, dd), 0.55, 3) - tFbm(q1 - vec2(0.0, dd), 0.55, 3))/(2.0*dd);
       n = normalize(n + vec3(-g.x, 0.0, -g.y)*a1*0.6*clamp(1.0 - 2.0*(1.0 - n0.y), 0.3, 1.0)); }
     float slope = 1.0 - n0.y;
     float nz = tFbm(pt.xz/0.7 + 2.0, 0.5, 3), nz2 = tFbm(pt.xz/0.18 + 5.0, 0.5, 2);
     // snow above the snow line (lower on slopes facing away from the sun's side of the sky), sliding off steep faces
-    float snow = smoothstep(-0.08, 0.08, ht + 0.35*nz + 0.15*n0.z*uMt2.y - uMt1.x)*(1.0 - smoothstep(0.6, 0.85, slope + 0.15*nz2));
+    float hs = clamp(uMt0.z/2.0, 0.06, 1.0);   // snow-line raggedness scales with the size of the hills
+    float snow = smoothstep(-0.08*hs, 0.08*hs, ht + (0.35*nz + 0.15*n0.z*uMt2.y)*hs - uMt1.x)*(1.0 - smoothstep(0.6, 0.85, slope + 0.15*nz2));
     // vegetation below the tree line, on slopes gentle enough to hold soil
     float veg = uMt1.z*(1.0 - smoothstep(-0.1, 0.1, ht + 0.3*nz2 - uMt1.y))*(1.0 - smoothstep(0.3, 0.55, slope + 0.12*nz2));
     float rockVar = (0.7 + 0.6*(0.5 + 0.5*nz2))*(0.92 + 0.16*tnoise(vec2(ht*30.0 + 2.0*nz, 0.37)));   // patchiness and faint strata
@@ -1262,7 +1336,7 @@ void main(){
   else if (uOutMode == 5) res = vec4(vec3(1.0 - w), 1.0);   // cloud matte: 1 − light getting through all cloud layers
   else if (uOutMode == 4){ vec3 t = vec3(0.0); for (int g=0; g<NG+uZero; g++){ vec4 tw = w*T[g]; t += vec3(dot(tw,uCMFx[g]), dot(tw,uCMFy[g]), dot(tw,uCMFz[g])); } res = vec4(t, 1.0); }
   else if (uOutMode == 1) res = L[uOutG];
-  else res = tMt > 0.0 ? vec4(0.0) : w*T[uOutG];   // (a mountain in the way blocks the sun completely)
+  else res = tMt > 0.0 || tTr > 0.0 ? vec4(0.0) : w*T[uOutG];   // (a hill or tree line in the way blocks the sun completely)
   if (any(isnan(res)) || any(isinf(res))) res = vec4(0.0);
   o = res; }`;
 
@@ -1547,7 +1621,7 @@ const DEFAULTS = {
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
   tlStart:'19:00', tlEnd:'21:30', tlFrames:120, tlWind:20, tlWindDir:250, tlEvolve:0.6, tlFormat:'png', tlRes:1024, tlSpp:2, tlExpo:'auto',
-  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:14, mtnDepth:40, mtnHeight:2.8, mtnCover:0.55, mtnDir:0, mtnRidge:0.7, mtnRough:0.55, mtnSeed:3, mtnSnow:2.2, mtnTree:1.3, mtnVeg:0.6, mtnRock:'granite', ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
+  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
 };
 const P = structuredClone(DEFAULTS);
 const G = {};      // shared uniform values
@@ -1924,6 +1998,9 @@ function frame(){
       if (view.mode === 3){ renderLookdev(); setStatus(`Look-dev · ${ldN} samples`); }
     }
     display();
+    // the frame's GPU work went through: a page closed from here on did not crash (before, closing the tab while a preview was
+    // still refining left "measuring sky light" as the last entry, so every next launch reported a crash and went to safe mode)
+    if (LAST_STAGE !== 'running' && !finalJob && !TL.rendering) BOOT.stage('running');
   } catch(e){ console.error(e); setStatus('Error: '+e.message); }
   requestAnimationFrame(frame);
 }
@@ -2084,6 +2161,11 @@ function applyScene(o){
   // scenes saved before a setting existed get its neutral value, not whatever is currently set
   if (!('siteAlt' in o.settings)) P.siteAlt = 0; if (!('climate' in o.settings)) P.climate = false;
   for (const k of Object.keys(o.settings)) if (k in DEFAULTS || k in P) P[k] = o.settings[k];
+  if (!('treeOn' in o.settings)) P.treeOn = false;
+  // scenes from before the mountains became distant hills: snow line (km) → snow amount, and sizes into the new ranges
+  if (o.settings.mtnSnow > 1.001 || o.settings.mtnHeight > 1.5){ const H = o.settings.mtnHeight || 1, sl = o.settings.mtnSnow;
+    P.mtnSnow = sl == null || sl >= 6.4 ? 0 : +clamp((1.02 - sl/H)/0.8, 0, 1).toFixed(2); P.mtnTree = 9; }
+  P.mtnHeight = clamp(P.mtnHeight, 0.05, 1.5); P.mtnDist = clamp(P.mtnDist, 2, 80); P.mtnDepth = clamp(P.mtnDepth, 4, 40);
   if (o.view){ for (const k of ['yaw','pitch','fov','auto','expoComp']) if (k in o.view) view[k] = o.view[k]; if (o.view.ld) view.ld = {...view.ld, ...o.view.ld}; }
   MASK.fill(0); MASKINFO.any = false; MASKINFO.add = [false,false,false];
   if (o.mask && o.mask.data && o.mask.w === MW && o.mask.h === MH){ const q = new Int8Array(bytesFromB64(o.mask.data).buffer); for (let i=0;i<Math.min(q.length, MASK.length);i++) MASK[i] = q[i]/127;
@@ -2448,7 +2530,10 @@ const lum = c => 0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2];
 function renderChecks(){
   const el = $('#ldcOut'); if (!el) return; if (!LDC){ el.innerHTML = '<div class="note">Press <b>Measure this sky</b> once the preview has finished.</div>'; return; }
   const face = P.ldcFace || 'sun', Ec = LDC.E[face]; const Eu = LDC.E.up, Es = LDC.E.sun, Ea = LDC.E.away;
-  const sw = chartRGB(Ec, 0.18/Math.max(lum(chartRGB(Ec, 1)[21]), 1e-12)).map((c, i) => { const t = agxJS(c[0], c[1], c[2]); const css = `rgb(${t.map(v=>Math.round(v*255)).join(',')})`;
+  // one exposure for all three facings (the brightest one's 18 % patch reads 18 %), so a chart turned into the shade reads darker
+  const gl3 = ['sun','away','up'].map(f => lum(chartRGB(LDC.E[f], 1)[21])); const kExp = 0.18/Math.max(Math.max(...gl3), 1e-12);
+  const relStops = Math.log2(Math.max(lum(chartRGB(Ec, 1)[21]), 1e-12)/Math.max(Math.max(...gl3), 1e-12));
+  const sw = chartRGB(Ec, kExp).map((c, i) => { const t = agxJS(c[0], c[1], c[2]); const css = `rgb(${t.map(v=>Math.round(v*255)).join(',')})`;
     const nits = chartRGB(Ec, 1)[i]; return `<div class="ldc-sw" style="background:${css}" title="${CHART_NAMES[i]} · ${nits.map(v=>sci(v)).join(' / ')} cd/m² (linear R/G/B)"></div>`; }).join('');
   const greyN = chartRGB(Ec, 1)[21]; const bal = greyN.map(v => v/Math.max(greyN[1], 1e-12));
   const stops = (a, b) => Math.log2(Math.max(lum(a), 1e-12)/Math.max(lum(b), 1e-12));
@@ -2457,7 +2542,7 @@ function renderChecks(){
   const dr = Math.log2(LDC.maxY/Math.max(LDC.p001, 1e-9));
   el.innerHTML = `
     <div class="ldc-grid">${sw}</div>
-    <div class="note">Chart ${faceName}, exposed so the 18 % patch reads 18 %. Neutral 5 measures <b class="mono">${sci(lum(greyN))} cd/m²</b>; its colour is R/G/B <b class="mono">${bal.map(v=>v.toFixed(3)).join(' : ')}</b> (white balance).</div>
+    <div class="note">Chart ${faceName}${relStops < -0.05 ? `, <b class="mono">${(-relStops).toFixed(1)} stops</b> darker than the brightest facing (all three share one exposure, set so the brightest one's 18 % patch reads 18 %)` : ', the brightest of the three facings, exposed so its 18 % patch reads 18 %'}. Neutral 5 measures <b class="mono">${sci(lum(greyN))} cd/m²</b>; its colour is R/G/B <b class="mono">${bal.map(v=>v.toFixed(3)).join(' : ')}</b> (white balance).</div>
     <div class="note">Sun side vs shadow side of a vertical card: <b class="mono">${stops(Es, Ea).toFixed(1)} stops</b> · top vs shadow side: <b class="mono">${stops(Eu, Ea).toFixed(1)} stops</b>.</div>
     <div class="note">${P.sunEl > -1 && (S.dni||0) > 0.02*(S.ghi||1) ? `Shadow softness: the light around the sun is <b class="mono">${(2*Math.max(LDC.r50, 0.2665)).toFixed(2)}°</b> across (half its energy within 8°), so shadows blur by about <b class="mono">${pen < 100 ? pen.toFixed(0) + ' mm' : (pen/10).toFixed(0) + ' cm'} per metre</b> between object and ground. The sun and its glow give <b class="mono">${Math.round(LDC.sunShare*100)}%</b> of the light on the ground.${LDC.includeSun ? '' : ' (The sun disc is off in the HDRI, so this counts only its glow.)'}` : (P.sunEl > -1 ? 'The sun is hidden: the light is soft and diffuse, with no hard shadows.' : 'The sun is down: no direct shadows.')}</div>
     <canvas class="ldc-hist" id="ldcHist" width="600" height="120" aria-label="Luminance histogram"></canvas>
@@ -2525,8 +2610,12 @@ void main(){ vec2 f = vec2(gl_FragCoord.x, gl_FragCoord.y + uRow0)/uTN; float az
   gl.deleteFramebuffer(f); gl.bindTexture(gl.TEXTURE_2D, T_TERRAIN); gl.generateMipmap(gl.TEXTURE_2D); bindTex(20, gl.TEXTURE_2D, T_TERRAIN); terrKey = key; }
 function terrUniforms(){
   const [rS, rE] = terrRange(); const spec = t => f32(LAM.map(l => lerpT(t, l)));
-  return { uMt0:[rS, rE, P.mtnHeight*1.15 + 0.05, P.mtnOn ? 1 : 0], uMt1:[P.mtnSnow, P.mtnTree, P.mtnVeg, P.mtnRidge], uMt2:[P.mtnRough, P.lat >= 0 || P.mode !== 'location' ? 1 : -1, 0, P.mtnSeed],
-    uMtRock:spec((ROCKS[P.mtnRock] || ROCKS.granite).t), uMtVeg:spec(FOREST), uMtSnow:spec(SURFACES.snow.t) }; }
+  return { uMt0:[rS, rE, P.mtnHeight*1.15 + 0.05, P.mtnOn ? 1 : 0], uMt1:[P.mtnSnow > 0.005 ? P.mtnHeight*(1.02 - 0.8*P.mtnSnow) : 99, 99, P.mtnVeg, P.mtnRidge], uMt2:[P.mtnRough, P.lat >= 0 || P.mode !== 'location' ? 1 : -1, 0, P.mtnSeed],
+    uMtRock:spec((ROCKS[P.mtnRock] || ROCKS.granite).t), uMtVeg:spec(FOREST), uMtSnow:spec(SURFACES.snow.t),
+    uTr0:[P.treeOn ? 1 : 0, P.treeH, Math.min(P.treeNear, P.treeFar), Math.max(P.treeNear, P.treeFar)], uTr1:[P.treeCov, P.treeShape, P.treeSeed, 0] }; }
+// how far the highest hills rise above the horizon as seen from the camera (the Earth's curvature hides the lower part)
+function hillAngle(){ const R = P.mtnDist + 0.4*P.mtnDepth, drop = R*R/(2*6360); return Math.atan2(P.mtnHeight - drop - P.camH, R)/D2R; }
+function treeAngle(){ return Math.atan2(P.treeH - P.camH, Math.min(P.treeNear, P.treeFar))/D2R; }
 /* ---------- light layers: the final render split by light source, for comp ----------
    Each layer is the same render with only one kind of light switched on (same samples, same clouds), so the layers add up
    to the beauty. Stored as half floats; a cloud matte (1 − light getting through all clouds) comes with them. */
@@ -2884,7 +2973,7 @@ function realWeather(kind, X){
   const set = o => { for (const k in o) P[k] = Array.isArray(o[k]) ? r2(rnd(o[k][0], o[k][1])) : o[k]; };
   const h = X.heat;
   const fairCu = () => set({ctype:[0.66 + 0.1*h, 0.7 + 0.1*h], cdm:[0.7,1.1], cscale:[0.5,0.8], cclump:[0.2,0.4], cbillow:[0.55 + 0.15*h, 0.7 + 0.15*h], cvar:[0.35,0.55],
-    cairy:[0.2,0.4], cbasevar:[0.25,0.45], cscud:[0.05,0.15], cerode:[0.5,0.7]});
+    cairy:[0.15,0.35], cbasevar:[0.25,0.45], cscud:[0.05,0.15], cerode:[0.3,0.5]});
   const stratoCu = () => set({ctype:[0.32,0.45], cdm:[0.9,1.2], cscale:[0.6,0.9], cclump:[0.3,0.5], cbillow:[0.6,0.8], cvar:[0.6,0.8], cairy:[0.3,0.5], cbasevar:[0.3,0.5], cscud:[0.1,0.3], cerode:[0.5,0.6]});
   if (kind === 'clear'){
     if (Math.random() < 0.4){ P.aod = +Math.max(0.02, P.aod*0.5).toFixed(3); rh(P.humidity - 15); }   // fresh air behind a cold front
@@ -3117,20 +3206,30 @@ const SECTIONS = [
     {k:'maskShow', label:'Show painted areas (green add, red erase)', type:'check', noScene:true},
     {type:'info', id:'paintInfo'},
   ]},
-  {title:'Mountains', items:[
-    {k:'mtnOn', label:'Mountains on the horizon', type:'check'},
-    {k:'mtnDist', label:'Distance to the range', min:4, max:120, log:true, fmt:v=>`${v.toFixed(v < 10 ? 1 : 0)} km`, show:()=>P.mtnOn},
-    {k:'mtnDepth', label:'Depth of the range', min:8, max:120, log:true, fmt:v=>`${v.toFixed(0)} km`, show:()=>P.mtnOn},
-    {k:'mtnHeight', label:'Peak height', min:0.2, max:6, step:0.05, fmt:v=>`${Math.round(v*1000)} m`, show:()=>P.mtnOn},
+  {title:'Distant hills', items:[
+    {k:'mtnOn', label:'Hills on the horizon', type:'check'},
+    {type:'info', id:'hillInfo', show:()=>P.mtnOn},
+    {k:'mtnDist', label:'Distance', min:2, max:80, log:true, fmt:v=>`${v.toFixed(0)} km`, show:()=>P.mtnOn},
+    {k:'mtnDepth', label:'Depth of the hills', min:4, max:40, log:true, fmt:v=>`${v.toFixed(0)} km`, show:()=>P.mtnOn},
+    {k:'mtnHeight', label:'Highest hilltop', min:0.05, max:1.5, log:true, fmt:v=>`${Math.round(v*1000)} m`, show:()=>P.mtnOn},
     {k:'mtnCover', label:'How much of the horizon', min:0.05, max:1, step:0.01, fmt:v=>v >= 0.999 ? 'all around' : `${Math.round(v*360)}°`, show:()=>P.mtnOn},
     {k:'mtnDir', label:'Centred on', min:0, max:359, step:1, fmt:v=>`${v}° ${['N','NE','E','SE','S','SW','W','NW'][Math.round(v/45)%8]}`, show:()=>P.mtnOn && P.mtnCover < 0.999},
-    {k:'mtnRidge', label:'Shape: rolling → sharp ridges', min:0, max:1, step:0.01, fmt:v=>v < 0.3 ? 'rolling' : v < 0.65 ? 'rugged' : 'alpine', show:()=>P.mtnOn},
+    {k:'mtnRidge', label:'Shape: rolling → ridged', min:0, max:1, step:0.01, fmt:v=>v < 0.3 ? 'rolling' : v < 0.65 ? 'hilly' : 'ridged', show:()=>P.mtnOn},
     {k:'mtnRough', label:'Roughness', min:0, max:1, step:0.01, fmt:v=>v.toFixed(2), show:()=>P.mtnOn},
-    {k:'mtnRock', label:'Rock', type:'select', opts:Object.entries(ROCKS).map(([k,v])=>[k,v.name]), show:()=>P.mtnOn},
-    {k:'mtnSnow', label:'Snow line', min:0.2, max:6.5, step:0.05, fmt:v=>v >= 6.4 ? 'no snow' : `${Math.round(v*1000)} m`, show:()=>P.mtnOn},
-    {k:'mtnTree', label:'Tree line', min:0, max:4, step:0.05, fmt:v=>`${Math.round(v*1000)} m`, show:()=>P.mtnOn},
     {k:'mtnVeg', label:'Forest cover', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`, show:()=>P.mtnOn},
-    {type:'buttons', btns:[['New range', ()=>{ P.mtnSeed = (P.mtnSeed*7919 + 17)%1009; changed(false); }]], show:()=>P.mtnOn},
+    {k:'mtnRock', label:'Bare ground', type:'select', opts:Object.entries(ROCKS).map(([k,v])=>[k,v.name]), show:()=>P.mtnOn && P.mtnVeg < 0.95},
+    {k:'mtnSnow', label:'Snow on the tops', min:0, max:1, step:0.01, fmt:v=>v < 0.005 ? 'none' : `${Math.round(v*100)}%`, show:()=>P.mtnOn},
+    {type:'buttons', btns:[['New hills', ()=>{ P.mtnSeed = (P.mtnSeed*7919 + 17)%1009; changed(false); }]], show:()=>P.mtnOn},
+  ]},
+  {title:'Tree lines', items:[
+    {k:'treeOn', label:'Distant tree lines', type:'check'},
+    {type:'info', id:'treeInfo', show:()=>P.treeOn},
+    {k:'treeNear', label:'Nearest belt', min:0.2, max:10, log:true, fmt:v=>v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(1)} km`, show:()=>P.treeOn},
+    {k:'treeFar', label:'Farthest belt', min:0.3, max:15, log:true, fmt:v=>v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(1)} km`, show:()=>P.treeOn},
+    {k:'treeH', label:'Tree height', min:0.005, max:0.04, step:0.001, fmt:v=>`${Math.round(v*1000)} m`, show:()=>P.treeOn},
+    {k:'treeCov', label:'Woods vs open fields', min:0, max:1, step:0.01, fmt:v=>v < 0.25 ? 'scattered' : v < 0.6 ? 'patchy' : v < 0.9 ? 'mostly wooded' : 'continuous', show:()=>P.treeOn},
+    {k:'treeShape', label:'Broadleaf → conifer', min:0, max:1, step:0.01, fmt:v=>v < 0.3 ? 'broadleaf' : v < 0.7 ? 'mixed' : 'conifer', show:()=>P.treeOn},
+    {type:'buttons', btns:[['New tree lines', ()=>{ P.treeSeed = (P.treeSeed*7919 + 29)%1013; changed(false); }]], show:()=>P.treeOn},
   ]},
   {title:'Ground', items:[
     {k:'surface', label:'Surface', type:'select', opts:Object.entries(SURFACES).map(([k,v])=>[k,v.name])},
@@ -3178,16 +3277,15 @@ const SECTIONS = [
     {k:'wipePos', label:'Wipe position (A left, live right)', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`, noScene:true, show:()=>P.wipeOn},
     {type:'info', id:'ldcOut'},
   ]},
-  {title:'Cloud-shadow gobo', items:[
+  {title:'Cloud-shadow gobo · placeholder', items:[
     {type:'info', id:'goboInfo'},
     {k:'goboMode', label:'Projection', type:'select', opts:[['sun','Sun-aligned · gobo on the sun light'],['ground','Top-down · on the ground plane']], noScene:true},
     {k:'goboExt', label:'Area covered', min:50, max:20000, log:true, fmt:v=>v >= 1000 ? `${(v/1000).toFixed(v >= 10000 ? 0 : 1)} km` : `${Math.round(v)} m`, noScene:true},
     {k:'goboRes', label:'Resolution', type:'select', opts:[[512,'512'],[1024,'1024'],[2048,'2048'],[4096,'4096']], num:true, noScene:true},
-    {type:'buttons', btns:[['Export gobo', ()=>exportGobo(false)], ['Export gobo sequence', ()=>exportGobo(true)]]},
+    {type:'buttons', btns:[['Export gobo', ()=>exportGobo(false)], ['Export gobo sequence', null, 'Temporarily disabled']]},
   ]},
-  {title:'Haze for comp', items:[
+  {title:'Haze for comp · placeholder', items:[
     {type:'info', id:'hazeInfo'},
-    {type:'buttons', btns:[['Export haze lookup + Nuke node', ()=>exportHaze()]]},
   ]},
   {title:'Studio light rig · placeholder', items:[
     {type:'info', id:'rigNote'},
@@ -3224,7 +3322,7 @@ function buildPanel(){
       else if (it.type==='date' || it.type==='time'){ const id='c_'+it.k; row.innerHTML = `<label for="${id}">${it.label}</label><input type="${it.type}" id="${id}">`; const x=row.querySelector('input'); x.oninput=()=>{ if (x.value){ P[it.k]=x.value; if (it.after) it.after(); changed(false, it.noScene); syncUI(); } }; c.sync=()=>{ if (document.activeElement !== x) x.value=P[it.k]; }; }
       else if (it.type==='tod'){ const id='c_tod'; row.innerHTML = `<label for="${id}">${it.label}</label><span class="val"></span><input type="range" id="${id}" min="0" max="1439" step="1">`; const x=row.querySelector('input'), v=row.querySelector('.val');
         x.oninput=()=>{ P.time = hhmm(Number(x.value)); changed(false); syncUI(); }; c.sync=()=>{ x.value=toMin(P.time); v.textContent=P.time; }; }
-      else if (it.type==='buttons'){ row.classList.add('full'); row.innerHTML='<div class="btns"></div>'; const b=row.firstChild; it.btns.forEach(([l,fn])=>{ const e=document.createElement('button'); e.className='btn'; e.textContent=l; e.onclick=fn; b.appendChild(e); }); }
+      else if (it.type==='buttons'){ row.classList.add('full'); row.innerHTML='<div class="btns"></div>'; const b=row.firstChild; it.btns.forEach(([l,fn,off])=>{ const e=document.createElement('button'); e.className='btn'; e.textContent=l; if (off){ e.disabled = true; e.title = off; } else e.onclick=fn; b.appendChild(e); }); }
       else if (it.type==='info'){ row.classList.add('full'); row.innerHTML = `<div class="note" id="${it.id}"></div>`; }
       else if (it.type==='map'){ row.classList.add('full'); row.innerHTML = `<div style="display:grid;gap:6px"><canvas class="map" id="worldMap" role="img" aria-label="World map. Click to choose the observer's location."></canvas><div class="note" id="mapInfo"></div></div>`;
         const cv = row.querySelector('canvas'); let down = false; cv.addEventListener('pointerdown', e=>{ down = true; cv.setPointerCapture(e.pointerId); mapPick(e); }); cv.addEventListener('pointermove', e=>{ if (down) mapPick(e); }); cv.addEventListener('pointerup', ()=>{ down = false; }); }
@@ -3252,12 +3350,12 @@ function syncResSeg(){ const g = document.getElementById('resSeg'); if (g) g.que
 function syncUI(){ syncResSeg(); if (typeof syncVariety === "function") syncVariety(); for (const k in ctrls){ const c=ctrls[k]; if (c.sync) c.sync(); if (c.it.show) c.row.hidden = !c.it.show(); } updateInfo(); drawMap(); renderSunTimes(); }
 function updateInfo(){
   updateClimInfo();
-  { const hi = $('#hazeInfo'); if (hi) hi.innerHTML = 'How much haze and light the air adds between the camera and anything in the shot, by direction and distance (10 m to 100 km), matching this sky. Comes with a BlinkScript node that applies it from a world-position pass. <i>Placeholder for the pipeline: the lookup is general, but the node is written for stock Nuke and would need adapting to the studio\'s own volume node.</i>';
+  { const hi = $('#hazeInfo'); if (hi) hi.innerHTML = 'Not active. The idea: export how much haze and light the air adds between the camera and anything in the shot, by direction and distance (10 m to 100 km), matching this sky, so comp can apply the same aerial perspective from a world-position pass. This would need to be built to work with the studio\'s own volume node.';
     const rn = $('#rigNote'); if (rn) rn.innerHTML = 'Not active. The HDRI is meant for the studio\'s own dome light, and the sun for its own light. What this could export later, and is easy to wire to those lights: the dome orientation, and the sun as a separate light with its exact direction, 0.53° size, colour and brightness (with and without clouds, for use with the cloud-shadow gobo).';
     renderChecks();
   const li = $('#layersInfo'); if (li) li.innerHTML = P.format === 'hdr' ? 'Light layers need OpenEXR: choose an EXR file format.' : P.outRes > 4096 ? 'Light layers are available up to 4K output (8K would need several GB of memory).' : `One EXR with the beauty (RGB) and ${LAYERS.length} layers that add up to it: ${LAYERS.map(L => `<b>${L.name}</b> (${L.what})`).join(', ')}; plus <b>cloud_matte</b> (how much the clouds block what is behind them). Layers use the chosen bit depth (with 16-bit half, very bright parts such as the sun clip in physical units). Rendering takes several times longer and needs more memory (about 0.8 GB at 4K, 32-bit).`;
   const cn = $('#camNote'); if (cn) cn.innerHTML = 'Not active. A shot camera would let you frame the sky through the real lens and aspect ratio, and place the sun relative to the shot (backlight, rim left or right, three-quarter, front) instead of by compass direction. It would also set the yaw that the haze node and the gobo need.'; }
-  { const gi = $('#goboInfo'); if (gi) gi.innerHTML = `Shadows of these clouds on the ground around the camera, as a texture for your sun light. ${Math.round(P.goboExt)} m across at ${P.goboRes} px is <b>${(P.goboExt/P.goboRes*100).toPrecision(2)} cm per pixel</b>. The sequence follows the timelapse settings (dates, frames, drift). Light the sun at its <i>without clouds</i> brightness (given in the .json) when you use it.`; }
+  { const gi = $('#goboInfo'); if (gi) gi.innerHTML = `<i>Placeholder for an idea:</i> turn this sky's clouds into a cucoloris image that attaches to the sun light, so cloud shadows sweep over the set the same way they do in the HDRI. A single export works as a test: ${Math.round(P.goboExt)} m across at ${P.goboRes} px is <b>${(P.goboExt/P.goboRes*100).toPrecision(2)} cm per pixel</b>; light the sun at its <i>without clouds</i> brightness (given in the .json) when you use it. Sequence export is temporarily disabled.`; }
   const ci = $('#celInfo'); if (ci){ const ph = S.illum!=null ? `${Math.round(S.illum*100)}% lit` : '';
     ci.innerHTML = `<span class="swatch" style="background:var(--sun)"></span>Sun <b class="mono">${P.sunEl.toFixed(1)}°</b> elev, <b class="mono">${P.sunAz.toFixed(1)}°</b> az<br><span class="swatch" style="background:var(--moon)"></span>Moon <b class="mono">${P.moonEl.toFixed(1)}°</b> elev, <b class="mono">${P.moonAz.toFixed(1)}°</b> az · ${ph} · phase angle ${S.phaseDeg!=null?S.phaseDeg.toFixed(0):'–'}°`; }
   const si = $('#sunInfo'); if (si) si.textContent = P.includeSun ? 'The sun disc is part of the HDRI, so it casts hard shadows and shows in reflections.' : 'Sun disc removed: the sky, clouds and haze are still lit by the sun, but the HDRI (and the look-dev set) has no hotspot or hard shadows. Downloads include a matching sun lamp (.json and a Blender script) for your own directional light.';
@@ -3269,6 +3367,8 @@ function updateInfo(){
     if (P.diurnal){ if (S.dawn > 0.15) d = ` · <b>dawn-like</b> air: shallow ${S.HM.toFixed(2)} km haze layer, humidity ${Math.round(S.RHp)}%` + (S.mistVis ? `, ground mist ${S.mistVis < 1 ? Math.round(S.mistVis*1000)+' m' : S.mistVis.toFixed(1)+' km'}` : '');
       else if (S.dusk > 0.15) d = ` · <b>dusk-like</b> air: deep ${S.HM.toFixed(2)} km mixed layer carrying the day's dust and haze`; }
     ai.innerHTML = `Meteorological visibility <b class="mono">${S.vis>=100?Math.round(S.vis):S.vis.toFixed(S.vis<1?2:1)} km</b> · effective AOD <b class="mono">${S.aodE.toFixed(3)}</b>${d}`; }
+  const hl = $('#hillInfo'); if (hl){ const an = hillAngle(); hl.innerHTML = an > 0.02 ? `The highest tops rise about <b class="mono">${an.toFixed(an < 1 ? 2 : 1)}°</b> above the horizon. At this distance haze turns them bluish and soft; the Earth's curvature hides their lower slopes.` : '<span style="color:var(--warn)">At this distance the Earth\'s curvature hides these hills below the horizon. Bring them closer or make them higher.</span>'; }
+  const tl = $('#treeInfo'); if (tl) tl.innerHTML = `Belts of woods and hedgerows on the flat ground between ${P.treeNear < 1 ? Math.round(Math.min(P.treeNear, P.treeFar)*1000)+' m' : Math.min(P.treeNear, P.treeFar).toFixed(1)+' km'} and ${Math.max(P.treeNear, P.treeFar).toFixed(1)} km away. The nearest rise about <b class="mono">${treeAngle().toFixed(2)}°</b> above the horizon.`;
   const pi = $('#paintInfo'); if (pi) pi.textContent = 'Drag on the panorama or in Look around to add or clear cloud. Paint is tied to sky direction, so it stays put while the sun, wind or weather change, and it is kept across presets until you clear it.';
   const li = $('#ldInfo'); if (li) li.textContent = 'The set is path traced with this sky as the only light. Sun and moon are sampled directly, so shadow edges keep their true 0.5° penumbra.';
 }
@@ -3294,7 +3394,7 @@ const BASEWX = {aerosol:'continental', aod:0.1, humidity:50, aerH:1.2, ozone:300
   midCov:0, midH:4.2, midTau:4, midType:0.7, midScale:1, ciCov:0, ciH:9, ciTau:0.35, ciRot:30, ciHalo:0};
 const PRESETS = [
   ['Clear noon', {sunEl:62, sunAz:180, aod:0.06, humidity:40}],
-  ['Fair-weather cumulus', {sunEl:46, sunAz:150, cov:0.3, ctype:0.72, cbase:1.2, cthick:1.8, cscale:0.65, cdm:0.7, cclump:0.25, cbillow:0.65, cvar:0.45, cairy:0.3, cbasevar:0.35, cscud:0.1, ciCov:0.12, clear:'sun'}],
+  ['Fair-weather cumulus', {sunEl:46, sunAz:150, cov:0.3, ctype:0.72, cbase:1.2, cthick:1.8, cscale:0.65, cdm:0.7, cclump:0.25, cbillow:0.65, cvar:0.45, cairy:0.25, cbasevar:0.35, cscud:0.1, cerode:0.42, ciCov:0.12, clear:'sun'}],
   ['Dawn', {sunEl:2.5, sunAz:72, aod:0.1, humidity:72, cov:0.06, ctype:0.4, cbase:1.8, cthick:0.8, ciCov:0.3, ciTau:0.25}],
   ['Golden hour', {sunEl:5.5, sunAz:285, aod:0.15, humidity:60, cov:0.18, ctype:0.6, cbase:1.6, ciCov:0.3}],
   ['Sunset', {sunEl:0.6, sunAz:292, aod:0.11, humidity:55, cov:0.1, ctype:0.55, cbase:2.4, cthick:1.2, ciCov:0.45, ciTau:0.3}],
@@ -3415,11 +3515,11 @@ function moonToTime(az, el){ const target = dirAzEl(az, el), t0 = utcMsFromInput
 // A/B wipe: grab the dividing line anywhere in the view and drag it
 let wipeDrag = false;
 const wipeActive = () => P.wipeOn && T_A && view.mode !== 3;
-viewEl.addEventListener('pointerdown', e => { if (!wipeActive()) return; const r = canvas.getBoundingClientRect(); if (Math.abs(e.clientX - r.left - P.wipePos*r.width) > 14) return;
+viewEl.addEventListener('pointerdown', e => { if (!wipeActive() || e.target.closest('.safe-note')) return; const r = canvas.getBoundingClientRect(); if (Math.abs(e.clientX - r.left - P.wipePos*r.width) > 14) return;
   e.stopImmediatePropagation(); e.preventDefault(); viewEl.setPointerCapture(e.pointerId); wipeDrag = true; }, true);
 viewEl.addEventListener('pointermove', e => { if (!wipeDrag) return; e.stopImmediatePropagation(); const r = canvas.getBoundingClientRect(); P.wipePos = clamp((e.clientX - r.left)/r.width, 0, 1); ctrls.wipePos && ctrls.wipePos.sync && ctrls.wipePos.sync(); }, true);
 viewEl.addEventListener('pointerup', e => { if (wipeDrag){ wipeDrag = false; e.stopImmediatePropagation(); } }, true);
-viewEl.addEventListener('pointerdown', e=>{ if (e.target.closest('.tools')) return; viewEl.setPointerCapture(e.pointerId); ldReset(); drag={x:e.clientX,y:e.clientY,yaw:view.yaw,pitch:view.pitch,lyaw:view.ld.yaw,lpitch:view.ld.pitch,moved:false};
+viewEl.addEventListener('pointerdown', e=>{ if (e.target.closest('.tools, .safe-note')) return;   // (capturing the pointer would swallow clicks on the notice's buttons) viewEl.setPointerCapture(e.pointerId); ldReset(); drag={x:e.clientX,y:e.clientY,yaw:view.yaw,pitch:view.pitch,lyaw:view.ld.yaw,lpitch:view.ld.pitch,moved:false};
   if ((view.place==='add' || view.place==='remove') && view.mode < 2){ painting = true; paintAt(e); } else if (view.place==='sun' && view.mode===0) placeAt(e); });
 viewEl.addEventListener('pointermove', e=>{ brushCursor(e); if (!drag) return;
   if (painting){ paintAt(e); return; }
@@ -3477,8 +3577,18 @@ function diagSetup(){
   window.diagDone = (name, ms) => { log[log.length-1] = `✓ ${name} — ${ms.toFixed(0)} ms`; out(); };
   box.querySelector('#dNext').onclick = () => { if (release){ const r = release; release = null; r(); } };
   box.querySelector('#dAuto').onclick = () => { auto = true; if (release){ const r = release; release = null; r(); } };
-  box.querySelector('#dCopy').onclick = async (e) => { try { await navigator.clipboard.writeText(log.join('\n')); e.target.textContent = 'Copied'; } catch(_){ const ta = document.createElement('textarea'); ta.value = log.join('\n'); ta.style.cssText = 'width:100%;height:140px;margin-top:8px'; box.appendChild(ta); ta.select(); } };
+  box.querySelector('#dCopy').onclick = (e) => copyText(log.join('\n'), e.target, box);
   window.diagFinish = () => { box.querySelector('#dNow').textContent = 'All steps finished. The app is running; use Copy log and paste it to Claude.'; log.push('✓ app running (frame loop started)'); out(); }; }
+// copy text from a button click. Inside an embedded page the async clipboard API can be blocked, and its promise may never
+// settle (the button then did nothing), so copy through a selected text box first, and leave that box visible as a fallback
+function copyText(txt, btn, box){
+  let ta = box.querySelector('textarea.copy-box');
+  if (!ta){ ta = document.createElement('textarea'); ta.className = 'copy-box'; ta.readOnly = true; ta.style.cssText = 'display:block;width:100%;height:150px;margin-top:8px;font:11px ui-monospace,Menlo,Consolas,monospace;background:#0b0e12;color:#dde3ea;border:1px solid #2a3340;border-radius:6px'; box.appendChild(ta); }
+  ta.value = txt; ta.focus(); ta.select(); let ok = false;
+  try { ok = document.execCommand('copy'); } catch(_){}
+  if (ok){ btn.textContent = 'Copied'; return; }
+  btn.textContent = 'Select all and copy below';
+  try { const pr = navigator.clipboard && navigator.clipboard.writeText(txt); if (pr) pr.then(() => { btn.textContent = 'Copied'; }, () => {}); } catch(_){} }
 function crashReport(prev){ const lines = prev.map(e => `${new Date(e.t).toLocaleTimeString()}  ${e.msg}`);
   return ['Spectral Sky diagnostic report', `GPU: ${GPU_NAME}`, `Browser: ${navigator.userAgent}`, `Screen: ${screen.width}×${screen.height} @${devicePixelRatio}x`, '', 'Previous session:', ...lines.slice(-40)].join('\n'); }
 function showReport(prev, crashed){
@@ -3486,7 +3596,7 @@ function showReport(prev, crashed){
   box.innerHTML = crashed
     ? `<b>The last session crashed</b> while <i>${(last ? last.msg.replace(/^START /,'') : 'starting').replace(/</g,'&lt;')}</i>. Starting in safe mode (1024 × 512 preview, one sample). <button class="btn" data-a="copy" type="button">Copy diagnostic report</button><button class="btn" data-a="ok" type="button">OK</button>`
     : `<b>Diagnostics.</b> GPU: <i>${GPU_NAME.replace(/</g,'&lt;')}</i>. <button class="btn" data-a="copy" type="button">Copy diagnostic report</button><button class="btn" data-a="ok" type="button">OK</button>`;
-  box.querySelector('[data-a=copy]').onclick = async (e) => { const txt = crashReport(prev); try { await navigator.clipboard.writeText(txt); e.target.textContent = 'Copied'; } catch(_){ const ta = document.createElement('textarea'); ta.value = txt; ta.style.cssText = 'width:100%;height:160px;margin-top:8px;font:11px var(--mono)'; box.appendChild(ta); ta.select(); } };
+  box.querySelector('[data-a=copy]').onclick = (e) => copyText(crashReport(prev), e.target, box);
   box.querySelector('[data-a=ok]').onclick = () => box.remove(); $('#view').appendChild(box); }
 async function bootApp(){
   setStatus('Starting…'); if (DIAG_MANUAL) diagSetup(); await JOURNAL.open();
