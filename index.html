@@ -174,7 +174,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
     </header>
     <div class="tools" id="tools">
       <div class="seg" id="viewSeg" role="group" aria-label="View">
-        <button data-v="0" class="on">Panorama</button><button data-v="1">Look around</button><button data-v="2">Luminance</button><button data-v="3">Look-dev</button>
+        <button data-v="0" class="on">Panorama</button><button data-v="1">Look around</button><button data-v="2">Luminance</button><button data-v="3">Look-dev</button><button data-v="4">Shot</button>
       </div>
       <div class="expo"><label><input type="checkbox" id="autoEx" checked> Auto</label><input type="range" id="exSlider" min="-8" max="8" step="0.1" value="0" aria-label="Exposure"><span class="v" id="exVal">±0.0 EV</span></div>
       <div class="seg" id="resSeg" role="group" aria-label="Preview resolution" title="Preview resolution. 4K and 8K render strip by strip and take longer (8K uses about 0.5 GB of graphics memory).">
@@ -554,6 +554,17 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // clear gaps — tiny islands that only just poke above the coverage threshold fade out instead of reading as dots
   float rimW = mix(0.10, 0.045, max(conv, 0.6*lumpS));   // stratocumulus has fairly crisp cell edges too, close up
   float gate = smoothstep(0.05, 0.2, cl);
+  // small and edge fragments (coverage just above threshold) are mostly mixed-in, evaporating cloud: ragged and thin
+  // — judged against the cover around it (a ~4x wider read of the map), so the margins of a big cloud mass keep their
+  // crisp, dense cauliflower edges and only the small, isolated clouds and outlying bits turn thin and ragged
+  float clB = clamp(uCovBias + (textureLod(uWeather, xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, uCType)) + 2.0).r - 0.5)*uClump, 0.0, 1.0);
+  float small = 1.0 - smoothstep(0.12, 0.34, clB);
+  float frag = (1.0 - smoothstep(0.12, 0.45, cl))*small;
+  // liquid water grows with height above the base (rising air keeps condensing), so small, shallow clouds and the lower
+  // fringes are optically thin — translucent wisps, not solid balls. Big masses keep most of their density down to a
+  // crisp base: they hold far more water, and their edges stay hard against the sky.
+  float zb = max(h - baseL, 0.0);
+  float lwc = mix(1.0, mix(0.3, 1.12, smoothstep(0.0, 0.7, zb)), lump*(1.0 - 0.5*tall)*mix(0.2, 1.0, small));
   if (!detail){
     // cheap version for the lighting and shadow look-ups: the same density shaping as the detailed field, minus the small
     // displacement octaves (which average out), so light sees as much water as the eye does. Before, it saw about half
@@ -562,7 +573,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
     float dC = clamp(field*mix(mix(1.5, 9.0, sharpT*smoothstep(0.01, 0.09, field)), 1.2, airy), 0.0, 1.0);
     dC = dC*dC*(3.0 - 2.0*dC)*0.5 + dC*0.5;
     dC *= mix(1.0, 0.18 + 0.82*smoothstep(0.2, 0.85, s.b*0.45 + 0.196 + s.a*0.2), uCVar)*meso*(1.0 - 0.65*airy)*smoothstep(0.0, rimW, field)*gate;
-    dC = 0.88*max(dC - 0.03, 0.0)/0.97;   // 0.88: the detail octaves erode a little more than they add
+    dC = 0.88*max(dC - 0.03, 0.0)/0.97*lwc*(1.0 - 0.45*frag);   // 0.88: the detail octaves erode a little more than they add
     return max(dC, max(anvD, 0.004))*uCDens; }
   if (field + 0.12*amp <= 0.0) return anvD > 0.02 ? anvD*uCDens : 0.0;
   // three detail octaves: billows = Worley cells (centres bulge out), wisps = fBm (shreds); gentle warp only
@@ -581,13 +592,13 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
     vec4 d4 = textureLod(uDetail, (qd + (d2.rgb - 0.5)*0.02*uCScale)/(0.042*uCScale) + vec3(0.19, uEvolve*4.3, 0.61), max(lod + 7.55, 0.0));
     billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*(0.12 + 0.1*lumpS)*nf*(1.0 - 0.7*tall); wisp += (d4.a - 0.5)*0.16*nf; }
   float field0 = field;
-  float disp = mix(wisp, billow, bw)*amp*2.4;
+  float disp = mix(wisp, billow, bw*(1.0 - 0.6*frag))*amp*(2.4 + 1.2*frag);
   disp = disp < 0.0 ? disp : disp*0.4*smoothstep(-0.1*amp, 0.02, field);
   field += disp;
-  field -= (uCErode*0.1 + airy*0.08 + 0.07*lumpS)*(1.0 - smoothstep(0.0, 0.25, field))*max(d2.a - 0.35, 0.0);
+  field -= (uCErode*0.1 + airy*0.08 + 0.07*lumpS + 0.1*frag*lump)*(1.0 - smoothstep(0.0, 0.25, field))*max(d2.a - 0.35, 0.0);
   // fine breakup of the rim: ragged, partly translucent margins rather than a clean cut-out edge
   field -= (0.05 + 0.06*lumpS)*uCErode*(1.0 - smoothstep(0.0, 0.12, field))*max(d3.a - 0.45, 0.0)*2.0;
-  float sharp = mix(1.5, 9.0, sharpT*smoothstep(0.01, 0.09, field0));
+  float sharp = mix(1.5, 9.0, sharpT*smoothstep(0.01, 0.09, field0)*(1.0 - 0.7*frag));
   sharp = mix(sharp, 1.2, airy);
   float dens = clamp(field*sharp, 0.0, 1.0);
   dens = dens*dens*(3.0 - 2.0*dens)*0.5 + dens*0.5;
@@ -595,7 +606,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   dens *= mix(1.0, 0.18 + 0.82*var, uCVar)*meso;
   dens *= 1.0 - 0.65*airy;                                              // airy parts: thin, light-transmitting
   dens *= smoothstep(0.0, rimW, field0)*gate;                           // thinner rims; no isolated specks outside the cloud body
-  dens = max(dens - 0.03, 0.0)/0.97;
+  dens = max(dens - 0.03, 0.0)/0.97*lwc*(1.0 - 0.45*frag);
   if (anvD > 0.0){
     // anvil ice: streaky, fibrous texture drawn out by the strong winds aloft (noise stretched horizontally), ragged thin edges,
     // and some sagging lumps on the underside, so it is shaded and textured instead of one flat colour
@@ -1583,7 +1594,7 @@ if (!gl) fail('This browser does not provide WebGL2. Try a current version of Ch
 if (!gl.getExtension('EXT_color_buffer_float')) fail('Your GPU or browser cannot render to floating-point targets (EXT_color_buffer_float), which HDR output requires.');
 const FLOAT_LINEAR = !!gl.getExtension('OES_texture_float_linear');
 const LUT_FMT = FLOAT_LINEAR ? gl.RGBA32F : gl.RGBA16F;
-const UNITS = {uTrans:0,uMS:1,uShape:2,uDetail:3,uWeather:4,uCloud0:5,uCloud1:6,uShadow:7,uCirrus:8,uAmb:9,uStarTex:10,uImg:11,uImgA:12,uTerrain:20,uA:12,uB:13,uEnv:14,uPrev:15,uMask:16,uEnvCdf:17,uEnvPdf:18,uMoonTex:19};
+const UNITS = {uTrans:0,uMS:1,uShape:2,uDetail:3,uWeather:4,uCloud0:5,uCloud1:6,uShadow:7,uCirrus:8,uAmb:9,uStarTex:10,uImg:11,uImgA:12,uTerrain:20,uA:12,uB:13,uEnv:14,uPrev:15,uMask:16,uEnvCdf:17,uEnvPdf:18,uMoonTex:19,uShotP:21,uShotN:22,uShotA:23,uShotSM:24,uShotC:25};
 const vao = gl.createVertexArray();
 function compile(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
 // shaders are compiled in the background where the browser supports it (KHR_parallel_shader_compile): a first compile on
@@ -1603,7 +1614,8 @@ function program(fs, name, started){
 function setU(p, vals){ gl.useProgram(p);
   for (const k in p.u){ if (!(k in vals)) continue; const u = p.u[k], v = vals[k];
     switch (u.type){ case gl.FLOAT: gl.uniform1f(u.loc, v); break; case gl.FLOAT_VEC2: gl.uniform2fv(u.loc, v); break; case gl.FLOAT_VEC3: gl.uniform3fv(u.loc, v); break;
-      case gl.FLOAT_VEC4: gl.uniform4fv(u.loc, v); break; case gl.INT: gl.uniform1i(u.loc, v); break; } } }
+      case gl.FLOAT_VEC4: gl.uniform4fv(u.loc, v); break; case gl.INT: gl.uniform1i(u.loc, v); break; case gl.INT_VEC2: gl.uniform2iv(u.loc, v); break;
+      case gl.FLOAT_MAT3: gl.uniformMatrix3fv(u.loc, false, v); break; case gl.FLOAT_MAT4: gl.uniformMatrix4fv(u.loc, false, v); break; } } }
 function draw(){ gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3); }
 function texParams(target, filter, wrap){ gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, filter===gl.LINEAR_MIPMAP_LINEAR?gl.LINEAR:filter);
   gl.texParameteri(target, gl.TEXTURE_WRAP_S, wrap); gl.texParameteri(target, gl.TEXTURE_WRAP_T, wrap); if (target!==gl.TEXTURE_2D) gl.texParameteri(target, gl.TEXTURE_WRAP_R, wrap); }
@@ -1695,7 +1707,7 @@ const DEFAULTS = {
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
   tlStart:'19:00', tlEnd:'21:30', tlFrames:120, tlWind:20, tlWindDir:250, tlEvolve:0.6, tlFormat:'png', tlRes:1024, tlSpp:2, tlExpo:'auto',
-  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun',
+  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun', shotUnits:'cm', shotUp:'y', shotRot:0, shotDome:true, shotSun:true, shotClouds:false, shotCam:'shot', shotAlbedo:true, shotBg:true,
 };
 const P = structuredClone(DEFAULTS);
 const G = {};      // shared uniform values
@@ -1939,6 +1951,7 @@ function prepare(){
     const sinS0 = Math.max(Math.sin(P.sunEl*D2R),0), sinM0 = Math.max(Math.sin(P.moonEl*D2R),0); const Tm = (P.moonEl > -3) ? probeTrans(G.uMoonDir) : new Float32Array(NL);
     let gc = 0; for (let i=0;i<NL;i++) gc += ((G.uSunOn ? G.uSunE[i]*Tc[i]*sinS0 : 0) + (G.uMoonOn ? G.uMoonE[i]*Tm[i]*sinM0 : 0) + Ec[i])*CMFY[i];
     S.ghiClear = gc; G.uCloudOn = c0; G.uSheetOn = s0;
+    { const Ec2 = new Float32Array(NL); if (G.uSunOn) for (let i=0;i<NL;i++) Ec2[i] = G.uSunE[i]*Tc[i]; S.sunRGBClear = specRGB(Ec2); }
     let dc = 0; if (G.uSunOn) for (let i=0;i<NL;i++) dc += G.uSunE[i]*Tc[i]*CMFY[i]; S.dniClear = dc;
     // horizontal radiance-flux vector of the clear sky: zero for a uniform dome, |H|/ΣL → 1 when all the light comes from one azimuth
     const W = 128, H = 64, dA = (2*Math.PI/W)*(Math.PI/H), azo = P.azOff*D2R; let hx = 0, hz = 0, tot = 0, elw = 0;
@@ -2023,6 +2036,326 @@ function renderLookdev(){
     draw(); unbind(15, gl.TEXTURE_2D); unbind(14, gl.TEXTURE_2D); LD.cur = 1-LD.cur; ldN++; }
 }
 
+/* =====================================================================
+   Shot view: relight a render's utility pass with this sky
+   A geometry utility pass (world position, normals, optionally surface colour) is read straight from its EXR and drawn as a
+   point cloud — through the shot camera (from the file's camera metadata) or from an orbiting camera — lit by this sky as a
+   dome light (diffuse irradiance) plus, optionally, the sun as a separate light with shadows, and the clouds' shadows.
+   ===================================================================== */
+// ---------- OpenEXR reader: scanline, single or multi-part; none / RLE / ZIPS / ZIP compression; half, float, uint ----------
+async function inflateZ(u8){ const ds = new DecompressionStream('deflate'); const w = ds.writable.getWriter(); w.write(u8); w.close(); return new Uint8Array(await new Response(ds.readable).arrayBuffer()); }
+const HALF_LUT = (() => { const t = new Float32Array(65536);
+  for (let h=0; h<65536; h++){ const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023;
+    t[h] = e === 0 ? s*m*Math.pow(2, -24) : e === 31 ? (m ? NaN : s*Infinity) : s*(1 + m/1024)*Math.pow(2, e - 15); } return t; })();
+function exrUndo(t){ for (let i=1; i<t.length; i++) t[i] = (t[i-1] + t[i] - 128) & 255;   // predictor, then de-interleave the two halves
+  const n = t.length, h = (n + 1) >> 1, o = new Uint8Array(n); for (let i=0, k=0; k<h; k++){ o[i++] = t[k]; if (i < n) o[i++] = t[h + k]; } return o; }
+function exrRLE(src, n){ const o = new Uint8Array(n); let i = 0, j = 0;
+  while (i < src.length && j < n){ const c = (src[i] << 24) >> 24; i++;
+    if (c < 0){ const k = -c; o.set(src.subarray(i, i + k), j); i += k; j += k; } else { o.fill(src[i], j, j + c + 1); i++; j += c + 1; } } return o; }
+async function readEXR(buf, onProg){
+  const dv = new DataView(buf), u8 = new Uint8Array(buf), td = new TextDecoder();
+  if (dv.getUint32(0, true) !== 20000630) throw new Error('This is not an OpenEXR file.');
+  const ver = dv.getUint32(4, true), multi = !!(ver & 0x1000);
+  if (ver & 0x800) throw new Error('Deep EXRs are not supported.');
+  if ((ver & 0x200) && !multi) throw new Error('Tiled EXRs are not supported yet: please write the pass as scanlines.');
+  let o = 8; const rs = () => { let e = o; while (u8[e]) e++; const s = td.decode(u8.subarray(o, e)); o = e + 1; return s; };
+  const parts = [];
+  for (;;){ const A = {};
+    for (;;){ const name = rs(); if (!name) break; const type = rs(); const sz = dv.getInt32(o, true); o += 4; const p = o; o += sz;
+      if (type === 'chlist'){ const ch = []; let q = p; while (u8[q]){ let e = q; while (u8[e]) e++; const cn = td.decode(u8.subarray(q, e)); q = e + 1;
+          ch.push({name:cn, type:dv.getInt32(q, true), xs:dv.getInt32(q + 8, true), ys:dv.getInt32(q + 12, true)}); q += 16; } A[name] = ch; }
+      else if (type === 'box2i') A[name] = [0,1,2,3].map(i => dv.getInt32(p + 4*i, true));
+      else if (type === 'compression' || type === 'lineOrder') A[name] = u8[p];
+      else if (type === 'string') A[name] = td.decode(u8.subarray(p, p + sz));
+      else if (type === 'float') A[name] = dv.getFloat32(p, true);
+      else if (type === 'int') A[name] = dv.getInt32(p, true);
+      else if (type === 'm44f') A[name] = Array.from({length:16}, (_, i) => dv.getFloat32(p + 4*i, true));
+      else if (type === 'v2f') A[name] = [dv.getFloat32(p, true), dv.getFloat32(p + 4, true)]; }
+    parts.push(A); if (!multi) break; if (u8[o] === 0){ o++; break; } }
+  const LPB = {0:1, 1:1, 2:1, 3:16, 4:32, 5:16, 6:32, 7:32, 8:32, 9:256}, CN = ['none','RLE','ZIPS','ZIP','PIZ','PXR24','B44','B44A','DWAA','DWAB'];
+  const dw0 = parts[0].dataWindow, W = dw0[2] - dw0[0] + 1, H = dw0[3] - dw0[1] + 1;
+  const tables = parts.map(A => { const lpb = LPB[A.compression]; const n = A.chunkCount || Math.ceil((A.dataWindow[3] - A.dataWindow[1] + 1)/lpb);
+    const t = []; for (let i=0; i<n; i++){ t.push(Number(dv.getBigUint64(o, true))); o += 8; } return t; });
+  const out = {width:W, height:H, channels:{}, attrs:{}, parts:parts.map(A => A.name || '')};
+  for (const A of parts) for (const k in A) if (!(k in out.attrs)) out.attrs[k] = A[k];
+  let done = 0; const total = tables.reduce((s, t) => s + t.length, 0);
+  for (let pi=0; pi<parts.length; pi++){ const A = parts[pi];
+    if (A.type && /tile|deep/i.test(A.type)) continue;
+    const dw = A.dataWindow; if (dw[2] - dw[0] + 1 !== W || dw[3] - dw[1] + 1 !== H) continue;   // only parts the size of the first
+    if (!(A.compression in LPB) || A.compression > 3) throw new Error(`Part "${A.name || pi}" uses ${CN[A.compression] || A.compression} compression, which this reader does not handle yet. Write the pass with ZIP, ZIPS, RLE or no compression.`);
+    const lpb = LPB[A.compression]; const chs = A.channels.slice().sort((a, b) => a.name < b.name ? -1 : 1);
+    const arrs = chs.map(c => { if (c.xs !== 1 || c.ys !== 1) return null; let nm = c.name; if (multi && A.name && !nm.includes('.')) nm = A.name + '.' + nm; return out.channels[nm] = new Float32Array(W*H); });
+    const bpp = chs.map(c => c.type === 1 ? 2 : 4); const row = bpp.reduce((s, b) => s + b, 0)*W;
+    for (const off of tables[pi]){ let q = off; if (multi) q += 4; const y = dv.getInt32(q, true), sz = dv.getInt32(q + 4, true); q += 8;
+      const nl = Math.min(lpb, dw[3] - y + 1), need = row*nl; let data = u8.subarray(q, q + sz);
+      if (sz < need){ if (A.compression === 1) data = exrUndo(exrRLE(data, need)); else if (A.compression >= 2) data = exrUndo(await inflateZ(data)); }
+      const ddv = new DataView(data.buffer, data.byteOffset, data.byteLength); let p = 0;
+      for (let l=0; l<nl; l++){ const yy = y + l - dw[1];
+        for (let c=0; c<chs.length; c++){ const a = arrs[c], t = chs[c].type, base = yy*W;
+          if (!a){ p += bpp[c]*W; continue; }
+          if (t === 1) for (let x=0; x<W; x++){ a[base + x] = HALF_LUT[ddv.getUint16(p, true)]; p += 2; }
+          else if (t === 2) for (let x=0; x<W; x++){ a[base + x] = ddv.getFloat32(p, true); p += 4; }
+          else for (let x=0; x<W; x++){ a[base + x] = ddv.getUint32(p, true); p += 4; } } }
+      if (++done % 64 === 0){ onProg && onProg(done/total); await new Promise(r => setTimeout(r, 0)); } } }
+  return out; }
+
+// ---------- finding the layers and the camera ----------
+const SHOT_KINDS = {
+  P: {re:/^(p|pos|position|pworld|p_world|worldpos|world_position|worldposition|wp)$/i, label:'World position'},
+  N: {re:/^(n|normal|normals|nworld|n_world|worldnormal|world_normal)$/i, label:'Normals'},
+  C: {re:/^(surfacecolor|surface_color|albedo|diffusecolor|diffuse_color|basecolor|base_color|diffusealbedo|color|rgb)$/i, label:'Surface colour'},
+  A: {re:/^(alpha|implicitalpha|a|coverage|mask)$/i, label:'Alpha'} };
+function shotGroups(names){ const g = {};
+  for (const n of names){ const i = n.lastIndexOf('.'); const base = i < 0 ? '' : n.slice(0, i), c = i < 0 ? n : n.slice(i + 1); (g[base] = g[base] || {})[c] = n; }
+  const comp3 = m => { for (const k of [['R','G','B'],['r','g','b'],['x','y','z'],['X','Y','Z'],['red','green','blue']]) if (k.every(c => c in m)) return k.map(c => m[c]); return null; };
+  const out = {three:[], one:[]};
+  for (const b in g){ const c = comp3(g[b]); if (c) out.three.push({base:b || '(rgb)', comps:c}); for (const k in g[b]) out.one.push({base:b ? b + '.' + k : k, comps:[g[b][k]]}); }
+  return out; }
+function shotPick(groups, kind){ const re = SHOT_KINDS[kind].re; const list = kind === 'A' ? groups.one : groups.three;
+  const hit = list.find(e => re.test(e.base.split('.')[0]) || (kind === 'A' && /(^|\.)A$/.test(e.base)));
+  return hit ? hit.base : ''; }
+function shotCamera(attrs, W, H){
+  const find = re => { for (const k in attrs) if (re.test(k)) return attrs[k]; return null; };
+  const num = v => v == null ? NaN : typeof v === 'number' ? v : parseFloat(String(v));
+  const mat = v => { if (v == null) return null; if (Array.isArray(v) && v.length === 16) return v.slice(); const a = String(v).match(/-?[\d.]+(?:e[-+]?\d+)?/gi); return a && a.length >= 16 ? a.slice(0, 16).map(Number) : null; };
+  let M = mat(find(/camtoworld$/i)) || mat(find(/cameratoworld$/i));
+  if (!M){ const w2c = mat(find(/worldtocamera$/i)); if (w2c) M = inv4(w2c); }
+  let hfov = num(find(/horizontalfov(_deg)?$/i)) || num(find(/(^|\/)fov(x)?(_deg)?$/i));
+  if (!(hfov > 0)){ const fl = num(find(/focallength$/i)), ap = num(find(/horizontalaperture$/i)) || num(find(/filmback(width)?$/i));
+    if (fl > 0) hfov = 2*Math.atan((ap > 0 ? ap*(ap < 5 ? 25.4 : 1) : 36)/(2*fl))/D2R; }   // aperture in inches (Maya) or mm; 36 mm if unknown
+  if (!M) return null;
+  // row-major, basis vectors in rows, translation in the last row; the camera looks down −Z
+  return {right:[M[0],M[1],M[2]], up:[M[4],M[5],M[6]], fwd:[-M[8],-M[9],-M[10]], pos:[M[12],M[13],M[14]], hfov:hfov > 0 ? hfov : 50, aspect:W/H}; }
+function inv4(m){ const a = m, inv = new Array(16);
+  inv[0]=a[5]*a[10]*a[15]-a[5]*a[11]*a[14]-a[9]*a[6]*a[15]+a[9]*a[7]*a[14]+a[13]*a[6]*a[11]-a[13]*a[7]*a[10]; inv[4]=-a[4]*a[10]*a[15]+a[4]*a[11]*a[14]+a[8]*a[6]*a[15]-a[8]*a[7]*a[14]-a[12]*a[6]*a[11]+a[12]*a[7]*a[10];
+  inv[8]=a[4]*a[9]*a[15]-a[4]*a[11]*a[13]-a[8]*a[5]*a[15]+a[8]*a[7]*a[13]+a[12]*a[5]*a[11]-a[12]*a[7]*a[9]; inv[12]=-a[4]*a[9]*a[14]+a[4]*a[10]*a[13]+a[8]*a[5]*a[14]-a[8]*a[6]*a[13]-a[12]*a[5]*a[10]+a[12]*a[6]*a[9];
+  inv[1]=-a[1]*a[10]*a[15]+a[1]*a[11]*a[14]+a[9]*a[2]*a[15]-a[9]*a[3]*a[14]-a[13]*a[2]*a[11]+a[13]*a[3]*a[10]; inv[5]=a[0]*a[10]*a[15]-a[0]*a[11]*a[14]-a[8]*a[2]*a[15]+a[8]*a[3]*a[14]+a[12]*a[2]*a[11]-a[12]*a[3]*a[10];
+  inv[9]=-a[0]*a[9]*a[15]+a[0]*a[11]*a[13]+a[8]*a[1]*a[15]-a[8]*a[3]*a[13]-a[12]*a[1]*a[11]+a[12]*a[3]*a[9]; inv[13]=a[0]*a[9]*a[14]-a[0]*a[10]*a[13]-a[8]*a[1]*a[14]+a[8]*a[2]*a[13]+a[12]*a[1]*a[10]-a[12]*a[2]*a[9];
+  inv[2]=a[1]*a[6]*a[15]-a[1]*a[7]*a[14]-a[5]*a[2]*a[15]+a[5]*a[3]*a[14]+a[13]*a[2]*a[7]-a[13]*a[3]*a[6]; inv[6]=-a[0]*a[6]*a[15]+a[0]*a[7]*a[14]+a[4]*a[2]*a[15]-a[4]*a[3]*a[14]-a[12]*a[2]*a[7]+a[12]*a[3]*a[6];
+  inv[10]=a[0]*a[5]*a[15]-a[0]*a[7]*a[13]-a[4]*a[1]*a[15]+a[4]*a[3]*a[13]+a[12]*a[1]*a[7]-a[12]*a[3]*a[5]; inv[14]=-a[0]*a[5]*a[14]+a[0]*a[6]*a[13]+a[4]*a[1]*a[14]-a[4]*a[2]*a[13]-a[12]*a[1]*a[6]+a[12]*a[2]*a[5];
+  inv[3]=-a[1]*a[6]*a[11]+a[1]*a[7]*a[10]+a[5]*a[2]*a[11]-a[5]*a[3]*a[10]-a[9]*a[2]*a[7]+a[9]*a[3]*a[6]; inv[7]=a[0]*a[6]*a[11]-a[0]*a[7]*a[10]-a[4]*a[2]*a[11]+a[4]*a[3]*a[10]+a[8]*a[2]*a[7]-a[8]*a[3]*a[6];
+  inv[11]=-a[0]*a[5]*a[11]+a[0]*a[7]*a[9]+a[4]*a[1]*a[11]-a[4]*a[3]*a[9]-a[8]*a[1]*a[7]+a[8]*a[3]*a[5]; inv[15]=a[0]*a[5]*a[10]-a[0]*a[6]*a[9]-a[4]*a[1]*a[10]+a[4]*a[2]*a[9]+a[8]*a[1]*a[6]-a[8]*a[2]*a[5];
+  const det = a[0]*inv[0] + a[1]*inv[4] + a[2]*inv[8] + a[3]*inv[12]; return inv.map(v => v/(det || 1)); }
+// column-major 4×4 helpers (WebGL order)
+const M4 = {
+  mul(a, b){ const o = new Float32Array(16); for (let c=0;c<4;c++) for (let r=0;r<4;r++){ let s = 0; for (let k=0;k<4;k++) s += a[k*4 + r]*b[c*4 + k]; o[c*4 + r] = s; } return o; },
+  look(eye, fwd, up){ const f = V.norm(fwd), r = V.norm(V.cross(f, up)), u = V.cross(r, f);
+    return new Float32Array([r[0],u[0],-f[0],0, r[1],u[1],-f[1],0, r[2],u[2],-f[2],0, -V.dot(r,eye),-V.dot(u,eye),V.dot(f,eye),1]); },
+  persp(tanH, tanV, n, f){ return new Float32Array([1/tanH,0,0,0, 0,1/tanV,0,0, 0,0,-(f+n)/(f-n),-1, 0,0,-2*f*n/(f-n),0]); },
+  ortho(l, r, b, t, n, f){ return new Float32Array([2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-2/(f-n),0, -(r+l)/(r-l),-(t+b)/(t-b),-(f+n)/(f-n),1]); } };
+
+const SHOT = { file:null, data:null, groups:null, sel:{P:'',N:'',C:'',A:''}, cam:null, tex:null, n:0, W:0, H:0, bbox:null, groundY:0, unitM:0.01,
+  orbit:{yaw:0.6, pitch:0.35, dist:1}, rt:null, sm:null, sh:new Float32Array(27), shKey:'', key:'', progs:null, info:'' };
+const SHOT_VS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+uniform sampler2D uShotP; uniform sampler2D uShotN; uniform sampler2D uShotA; uniform ivec2 uShotRes;
+uniform mat4 uVP; uniform mat3 uToSky; uniform vec3 uShotOrigin; uniform float uUnitM; uniform float uFootK; uniform float uPxK; uniform float uSizeMax; uniform vec3 uViewPos; uniform int uOrtho;
+out vec3 vP; out vec3 vN; out vec3 vA; out float vFoot;
+void main(){ ivec2 c = ivec2(gl_VertexID % uShotRes.x, gl_VertexID / uShotRes.x); vec4 p = texelFetch(uShotP, c, 0);
+  if (p.w < 0.5){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vP = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vA = vec3(0.0); vFoot = 0.0; return; }
+  vec3 w = uToSky*((p.xyz - uShotOrigin)*uUnitM);   // metres, shot camera at the origin, axes of the sky (x east, y up, z north)
+  vP = w; vN = normalize(uToSky*texelFetch(uShotN, c, 0).xyz + vec3(0.0, 1e-6, 0.0)); vA = texelFetch(uShotA, c, 0).rgb;
+  vFoot = length(w)*uFootK;   // size of one pass pixel at this point (m)
+  gl_Position = uVP*vec4(w, 1.0);
+  float d = uOrtho == 1 ? 1.0 : max(gl_Position.w, 1e-4);
+  gl_PointSize = clamp(1.6*vFoot*uPxK/d, 1.0, uSizeMax); }`;
+const SHOT_FS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+const float PI = 3.14159265358979;
+in vec3 vP; in vec3 vN; in vec3 vA; in float vFoot; out vec4 o;
+uniform vec3 uSH[9]; uniform vec3 uSunE; uniform vec3 uSunDir; uniform float uDomeOn; uniform float uSunOn; uniform float uCloudsOn; uniform float uHasC; uniform vec3 uViewPos;
+uniform sampler2D uShotSM; uniform mat4 uSMVP; uniform float uSMTexel; uniform float uSMOn;
+uniform sampler2D uShadow; uniform float uShadowExt; uniform float uCBot; uniform float uCTop; uniform float uCloudOn; uniform float uGroundY;
+vec3 shIrr(vec3 n){ float x = n.x, y = n.y, z = n.z;
+  const float c1 = 0.429043, c2 = 0.511664, c3 = 0.743125, c4 = 0.886227, c5 = 0.247708;
+  return c1*uSH[8]*(x*x - y*y) + c3*uSH[6]*z*z + c4*uSH[0] - c5*uSH[6] + 2.0*c1*(uSH[4]*x*y + uSH[7]*x*z + uSH[5]*y*z) + 2.0*c2*(uSH[3]*x + uSH[1]*y + uSH[2]*z); }
+float sunShadow(vec3 p, vec3 n){ if (uSMOn < 0.5) return 1.0;
+  vec4 q = uSMVP*vec4(p + n*max(vFoot, uSMTexel)*1.5, 1.0); vec3 s = q.xyz/q.w*0.5 + 0.5;
+  if (any(lessThan(s.xy, vec2(0.0))) || any(greaterThan(s.xy, vec2(1.0)))) return 1.0;
+  float bias = 0.002 + 0.004*(1.0 - abs(dot(n, uSunDir))); float lit = 0.0; vec2 ts = vec2(textureSize(uShotSM, 0));
+  for (int j=-1; j<=1; j++) for (int i=-1; i<=1; i++){ float d = texture(uShotSM, s.xy + vec2(i, j)/ts).r; lit += s.z - bias > d ? 0.0 : 1.0; }
+  return lit/9.0; }
+float cloudSh(vec3 p){ if (uCloudsOn < 0.5 || uCloudOn < 0.5) return 1.0;
+  vec3 pk = p*0.001; float h = max((p.y - uGroundY)*0.001, 0.0); vec3 L = uSunDir; if (L.y < 0.015) return 1.0;
+  vec2 xz = pk.xz + L.xz*((uCBot - h)/L.y); vec2 uv = xz/(2.0*uShadowExt) + 0.5; float fr = h > uCBot ? (uCTop - h)/(uCTop - uCBot) : 1.0;
+  float Tm = (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) ? textureLod(uShadow, vec2(0.5), 12.0).x : textureLod(uShadow, uv, 0.0).x;
+  return pow(max(Tm, 1e-6), fr); }
+void main(){ vec2 pc = gl_PointCoord*2.0 - 1.0; if (dot(pc, pc) > 1.0) discard;
+  vec3 n = vN;
+  vec3 alb = uHasC > 0.5 ? max(vA, vec3(0.0)) : vec3(0.18);
+  vec3 E = uDomeOn*max(shIrr(n), vec3(0.0));
+  float cs = dot(n, uSunDir); if (uSunOn > 0.5 && cs > 0.0) E += uSunE*cs*sunShadow(vP, n)*cloudSh(vP);
+  o = vec4(alb*E/PI, 1.0); }`;
+const SHOT_SMFS = `#version 300 es
+precision highp float; in vec3 vP; in vec3 vN; in vec3 vA; in float vFoot; out vec4 o;
+void main(){ vec2 pc = gl_PointCoord*2.0 - 1.0; if (dot(pc, pc) > 1.0) discard; o = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0); }`;
+// env (XYZ equirect preview) → 64×32 linear RGB, leaving out the sun's disc (the sun is its own light here)
+const SHOT_DSFS = HDR + `
+uniform sampler2D uEnv; uniform vec2 uEnvSize; uniform float uAzOff; uniform vec3 uSunDir; uniform float uSunCos; out vec4 o;
+void main(){ ivec2 c = ivec2(gl_FragCoord.xy); vec2 bs = uEnvSize/vec2(64.0, 32.0); vec3 acc = vec3(0.0); float w = 0.0;
+  const mat3 X2R = mat3(3.2404542,-0.9692660,0.0556434, -1.5371385,1.8760108,-0.2040259, -0.4985314,0.0415560,1.0572252);
+  for (int j=0; j<4; j++) for (int i=0; i<4; i++){ vec2 px = (vec2(c) + (vec2(i, j) + 0.5)/4.0)*bs;
+    float u = px.x/uEnvSize.x, v = px.y/uEnvSize.y; float az = (u - 0.5)*2.0*3.14159265 + uAzOff, el = (0.5 - v)*3.14159265;
+    vec3 d = vec3(sin(az)*cos(el), sin(el), cos(az)*cos(el)); if (dot(d, uSunDir) > uSunCos) continue;
+    acc += max(X2R*texelFetch(uEnv, ivec2(px), 0).xyz, vec3(0.0)); w += 1.0; }
+  o = vec4(w > 0.0 ? acc/w : vec3(0.0), 1.0); }`;
+const SHOT_DISPFS = HDR + `
+uniform sampler2D uShotC; uniform sampler2D uEnv; uniform float uExpo; uniform vec2 uOff; uniform vec2 uRectSz; uniform vec3 uCR, uCU, uCF; uniform vec2 uTan; uniform float uAzOff; uniform int uBg; out vec4 o;
+vec3 agxContrast(vec3 x){ vec3 x2=x*x, x4=x2*x2; return 15.5*x4*x2 - 40.14*x4*x + 31.96*x4 - 6.868*x2*x + 0.4298*x2 + 0.1191*x - 0.00232; }
+vec3 agx(vec3 v){ const mat3 M = mat3(0.842479062253094,0.0423282422610123,0.0423756549057051, 0.0784335999999992,0.878468636469772,0.0784336, 0.0792237451477643,0.0791661274605434,0.879142973793104);
+  const mat3 Mi = mat3(1.19687900512017,-0.0528968517574562,-0.0529716355144438, -0.0980208811401368,1.15190312990417,-0.0980434501171241, -0.0990297440797205,-0.0989611768448433,1.15107367264116);
+  const float mn=-12.47393, mx=4.026069; v = M*v; v = clamp(log2(max(v,vec3(1e-10))), mn, mx); v = (v-mn)/(mx-mn); return clamp(Mi*agxContrast(v), 0.0, 1.0); }
+void main(){ vec4 c = texelFetch(uShotC, ivec2(gl_FragCoord.xy - uOff), 0);
+  vec3 col = vec3(0.027, 0.035, 0.047);
+  if (c.a > 0.0) col = agx(c.rgb*uExpo);
+  else if (uBg == 1){ // the sky behind the scene, through the same camera
+    vec2 ndc = (gl_FragCoord.xy - uOff)/uRectSz*2.0 - 1.0; vec3 d = normalize(uCF + ndc.x*uTan.x*uCR + ndc.y*uTan.y*uCU);
+    float az = atan(d.x, d.z) - uAzOff, el = asin(clamp(d.y, -1.0, 1.0)); vec2 es = vec2(textureSize(uEnv, 0));
+    vec2 uv = vec2(fract(az/6.28318531 + 0.5), 0.5 - el/3.14159265); vec2 qf = uv*es - 0.5, fi = floor(qf), fr = qf - fi; int W = int(es.x);
+    ivec2 a = ivec2((int(fi.x) + W) % W, clamp(int(fi.y), 0, int(es.y) - 1)), b = ivec2((a.x + 1) % W, clamp(int(fi.y) + 1, 0, int(es.y) - 1));
+    vec3 e = mix(mix(texelFetch(uEnv, a, 0).xyz, texelFetch(uEnv, ivec2(b.x, a.y), 0).xyz, fr.x), mix(texelFetch(uEnv, ivec2(a.x, b.y), 0).xyz, texelFetch(uEnv, b, 0).xyz, fr.x), fr.y);
+    const mat3 X2R = mat3(3.2404542,-0.9692660,0.0556434, -1.5371385,1.8760108,-0.2040259, -0.4985314,0.0415560,1.0572252);
+    col = agx(max(X2R*e, vec3(0.0))*uExpo); }
+  vec2 dq = gl_FragCoord.xy; float n1 = fract(sin(dot(dq, vec2(12.9898, 78.233)))*43758.5453), n2 = fract(sin(dot(dq, vec2(39.3468, 11.135)))*24634.6345);
+  o = vec4(col + (n1 + n2 - 1.0)/255.0, 1.0); }`;
+function shotProgVF(vs, fs, name){ const p = gl.createProgram(); const v = compile(gl.VERTEX_SHADER, vs), f = compile(gl.FRAGMENT_SHADER, fs);
+  gl.attachShader(p, v); gl.attachShader(p, f); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)){ const log = gl.getShaderInfoLog(v) + '\n' + gl.getShaderInfoLog(f) + '\n' + gl.getProgramInfoLog(p); console.error(name, log); throw new Error('Shot view shader failed: ' + log.slice(0, 300)); }
+  p.u = {}; gl.useProgram(p); const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i=0; i<n; i++){ const info = gl.getActiveUniform(p, i); const nm = info.name.replace(/\[0\]$/, ''); p.u[nm] = {loc:gl.getUniformLocation(p, info.name), type:info.type}; if (nm in UNITS) gl.uniform1i(p.u[nm].loc, UNITS[nm]); }
+  return p; }
+function shotProgs(){ if (SHOT.progs) return SHOT.progs;
+  SHOT.progs = { pts:shotProgVF(SHOT_VS, SHOT_FS, 'shot'), sm:shotProgVF(SHOT_VS, SHOT_SMFS, 'shot shadow'), ds:program(SHOT_DSFS, 'shot env'), disp:program(SHOT_DISPFS, 'shot display') };
+  return SHOT.progs; }
+// ---------- loading ----------
+async function loadShotFile(file){
+  const info = $('#shotInfo'); const say = t => { if (info) info.innerHTML = t; };
+  try {
+    say(`Reading <b>${file.name.replace(/</g,'&lt;')}</b>…`); const buf = await file.arrayBuffer();
+    const exr = await readEXR(buf, f => say(`Reading <b>${file.name.replace(/</g,'&lt;')}</b>… ${Math.round(f*100)}%`));
+    SHOT.file = file.name; SHOT.data = exr; SHOT.groups = shotGroups(Object.keys(exr.channels));
+    for (const k of ['P','N','C','A']) SHOT.sel[k] = shotPick(SHOT.groups, k);
+    SHOT.cam = shotCamera(exr.attrs, exr.width, exr.height);
+    const u = Object.entries(exr.attrs).find(([k]) => /(^|\/)units?$/i.test(k)); if (u){ const s = String(u[1]).toLowerCase(); P.shotUnits = s.startsWith('mm') ? 'mm' : s.startsWith('cm') ? 'cm' : s.startsWith('m') ? 'm' : P.shotUnits; }
+    buildShotPanel(); shotUpload(); if (view.mode !== 4) setView(4);
+  } catch(e){ console.error(e); say(`<span style="color:var(--warn)">${String(e.message || e).replace(/</g,'&lt;')}</span>`); } }
+function shotUpload(){
+  const d = SHOT.data; if (!d) return; const W = d.width, H = d.height, n = W*H; const ch = d.channels;
+  const get = (kind) => { const base = SHOT.sel[kind]; if (!base) return null; const g = (kind === 'A' ? SHOT.groups.one : SHOT.groups.three).find(e => e.base === base); return g ? g.comps.map(c => ch[c]) : null; };
+  const Pc = get('P'), Nc = get('N'), Cc = get('C'), Ac = get('A');
+  if (!Pc){ $('#shotInfo').innerHTML = '<span style="color:var(--warn)">No world-position layer found. Pick it under Layers.</span>'; return; }
+  // flip rows: EXR row 0 is the top of the image, texture row 0 is the bottom
+  const pBuf = new Float32Array(n*4), nBuf = new Float32Array(n*4), cBuf = new Float32Array(n*4); let cnt = 0;
+  const xs = [], ys = [], zs = [];
+  for (let y=0; y<H; y++) for (let x=0; x<W; x++){ const s = y*W + x, t = ((H - 1 - y)*W + x)*4;
+    const px = Pc[0][s], py = Pc[1][s], pz = Pc[2][s]; const a = Ac ? Ac[0][s] : 1;
+    let ok = a > 0.5 && isFinite(px) && isFinite(py) && isFinite(pz) && (px !== 0 || py !== 0 || pz !== 0);
+    let nx = Nc ? Nc[0][s] : 0, ny = Nc ? Nc[1][s] : 1, nz = Nc ? Nc[2][s] : 0; if (!(nx*nx + ny*ny + nz*nz > 1e-8)) { nx = 0; ny = 1; nz = 0; }
+    pBuf[t] = px; pBuf[t+1] = py; pBuf[t+2] = pz; pBuf[t+3] = ok ? 1 : 0;
+    nBuf[t] = nx; nBuf[t+1] = ny; nBuf[t+2] = nz; nBuf[t+3] = 1;
+    if (Cc){ cBuf[t] = Cc[0][s]; cBuf[t+1] = Cc[1][s]; cBuf[t+2] = Cc[2][s]; } cBuf[t+3] = 1;
+    if (ok){ cnt++; if ((s & 15) === 0){ xs.push(px); ys.push(py); zs.push(pz); } } }
+  const q = (a, f) => { a.sort((p, q) => p - q); return a[Math.min(a.length - 1, Math.max(0, Math.floor(f*(a.length - 1))))]; };
+  SHOT.bbox = xs.length ? [[q(xs, 0.01), q(ys, 0.01), q(zs, 0.01)], [q(xs, 0.99), q(ys, 0.99), q(zs, 0.99)]] : [[-1,-1,-1],[1,1,1]];
+  SHOT.groundY = SHOT.bbox[0][1];
+  if (SHOT.tex) SHOT.tex.forEach(t => gl.deleteTexture(t));
+  gl.activeTexture(gl.TEXTURE0 + 26);
+  const mk = (buf, fmt) => { const t = tex2D(W, H, fmt); gl.bindTexture(gl.TEXTURE_2D, t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RGBA, gl.FLOAT, buf); return t; };
+  SHOT.tex = [mk(pBuf, gl.RGBA32F), mk(nBuf, gl.RGBA16F), mk(cBuf, gl.RGBA16F)]; gl.bindTexture(gl.TEXTURE_2D, null); SHOT.W = W; SHOT.H = H; SHOT.n = cnt; SHOT.hasC = !!Cc; SHOT.key = '';
+  // with no camera in the file: a camera at the centre of the points' far side, looking at them
+  if (!SHOT.cam){ const c = SHOT.bbox[0].map((v, i) => 0.5*(v + SHOT.bbox[1][i])); const ext = Math.max(...SHOT.bbox[1].map((v, i) => v - SHOT.bbox[0][i]));
+    SHOT.cam = {right:[1,0,0], up:[0,1,0], fwd:[0,0,-1], pos:[c[0], c[1], c[2] + ext], hfov:50, aspect:W/H, guessed:true}; }
+  updateShotInfo(); }
+function updateShotInfo(){ const el = $('#shotInfo'); if (!el) return;
+  if (!SHOT.data){ el.innerHTML = 'Load a geometry utility pass (multi-part or layered EXR) with world position and normals, and ideally surface colour. Its camera is read from the file\'s metadata (camera-to-world matrix and field of view).'; return; }
+  const c = SHOT.cam; el.innerHTML = `<b>${SHOT.file.replace(/</g,'&lt;')}</b> · ${SHOT.W}×${SHOT.H} · ${(SHOT.n/1e6).toFixed(2)} M points<br>` +
+    `Camera: ${c.guessed ? '<span style="color:var(--warn)">none in the file — showing an estimated view; use Orbit</span>' : `from the file, ${c.hfov.toFixed(1)}° horizontal field of view`}` +
+    `${SHOT.hasC ? '' : '<br>No surface colour layer: shown as 18 % grey.'}<br><i>Points only exist where the shot camera saw a surface, so geometry it cannot see casts no shadow.</i>`; }
+function buildShotPanel(){ const box = $('#shotLayers'); if (!box) return; if (!SHOT.groups){ box.innerHTML = ''; return; }
+  const opt = (list, cur) => `<option value="">(none)</option>` + list.map(e => `<option value="${e.base.replace(/"/g,'&quot;')}"${e.base === cur ? ' selected' : ''}>${e.base.replace(/</g,'&lt;')}</option>`).join('');
+  box.innerHTML = ['P','N','C','A'].map(k => `<div class="row"><label>${SHOT_KINDS[k].label}</label><select data-k="${k}">${opt(k === 'A' ? SHOT.groups.one : SHOT.groups.three, SHOT.sel[k])}</select></div>`).join('');
+  box.querySelectorAll('select').forEach(s => s.onchange = () => { SHOT.sel[s.dataset.k] = s.value; shotUpload(); }); }
+// ---------- sky dome: spherical harmonics (order 2) of the current sky, without the sun's disc ----------
+function shotUpdateSH(){
+  const ctx = shownCtx; if (!ctx || !ctx.acc) return; const key = [ctx.w, previewN, sceneVersion, P.azOff, G.uSunDir && G.uSunDir.join()].join('|'); if (key === SHOT.shKey) return; SHOT.shKey = key;
+  const pr = shotProgs(); if (!SHOT.dsT){ gl.activeTexture(gl.TEXTURE0 + 26); SHOT.dsT = tex2D(64, 32, gl.RGBA32F); SHOT.dsF = fboFor([SHOT.dsT]); gl.bindTexture(gl.TEXTURE_2D, null); }
+  bindTex(14, gl.TEXTURE_2D, ctx.acc[ctx.cur]); gl.bindFramebuffer(gl.FRAMEBUFFER, SHOT.dsF); gl.viewport(0, 0, 64, 32);
+  setU(pr.ds, {uEnvSize:[ctx.w, ctx.h], uAzOff:P.azOff*D2R, uSunDir:G.uSunDir, uSunCos:Math.cos(1.5*D2R)}); draw();
+  const b = new Float32Array(64*32*4); gl.readPixels(0, 0, 64, 32, gl.RGBA, gl.FLOAT, b); unbind(14, gl.TEXTURE_2D);
+  const sh = new Float64Array(27), azo = P.azOff*D2R;
+  for (let j=0; j<32; j++){ const el = (0.5 - (j + 0.5)/32)*Math.PI, ce = Math.cos(el), dO = (2*Math.PI/64)*(Math.PI/32)*ce;
+    for (let i=0; i<64; i++){ const az = ((i + 0.5)/64 - 0.5)*2*Math.PI + azo; const x = Math.sin(az)*ce, y = Math.sin(el), z = Math.cos(az)*ce;
+      const Y = [0.282095, 0.488603*y, 0.488603*z, 0.488603*x, 1.092548*x*y, 1.092548*y*z, 0.315392*(3*z*z - 1), 1.092548*x*z, 0.546274*(x*x - y*y)];
+      const o = (j*64 + i)*4; for (let k=0; k<9; k++) for (let c=0; c<3; c++) sh[k*3 + c] += b[o + c]*Y[k]*dO; } }
+  SHOT.sh = new Float32Array(sh); SHOT.key = ''; }
+// ---------- rendering ----------
+function shotToSky(){ // scene axes → sky axes (x east, y up, z north), then turned by the sky rotation
+  const r = (P.shotRot || 0)*D2R, c = Math.cos(r), s = Math.sin(r);
+  const A = P.shotUp === 'z' ? [1,0,0, 0,0,1, 0,-1,0] : [1,0,0, 0,1,0, 0,0,1];   // rows: sky x, y, z from scene x, y, z
+  const R = [c,0,s, 0,1,0, -s,0,c]; const m = new Array(9);
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++){ let v = 0; for (let k=0;k<3;k++) v += R[i*3 + k]*A[k*3 + j]; m[i*3 + j] = v; }
+  return m; }
+const mat3col = m => new Float32Array([m[0],m[3],m[6], m[1],m[4],m[7], m[2],m[5],m[8]]);
+const ap3 = (m, v) => [m[0]*v[0] + m[1]*v[1] + m[2]*v[2], m[3]*v[0] + m[4]*v[1] + m[5]*v[2], m[6]*v[0] + m[7]*v[1] + m[8]*v[2]];
+function shotRect(){ const W = canvas.width, H = canvas.height; if (P.shotCam === 'orbit') return [0, 0, W, H];
+  const a = SHOT.cam ? SHOT.cam.aspect : 16/9; let rw = W, rh = W/a; if (rh > H){ rh = H; rw = H*a; } return [Math.round((W - rw)/2), Math.round((H - rh)/2), Math.round(rw), Math.round(rh)]; }
+function renderShot(){
+  if (!SHOT.tex){ return; } const pr = shotProgs(); shotUpdateSH();
+  const unitM = {mm:0.001, cm:0.01, m:1, km:1000}[P.shotUnits] || 0.01; const toSky = shotToSky(); const cam = SHOT.cam;
+  const tanH = Math.tan(cam.hfov*D2R/2); const footK = 2*tanH/SHOT.W;
+  const [rx, ry, rw, rh] = shotRect();
+  const key = [rw, rh, P.shotCam, P.shotUnits, P.shotUp, P.shotRot, P.shotDome, P.shotSun, P.shotClouds, SHOT.shKey, SHOT.orbit.yaw, SHOT.orbit.pitch, SHOT.orbit.dist, G.uSunDir && G.uSunDir.join(), sceneVersion, SHOT.sel.P].join('|');
+  if (key === SHOT.key && SHOT.rt && SHOT.rt.w === rw && SHOT.rt.h === rh) return; SHOT.key = key;
+  // camera in sky space (metres, shot camera at the origin)
+  const ext = Math.max(...SHOT.bbox[1].map((v, i) => v - SHOT.bbox[0][i]))*unitM; const ctr = ap3(toSky, SHOT.bbox[0].map((v, i) => (0.5*(v + SHOT.bbox[1][i]) - cam.pos[i])*unitM));
+  let eye, VP, near, far;
+  if (P.shotCam === 'orbit'){ const o = SHOT.orbit; const d = ext*1.4*o.dist; const dir = [Math.sin(o.yaw)*Math.cos(o.pitch), Math.sin(o.pitch), Math.cos(o.yaw)*Math.cos(o.pitch)];
+    eye = V.add(ctr, V.mul(dir, d)); near = Math.max(d*0.01, 0.01); far = d + ext*3; const tv = Math.tan(25*D2R);
+    VP = M4.mul(M4.persp(tv*rw/rh, tv, near, far), M4.look(eye, V.sub(ctr, eye), [0,1,0]));
+    const f = V.norm(V.sub(ctr, eye)), r = V.norm(V.cross(f, [0,1,0])); SHOT.basis = {f, r, u:V.cross(r, f), t:[tv*rw/rh, tv]}; }
+  else { eye = [0,0,0]; const f = ap3(toSky, cam.fwd), u = ap3(toSky, cam.up); const tanV = tanH/cam.aspect; near = 0.05; far = Math.max(ext*6, 100);
+    VP = M4.mul(M4.persp(tanH, tanV, near, far), M4.look(eye, f, u));
+    const fn = V.norm(f), r = V.norm(V.cross(fn, u)); SHOT.basis = {f:fn, r, u:V.cross(r, fn), t:[tanH, tanV]}; }
+  const pxK = rh/(2*(P.shotCam === 'orbit' ? Math.tan(25*D2R) : tanH/cam.aspect));
+  const common = {uShotRes:[SHOT.W, SHOT.H], uToSky:mat3col(toSky), uShotOrigin:cam.pos, uUnitM:unitM, uFootK:footK, uPxK:pxK, uViewPos:eye};
+  // create the render targets first: making a texture binds it on the active unit, which would replace a data texture
+  // bound below (and sampling a texture that is being drawn into is an error)
+  gl.activeTexture(gl.TEXTURE0 + 26);
+  if (!SHOT.sm){ const t = tex2D(2048, 2048, gl.R32F, gl.NEAREST); const f = fboFor([t]); const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, 2048, 2048); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb); SHOT.sm = {t, f, rb}; }
+  if (!SHOT.rt || SHOT.rt.w !== rw || SHOT.rt.h !== rh){ if (SHOT.rt){ gl.deleteTexture(SHOT.rt.t); gl.deleteFramebuffer(SHOT.rt.f); gl.deleteRenderbuffer(SHOT.rt.rb); }
+    const t = tex2D(rw, rh, gl.RGBA16F); const f = fboFor([t]); const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, rw, rh); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb); SHOT.rt = {t, f, rb, w:rw, h:rh}; }
+  gl.activeTexture(gl.TEXTURE0 + 26); gl.bindTexture(gl.TEXTURE_2D, null);
+  unbind(24, gl.TEXTURE_2D); unbind(25, gl.TEXTURE_2D);
+  bindTex(21, gl.TEXTURE_2D, SHOT.tex[0]); bindTex(22, gl.TEXTURE_2D, SHOT.tex[1]); bindTex(23, gl.TEXTURE_2D, SHOT.tex[2]);
+  gl.bindVertexArray(vao);
+  // sun shadow map: the points seen from the sun (orthographic, fitted to the scene)
+  const L = G.uSunDir || [0,1,0]; const sunOK = P.shotSun && G.uSunOn && L[1] > -0.02 && S.sunRGB; let SMVP = new Float32Array(16), smTexel = 1;
+  if (sunOK){
+    const r = ext*0.9, Lv = M4.look(V.add(ctr, V.mul(L, ext*2)), V.mul(L, -1), Math.abs(L[1]) > 0.99 ? [0,0,1] : [0,1,0]);
+    SMVP = M4.mul(M4.ortho(-r, r, -r, r, 0.01, ext*4), Lv); smTexel = 2*r/2048;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, SHOT.sm.f); gl.viewport(0, 0, 2048, 2048); gl.clearColor(1, 1, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
+    setU(pr.sm, {...common, uVP:SMVP, uPxK:1/smTexel, uSizeMax:24, uOrtho:1}); gl.drawArrays(gl.POINTS, 0, SHOT.W*SHOT.H); gl.disable(gl.DEPTH_TEST); }
+  // the view
+  gl.bindFramebuffer(gl.FRAMEBUFFER, SHOT.rt.f); gl.viewport(0, 0, rw, rh); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
+  if (sunOK) bindTex(24, gl.TEXTURE_2D, SHOT.sm.t);
+  const clouds = P.shotClouds && G.uCloudOn; const sunE = sunOK ? ((clouds ? S.sunRGBClear : S.sunRGB) || [0,0,0]) : [0,0,0];
+  setU(pr.pts, {...common, uVP:VP, uSizeMax:P.shotCam === 'orbit' ? 32 : 6, uOrtho:0, uSH:SHOT.sh, uSunE:sunE, uSunDir:L, uDomeOn:P.shotDome ? 1 : 0, uSunOn:sunOK ? 1 : 0,
+    uCloudsOn:clouds ? 1 : 0, uHasC:SHOT.hasC && P.shotAlbedo ? 1 : 0, uSMVP:SMVP, uSMTexel:smTexel, uSMOn:sunOK ? 1 : 0, uShadowExt:G.uShadowExt, uCBot:G.uCBot, uCTop:G.uCTop, uCloudOn:G.uCloudOn,
+    uGroundY:ap3(toSky, [0, (SHOT.groundY - cam.pos[1])*unitM, 0])[1]});
+  gl.drawArrays(gl.POINTS, 0, SHOT.W*SHOT.H); gl.disable(gl.DEPTH_TEST);
+  [21, 22, 23, 24].forEach(u => unbind(u, gl.TEXTURE_2D)); }
+function shotDisplay(){
+  resize(); const W = canvas.width, H = canvas.height; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H); gl.clearColor(0.027, 0.035, 0.047, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!SHOT.tex){ drawOverlay(); return; }
+  try { renderShot(); } catch(e){ console.error(e); setStatus('Shot view: ' + e.message); return; }
+  const [rx, ry, rw, rh] = shotRect(); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(rx, ry, rw, rh);
+  bindTex(25, gl.TEXTURE_2D, SHOT.rt.t); const pr = shotProgs();
+  // gl_FragCoord is relative to the window: offset the fetch by the viewport origin
+  const b = SHOT.basis, ctx = shownCtx, bg = P.shotBg && P.shotCam !== 'orbit' && b && ctx && ctx.acc ? 1 : 0; if (bg) bindTex(14, gl.TEXTURE_2D, ctx.acc[ctx.cur]);
+  setU(pr.disp, {uExpo:exposure(), uOff:[rx, ry], uRectSz:[rw, rh], uBg:bg, uCR:b ? b.r : [1,0,0], uCU:b ? b.u : [0,1,0], uCF:b ? b.f : [0,0,1], uTan:b ? b.t : [1,1], uAzOff:P.azOff*D2R});
+  draw(); unbind(25, gl.TEXTURE_2D); if (bg) unbind(14, gl.TEXTURE_2D); drawOverlay(); }
+
 /* ---------- display ---------- */
 const view = { mode:0, yaw:0, pitch:0.15, fov:75*D2R, expoComp:0, auto:true, place:'sun', ld:{yaw:null, pitch:0.16, dist:1} };
 let rect = [0,0,1,1];
@@ -2031,6 +2364,7 @@ function resize(){ const dpr = Math.min(window.devicePixelRatio||1, 2); const w 
 function autoK(){ const Ec = S.ghiClear||S.ghi||1e-3, Eg = S.ghi||Ec; const E = Math.max(Math.pow(Math.min(Eg, Ec), 0.75)*Math.pow(Ec, 0.25), 0.44); /* metering adapts ~3/4 of the way to the light under cloud (overcast reads as a bright softbox, a storm still reads dark); floor ≈ EV100 −2.5: night stays night */ let k = Math.PI/E; if (S.y95 > 0) k = Math.min(k, 0.6/S.y95); return k; }
 function exposure(){ if (view.auto) return autoK()*Math.pow(2, view.expoComp); return 1/(1.2*Math.pow(2, view.expoComp)); }
 function display(){
+  if (view.mode === 4){ shotDisplay(); return; }
   resize(); const W = canvas.width, H = canvas.height;
   let rw = W, rh = W/2; if (rh > H){ rh = H; rw = H*2; } rect = [(W-rw)/2, (H-rh)/2, rw, rh];
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0,0,W,H);
@@ -2044,9 +2378,10 @@ function display(){
 let overlayKey = '';
 function drawOverlay(){
   const ov = $('#overlay'); const dpr = canvas.width/canvas.clientWidth || 1;
-  const key = [view.mode, rect.join(','), P.azOff, canvas.clientWidth, canvas.clientHeight].join('|'); if (key === overlayKey) return; overlayKey = key;
+  const key = [view.mode, rect.join(','), P.azOff, canvas.clientWidth, canvas.clientHeight, !!SHOT.tex, P.shotCam].join('|'); if (key === overlayKey) return; overlayKey = key;
   if (view.mode === 1){ ov.innerHTML=''; return; }
   if (view.mode === 3){ ov.innerHTML = '<div class="hint">Drag to turn the sky around the set · scroll to move closer</div>'; return; }
+  if (view.mode === 4){ ov.innerHTML = SHOT.tex ? `<div class="hint">${P.shotCam === 'orbit' ? 'Drag to orbit · scroll to move closer' : 'Shot camera · switch to Orbit in the Shot view section to look around'}</div>` : '<div class="hint">Load a geometry utility pass in the <b>Shot view</b> section of the panel</div>'; return; }
   const [x0,y0,w,h] = rect.map(v=>v/dpr); const top = canvas.clientHeight - (y0+h);
   let s = `<div class="hline" style="left:${x0}px;width:${w}px;top:${top+h/2}px"></div>`;
   [['N',0],['NE',45],['E',90],['SE',135],['S',180],['SW',225],['W',270],['NW',315]].forEach(([n,az])=>{ let u = ((az - P.azOff)/360 + 0.5) % 1; if (u<0) u+=1; s += `<div class="compass" style="left:${x0+u*w}px;top:${top+h/2+4}px">${n}</div>`; });
@@ -3351,6 +3686,20 @@ const SECTIONS = [
     {type:'buttons', btns:[['Save scene file…', ()=>saveScene()], ['Load scene file…', ()=>{ const i = document.createElement('input'); i.type = 'file'; i.accept = '.json,application/json'; i.onchange = () => i.files[0] && loadSceneFile(i.files[0]); i.click(); }]]},
     {type:'info', id:'sceneInfo'},
   ]},
+  {title:'Shot view', items:[
+    {type:'buttons', btns:[['Load utility pass (EXR)…', ()=>{ const i = document.createElement('input'); i.type = 'file'; i.accept = '.exr'; i.onchange = () => i.files[0] && loadShotFile(i.files[0]); i.click(); }], ['Open shot view', ()=>setView(4)]]},
+    {type:'info', id:'shotInfo'},
+    {type:'info', id:'shotLayers'},
+    {k:'shotCam', label:'Camera', type:'select', opts:[['shot','Shot camera (from the file)'],['orbit','Orbit around the scene']], noScene:true, after:()=>{ overlayKey = ''; if (view.mode !== 4) setView(4); }},
+    {k:'shotUnits', label:'Scene units', type:'select', opts:[['mm','millimetres'],['cm','centimetres'],['m','metres'],['km','kilometres']], noScene:true},
+    {k:'shotUp', label:'Up axis', type:'select', opts:[['y','Y up'],['z','Z up']], noScene:true},
+    {k:'shotRot', label:'Sky rotation around the scene', min:-180, max:180, step:1, fmt:v=>`${v}°`, noScene:true},
+    {k:'shotDome', label:'Sky as a dome light', type:'check', noScene:true},
+    {k:'shotSun', label:'Sun as a separate light, with shadows', type:'check', noScene:true},
+    {k:'shotClouds', label:'Cloud shadows (gobo)', type:'check', noScene:true},
+    {k:'shotAlbedo', label:'Use surface colour', type:'check', noScene:true},
+    {k:'shotBg', label:'Show the sky behind the scene (shot camera)', type:'check', noScene:true},
+  ]},
   {title:'Look-dev checks', items:[
     {k:'ldcFace', label:'Chart and card facing', type:'select', opts:[['sun','Toward the sun (vertical)'],['away','Away from the sun (vertical)'],['up','Up (horizontal)']], noScene:true, after:()=>renderChecks()},
     {type:'buttons', btns:[['Measure this sky', ()=>measureSky()], ['Store as A', ()=>storeA()], ['A/B wipe on/off', ()=>{ if (!T_A){ notify('Store a sky as A first'); return; } P.wipeOn = !P.wipeOn; syncUI(); }]]},
@@ -3449,6 +3798,7 @@ function updateInfo(){
     ai.innerHTML = `Meteorological visibility <b class="mono">${S.vis>=100?Math.round(S.vis):S.vis.toFixed(S.vis<1?2:1)} km</b> · effective AOD <b class="mono">${S.aodE.toFixed(3)}</b>${d}`; }
   const hl = $('#hillInfo'); if (hl){ const an = hillAngle(); hl.innerHTML = an > 0.02 ? `The highest tops rise about <b class="mono">${an.toFixed(an < 1 ? 2 : 1)}°</b> above the horizon. At this distance haze turns them bluish and soft; the Earth's curvature hides their lower slopes.` : '<span style="color:var(--warn)">At this distance the Earth\'s curvature hides these hills below the horizon. Bring them closer or make them higher.</span>'; }
   const tl = $('#treeInfo'); if (tl) tl.innerHTML = `Belts of woods and hedgerows on the flat ground between ${P.treeNear < 1 ? Math.round(Math.min(P.treeNear, P.treeFar)*1000)+' m' : Math.min(P.treeNear, P.treeFar).toFixed(1)+' km'} and ${Math.max(P.treeNear, P.treeFar).toFixed(1)} km away. The nearest rise about <b class="mono">${treeAngle().toFixed(2)}°</b> above the horizon.`;
+  if (!SHOT.data) updateShotInfo();
   const pi = $('#paintInfo'); if (pi) pi.textContent = 'Drag on the panorama or in Look around to add or clear cloud. Paint is tied to sky direction, so it stays put while the sun, wind or weather change, and it is kept across presets until you clear it.';
   const li = $('#ldInfo'); if (li) li.textContent = 'The set is path traced with this sky as the only light. Sun and moon are sampled directly, so shadow edges keep their true 0.5° penumbra.';
 }
@@ -3555,7 +3905,7 @@ function brushCursor(e){ const el = $('#brush'); if (!(view.place==='add' || vie
 
 /* ---------- viewport interaction ---------- */
 const viewEl = $('#view');
-function setView(m){ view.mode = m; $('#viewSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on', Number(x.dataset.v)===m)); $('#legend').hidden = m!==2; $('#placeSeg').hidden = m===3; overlayKey = ''; if (m!==3) setStatus(shownCtx===CTX_PREVIEW ? `Preview ${P.previewRes}×${P.previewRes/2} · sample ${previewN}/${P.previewSpp}` : ''); }
+function setView(m){ view.mode = m; $('#viewSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on', Number(x.dataset.v)===m)); $('#legend').hidden = m!==2; $('#placeSeg').hidden = m>=3; overlayKey = ''; if (m!==3) setStatus(shownCtx===CTX_PREVIEW ? `Preview ${P.previewRes}×${P.previewRes/2} · sample ${previewN}/${P.previewSpp}` : ''); }
 $('#viewSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>setView(Number(b.dataset.v)));
 $('#placeSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>setTool(b.dataset.p));
 $('#autoEx').onchange = e => { view.auto = e.target.checked; view.expoComp = view.auto ? 0 : Math.round(Math.log2(Math.max(S.ghi,1e-6)/2.5)*10)/10; $('#exSlider').min = view.auto?-8:-12; $('#exSlider').max = view.auto?8:18; $('#exSlider').value = view.expoComp; exLabel(); };
@@ -3599,19 +3949,21 @@ viewEl.addEventListener('pointerdown', e => { if (!wipeActive() || e.target.clos
   e.stopImmediatePropagation(); e.preventDefault(); viewEl.setPointerCapture(e.pointerId); wipeDrag = true; }, true);
 viewEl.addEventListener('pointermove', e => { if (!wipeDrag) return; e.stopImmediatePropagation(); const r = canvas.getBoundingClientRect(); P.wipePos = clamp((e.clientX - r.left)/r.width, 0, 1); ctrls.wipePos && ctrls.wipePos.sync && ctrls.wipePos.sync(); }, true);
 viewEl.addEventListener('pointerup', e => { if (wipeDrag){ wipeDrag = false; e.stopImmediatePropagation(); } }, true);
-viewEl.addEventListener('pointerdown', e=>{ if (e.target.closest('.tools, .safe-note')) return;   // (capturing the pointer would swallow clicks on the notice's buttons) viewEl.setPointerCapture(e.pointerId); ldReset(); drag={x:e.clientX,y:e.clientY,yaw:view.yaw,pitch:view.pitch,lyaw:view.ld.yaw,lpitch:view.ld.pitch,moved:false};
+viewEl.addEventListener('pointerdown', e=>{ if (e.target.closest('.tools, .safe-note')) return;   // (capturing the pointer would swallow clicks on the notice's buttons) viewEl.setPointerCapture(e.pointerId); ldReset(); drag={x:e.clientX,y:e.clientY,yaw:view.yaw,pitch:view.pitch,lyaw:view.ld.yaw,lpitch:view.ld.pitch,oyaw:SHOT.orbit.yaw,opitch:SHOT.orbit.pitch,moved:false};
   if ((view.place==='add' || view.place==='remove') && view.mode < 2){ painting = true; paintAt(e); } else if (view.place==='sun' && view.mode===0) placeAt(e); });
 viewEl.addEventListener('pointermove', e=>{ brushCursor(e); if (!drag) return;
   if (painting){ paintAt(e); return; }
   if (Math.hypot(e.clientX-drag.x, e.clientY-drag.y) > 4) drag.moved = true;
   if (view.mode===3){ view.ld.yaw = drag.lyaw - (e.clientX-drag.x)*0.006; view.ld.pitch = clamp(drag.lpitch + (e.clientY-drag.y)*0.004, -0.05, 1.2); return; }
+  if (view.mode===4){ if (P.shotCam === 'orbit'){ SHOT.orbit.yaw = drag.oyaw - (e.clientX-drag.x)*0.006; SHOT.orbit.pitch = clamp(drag.opitch + (e.clientY-drag.y)*0.004, -0.2, 1.5); } return; }
   if (view.place==='sun' && view.mode===0){ placeAt(e); return; }
   if (view.mode===1){ const k = view.fov/canvas.clientHeight; view.yaw = drag.yaw - (e.clientX-drag.x)*k; view.pitch = clamp(drag.pitch + (e.clientY-drag.y)*k, -1.55, 1.55); } });
 viewEl.addEventListener('pointerup', e=>{ const d = drag; drag=null; if (painting){ painting = false; lastChange = performance.now(); return; }
   // a click (no drag) places the sun or moon; dragging in Look around orbits the view
   if (d && !d.moved && view.mode < 2 && (view.place==='moon' || (view.place==='sun' && view.mode===1))) placeAt(e); });
 viewEl.addEventListener('pointerleave', ()=>{ $('#brush').hidden = true; });
-viewEl.addEventListener('wheel', e=>{ if (view.mode===3){ e.preventDefault(); view.ld.dist = clamp(view.ld.dist*Math.exp(e.deltaY*0.001), 0.35, 3); return; }
+viewEl.addEventListener('wheel', e=>{ if (view.mode===4){ e.preventDefault(); if (P.shotCam === 'orbit') SHOT.orbit.dist = clamp(SHOT.orbit.dist*Math.exp(e.deltaY*0.001), 0.05, 5); return; }
+  if (view.mode===3){ e.preventDefault(); view.ld.dist = clamp(view.ld.dist*Math.exp(e.deltaY*0.001), 0.35, 3); return; }
   if (view.mode!==1) return; e.preventDefault(); view.fov = clamp(view.fov*Math.exp(e.deltaY*0.001), 15*D2R, 150*D2R); }, {passive:false});
 window.addEventListener('resize', ()=>{ overlayKey=''; drawMap(); });
 
