@@ -408,6 +408,19 @@ float heightProfile(float hf, float type){
 // The field is built like a real cloud: a coverage-limited base mass, clustered into turrets, whose surface is displaced
 // in and out by three octaves of fractal detail — rounded lumps (billows) on tops and sides, shredded wisps near the base —
 // and whose interior thickness varies so thin parts transmit light and thick cores shade.
+// GPUs blend neighbouring texels with only 8 bits of sub-texel precision (NVIDIA among them). The coverage map is read at a
+// coarse level, so near the camera one texel spans hundreds of metres and the blend comes out in steps a few metres apart;
+// the cloud base and edges built from it then show those steps as long wavy contour lines. Where a texel is that much larger
+// than a pixel, the map is blended here in full precision instead.
+vec4 bilinW(int l, vec2 uv){ vec2 sz = vec2(textureSize(uWeather, l)); vec2 q = uv*sz - 0.5; vec2 i = floor(q), f = q - i;
+  ivec2 a = ivec2(mod(i, sz)), b = ivec2(mod(i + 1.0, sz));
+  return mix(mix(texelFetch(uWeather, a, l), texelFetch(uWeather, ivec2(b.x, a.y), l), f.x), mix(texelFetch(uWeather, ivec2(a.x, b.y), l), texelFetch(uWeather, b, l), f.x), f.y); }
+vec4 weatherLod(vec2 uv, float L, float lod){
+  // magnification: texel size at level L over the pixel's footprint (lod is in shape-texel units of 0.0625·scale km)
+  // (only where a texel spans over ~128 pixels: elsewhere the steps are far below a pixel, and the exact blend costs 8 reads)
+  if (log2((WSCALE/512.0)/(0.0625*uCScale)) + L - lod < 7.0) return textureLod(uWeather, uv, L);
+  float Lc = clamp(L, 0.0, 8.0); int l0 = int(floor(Lc)); float fl = Lc - float(l0);
+  vec4 a = bilinW(l0, uv); return fl > 0.002 ? mix(a, bilinW(l0 + 1, uv), fl) : a; }
 float cloudDensity(vec3 p, float h, bool detail, float lod){
   if (h <= uCBot || h >= uCTop) return 0.0;
   vec2 xz = p.xz + uWind; float hb = h - uCBase; float thick0 = uCTop - uCBase; float hf0 = clamp(hb/thick0, 0.0, 1.0);
@@ -422,7 +435,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
     xw0 += (wv.gb - 0.5)*0.5*uCScale*convW;   // ±250 m: tower sides bulge, gently enough that columns never tear apart
     xw += (wv.gb - 0.5)*(0.15 + 0.4*hf0)*uCScale*convW; }
   // fine detail must come from 3-D noise: reading the 2-D coverage map coarsely keeps it from being extruded into striations
-  vec4 w = textureLod(uWeather, xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, uCType)));
+  vec4 w = weatherLod(xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, uCType)), lod);
   float cl = clamp(uCovBias + (w.r - 0.5)*uClump, 0.0, 1.0);
   float clCell = cl;   // the convective cells themselves (towers grow only from these)
   // storms are organised on a much larger scale than single cells (~50 km): a storm complex is a connected mass of many
@@ -430,7 +443,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // org: that large-scale pattern. core = the complex itself, ring = the zone of growing cumulus around it.
   float stormW = smoothstep(0.75, 0.9, uCType);
   float core = 0.0, ring = 1.0, ringH = 1.0, org = 0.0;
-  if (stormW > 0.0){ org = textureLod(uWeather, xw/(WSCALE*2.4) + uOrgOff, 1.5).a;
+  if (stormW > 0.0){ org = weatherLod(xw/(WSCALE*2.4) + uOrgOff, 1.5, lod - log2(2.4)).a;
     core = smoothstep(0.74, 0.86, org)*stormW;   // ~10 % of the area
     ring = mix(1.0, smoothstep(0.42, 0.8, org), stormW);
     ringH = mix(1.0, smoothstep(0.5, 0.82, org), stormW);
@@ -465,7 +478,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   float tw = 0.5;
   float cl0 = clCell, wg0 = w.g;
   if (tall > 0.0){ vec4 tn = textureLod(uShape, vec3(xw0.x, 7.3, xw0.y)/(3.6*uCScale), max(lod + 1.5, 0.0)); tw = smoothstep(0.25, 0.75, tn.r*0.6 + tn.g*0.4);
-    if (convW > 0.0){ vec4 w0 = textureLod(uWeather, xw0/WSCALE, max(lod - 0.5, 2.0 + 1.6*smoothstep(0.45, 0.9, uCType))); cl0 = clamp(uCovBias + (w0.r - 0.5)*uClump, 0.0, 1.0); wg0 = w0.g; }
+    if (convW > 0.0){ vec4 w0 = weatherLod(xw0/WSCALE, max(lod - 0.5, 2.0 + 1.6*smoothstep(0.45, 0.9, uCType)), lod); cl0 = clamp(uCovBias + (w0.r - 0.5)*uClump, 0.0, 1.0); wg0 = w0.g; }
     if (stormW > 0.0) cl0 = clamp(cl0 + stormW*(0.12*ring - 0.06) + 0.1*core, 0.0, 1.0); }   // the cells keep their own turret structure
   // the height lookup (w0) is smoother than the cloud's own outline: broad towers, never lone chimneys
   float cellX = cl0*(0.6 + 0.8*wg0)*mix(1.0, 0.62 + 0.55*tw, tall);   // broad turrets
@@ -523,7 +536,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   float field = cl > 0.0 ? (base*prof - (1.0 - clF))/max(clF, 0.05)*clF : -1.0;
   // layer clouds: the cellular pattern makes the field rise very steeply at cell edges, so the detail displacement could
   // barely move them and every cell ended in a clean, rounded cut-out. A gentler slope lets the edges break up and thin out.
-  if (cl > 0.0) field *= mix(1.0, 0.45, strat*clamp(lumpS/0.7, 0.0, 1.0));   // stratocumulus only: smooth stratus decks keep their density
+  if (cl > 0.0) field *= mix(1.0, 0.6, strat*clamp(lumpS/0.7, 0.0, 1.0));   // stratocumulus only: smooth stratus decks keep their density
   if (cl > 0.0) field += ((s.g - 0.5)*0.26 + (s.b - 0.5)*0.14 + (s.a - 0.5)*0.06)*lump*smoothstep(-0.03, 0.06, field);   // only reshapes existing cloud
   // anvil: a coherent, softly textured ice sheet spreading out from the storm cells (never eroded into dust)
   float anvD = anv*smoothstep(0.12, 0.4, cl)*(0.25 + 0.75*smoothstep(0.25, 0.75, s.g*0.6 + s.b*0.4))*0.5;   // patchy at the km scale
@@ -539,7 +552,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   float sharpT = clamp(bw*lump + 0.25*lump + 0.12*lumpS, 0.0, 1.0);
   // edges: a ramp of thinner cloud at the rim (wider for layer clouds, tight for cumulus), and no isolated specks in the
   // clear gaps — tiny islands that only just poke above the coverage threshold fade out instead of reading as dots
-  float rimW = mix(0.10, 0.045, conv);
+  float rimW = mix(0.10, 0.045, max(conv, 0.6*lumpS));   // stratocumulus has fairly crisp cell edges too, close up
   float gate = smoothstep(0.05, 0.2, cl);
   if (!detail){
     // cheap version for the lighting and shadow look-ups: the same density shaping as the detailed field, minus the small
@@ -560,12 +573,13 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   vec4 d3 = textureLod(uDetail, (qd + (d1.rgb - 0.5)*0.05*uCScale)/(0.13*uCScale) + vec3(0.71, uEvolve*2.1, 0.43), max(lod + 5.94, 0.0));
   float W1 = d1.r*0.625 + d1.g*0.25 + d1.b*0.125, W2 = d2.r*0.625 + d2.g*0.25 + d2.b*0.125, W3 = d3.r*0.625 + d3.g*0.25 + d3.b*0.125;
   // towers are read at a distance as big lobes; heavy fine octaves turned them into froth/speckle
-  float billow = (W1 - 0.56)*mix(0.55, 0.66, tall) + (W2 - 0.56)*0.30 + (W3 - 0.56)*mix(0.15, 0.05, tall);
+  // (stratocumulus seen from close below: lumpy, textured undersides rather than smooth blobs — more of the fine octave)
+  float billow = (W1 - 0.56)*mix(0.55, 0.66, tall) + (W2 - 0.56)*(0.30 + 0.08*lumpS) + (W3 - 0.56)*(mix(0.15, 0.05, tall) + 0.14*lumpS);
   float wisp = (d1.a - 0.5)*0.5 + (d2.a - 0.5)*0.3 + (d3.a - 0.5)*0.2;
   // a fourth, ~40 m octave for clouds close to the camera (overhead, or low bases), where 130 m was the finest detail
   if (lod < -1.0){ float nf = 1.0 - smoothstep(-3.0, -1.0, lod);
     vec4 d4 = textureLod(uDetail, (qd + (d2.rgb - 0.5)*0.02*uCScale)/(0.042*uCScale) + vec3(0.19, uEvolve*4.3, 0.61), max(lod + 7.55, 0.0));
-    billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*0.12*nf*(1.0 - 0.7*tall); wisp += (d4.a - 0.5)*0.16*nf; }
+    billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*(0.12 + 0.1*lumpS)*nf*(1.0 - 0.7*tall); wisp += (d4.a - 0.5)*0.16*nf; }
   float field0 = field;
   float disp = mix(wisp, billow, bw)*amp*2.4;
   disp = disp < 0.0 ? disp : disp*0.4*smoothstep(-0.1*amp, 0.02, field);
@@ -588,7 +602,9 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
     // the streaks are thin in height, so they are bent up and down by a few hundred metres over a few km: level, evenly
     // spaced layers cut the flat underside of the anvil in contour lines, which from below read as hard banding
     float yA = qd.y + ((s.g - 0.5)*0.9 + (s.b - 0.5)*0.5 + (W1 - 0.56)*0.6)*uCScale;
-    vec4 dA = textureLod(uDetail, vec3(qd.x/(1.6*uCScale), yA/(0.3*uCScale), qd.z/(1.6*uCScale)) + vec3(0.42, uEvolve*0.2, 0.77), max(lod + 3.5, 0.0));
+    // fibres, not sheets: long along the wind (x), thin across it (z), and thick in height — thin horizontal layers are cut by
+    // the flat underside into contour lines, which from below look like wood grain
+    vec4 dA = textureLod(uDetail, vec3(qd.x/(1.6*uCScale), yA/(0.9*uCScale), qd.z/(0.3*uCScale)) + vec3(0.42, uEvolve*0.2, 0.77), max(lod + 3.5, 0.0));
     float fib = smoothstep(0.25, 0.75, dA.a*0.6 + d2.a*0.25 + d3.a*0.15);
     float aD = anvD*(0.7 + 0.45*fib)*(0.6 + 0.6*W1);   // gentle: strong layering made the underside a stack of sheets, each lit differently (banding)
     aD = max(aD - 0.12*(1.0 - smoothstep(0.05, 0.3, anvD))*d2.a, 0.0);   // eroded, translucent margins
@@ -640,7 +656,20 @@ void main(){
     float fine = perlinFbm(q, vec3(12.0,64.0,1.0), 3, seed+140u);
     float big = perlinFbm(p, vec3(2.0,2.0,1.0), 4, seed+150u);
     float v = clamp(0.5 + 0.85*big + 0.55*fib + 0.2*fine, 0.0, 1.0);
-    o = vec4(v, clamp(0.5+fib, 0.0, 1.0), 0.0, 1.0); }
+    // b: generating cells — the dense tufts (heads) where ice forms, a few km apart; falling crystals trail from them
+    // ...with the trail of falling crystals baked in: it hangs downwind (−x, the streak direction) and curves away as it
+    // falls into slower air (the hook of "mares' tails")
+    float head = 0.0;
+    for (int k=0; k<14; k++){ float fk = float(k);
+      vec2 pk = p.xy + vec2(fk*0.012, 0.0003*fk*fk) + warp*0.03;
+      float hc = worleyP(vec3(pk, 0.0)*vec3(11.0,11.0,1.0), vec3(11.0,11.0,1.0), seed+160u);
+      float hk = smoothstep(0.55, 0.93, hc)*(k == 0 ? 1.0 : 0.85*(1.0 - fk/15.0));
+      head = max(head, hk); }
+    head *= clamp(0.55 + 1.2*perlinFbm(p, vec3(8.0,8.0,1.0), 3, seed+165u), 0.0, 1.0)*(0.7 + 0.6*clamp(0.5 + fib, 0.0, 1.0));
+    // a: cirrocumulus — small cells (~0.5 km) in ripples across the wind
+    float wave = 0.5 + 0.5*sin(6.2831853*(p.x*80.0 + 2.5*perlinFbm(p, vec3(4.0,4.0,1.0), 3, seed+175u)));
+    float cc = smoothstep(0.35, 0.85, 0.7*worleyP(vec3(q.xy, 0.0)*vec3(72.0,72.0,1.0), vec3(72.0,72.0,1.0), seed+180u) + 0.3*wave);
+    o = vec4(v, clamp(0.5+fib, 0.0, 1.0), head, cc); }
 }`;
 
 /* ----- transmittance LUT ----- */
@@ -966,7 +995,7 @@ uniform vec4 uSunK[NG]; uniform vec4 uSunAlpha[NG]; uniform float uSunRad; unifo
 uniform vec4 uAirglow[NG]; uniform vec3 uEqX; uniform vec3 uEqY; uniform vec3 uEqZ; uniform vec3 uGx; uniform vec3 uGy; uniform vec3 uGz;
 uniform float uStars; uniform float uStarMag; uniform float uMW; uniform float uMWIdx; uniform float uNight;
 uniform float uStarSplit;   // interactive preview: stars are drawn by the display at screen resolution; alpha = transmittance to space
-uniform float uCiCov; uniform float uCiH; uniform float uCiTau; uniform float uCiRot; uniform float uCiHalo; uniform vec4 uHalo22[NG]; uniform vec4 uHalo46[NG];
+uniform float uCiCov; uniform float uCiH; uniform float uCiTau; uniform float uCiRot; uniform float uCiForm; uniform float uCiHalo; uniform vec4 uHalo22[NG]; uniform vec4 uHalo46[NG];
 uniform vec4 uMid;    // mid sheet: coverage, altitude km, optical depth, type (0 altostratus … 1 altocumulus)
 uniform vec4 uMid2;   // mid cell scale, unused, evolution, ground texture
 uniform vec4 uCPh;
@@ -1018,9 +1047,37 @@ float haloLobe(float th, float th0, float w){ return th < th0 ? 0.0 : exp(-(th-t
 vec3 maskDir(vec3 d){ float az = atan(d.x, d.z), el = asin(clamp(d.y,-1.0,1.0)); return textureLod(uMask, vec2(fract(az/(2.0*PI) + 0.5), 0.5 - el/PI), 0.0).rgb; }
 float maskCov(float cov, float m){ return m >= 0.0 ? min(cov + 0.6*m, 1.0) : cov*(1.0 + m); }
 vec3 sheetMask(vec2 xz, float H){ return uMaskOn > 0.5 ? maskDir(normalize(vec3(xz.x, H - uCamH, xz.y))) : vec3(0.0); }
-float cirrusDensity(vec2 xz, float lod){ float c=cos(uCiRot), s=sin(uCiRot); vec2 q = mat2(c,-s,s,c)*(xz+uWind*0.6);
-  float cov = maskCov(uCiCov, sheetMask(xz + uMaskOff*0.6, uCiH).b);
-  float v = textureLod(uCirrus, q/40.0, lod).r; float th = 1.0 - cov*1.15; return smoothstep(th, th+0.38, v)*v; }
+/* cirrus: ice clouds formed in small generating cells near the top of a moist layer; the crystals fall out of them and are
+   drawn into long trails by the change of wind with height. So the forms differ: straight or gently curved filaments
+   (fibratus), hooked trails hanging from dense heads (uncinus, "mares' tails"), thick patches (spissatus), a smooth veil
+   (cirrostratus) and fields of tiny cells in ripples (cirrocumulus). The streak direction follows the upper wind, which
+   turns by tens of degrees across the sky, so the pattern is never one set of parallel lines. */
+vec4 ciTex(vec2 q, float lod){ return textureLod(uCirrus, q/40.0, lod); }
+float cirrusDensity(vec2 xz, float lod){
+  vec2 x0 = xz + uWind*0.6;
+  // slowly varying flow (±25°, ~100 km) and form selector, from the large-scale weather map
+  vec4 rg = textureLod(uWeather, x0/260.0 + vec2(0.31, 0.67), 3.0);
+  float ang = uCiRot + (rg.g - 0.5)*0.9; float c = cos(ang), s = sin(ang); vec2 q = mat2(c,-s,s,c)*x0;
+  // a second, differently scaled copy breaks up the 40 km repeat
+  // (turned only slightly: two streak sets crossing at a wide angle drew a cross-hatched ladder where they overlapped)
+  vec4 A = ciTex(q, lod), B = ciTex(mat2(0.995,-0.1,0.1,0.995)*q*0.71 + vec2(13.7, 5.3), lod);
+  float mB = smoothstep(0.3, 0.7, rg.b); vec4 T = mix(A, B, mB*0.6);
+  float cov = maskCov(uCiCov, sheetMask(xz + uMaskOff*0.6, uCiH).b); float th = 1.0 - cov*1.15;
+  float fibr = smoothstep(th, th + 0.38, T.r)*T.r;
+  // form weights: uCiForm 0 = natural mix (fibratus, uncinus and spissatus regions; a veil where coverage is high)
+  float wF = 0.0, wU = 0.0, wS = 0.0, wV = 0.0, wC = 0.0; int f = int(uCiForm + 0.5);
+  if (f == 1) wF = 1.0; else if (f == 2) wU = 1.0; else if (f == 3) wS = 1.0; else if (f == 4) wV = 1.0; else if (f == 5) wC = 1.0;
+  else { float r = rg.a; wU = smoothstep(0.45, 0.65, r); wS = smoothstep(0.62, 0.8, rg.r)*(1.0 - wU)*0.7; wV = smoothstep(0.6, 0.95, cov)*0.8; wF = max(1.0 - wU - wS, 0.0); }
+  float d = wF*fibr;
+  if (wU > 0.0){
+    // mares' tails: a dense head with a trail of falling crystals curving downwind (sampled back along the trail)
+    // (heads and their trails are baked into the map's blue channel)
+    float hd = T.b; float g = smoothstep(0.0, 0.25, hd + (cov - 0.5)*0.4);
+    d += wU*g*hd*(0.55 + 0.6*T.g); }
+  if (wS > 0.0) d += wS*smoothstep(th - 0.08, th + 0.25, T.r)*min(T.r*1.6, 1.0);
+  if (wV > 0.0) d = mix(d, smoothstep(0.0, 0.5, cov)*(0.45 + 0.25*T.r), wV);
+  if (wC > 0.0) d += wC*smoothstep(th, th + 0.3, 0.35 + 0.7*T.r*cov)*T.a*0.9;
+  return d; }
 // mid-level sheet: altostratus (smooth, grey) blending into altocumulus (cellular "sheep" clouds).
 // Altocumulus is not one even pattern across the sky: it comes in patches tens of km wide, inside which the cells change
 // size, merge into rafts or line up in rows (billows across the wind shear), and toward a patch's edge they shrink and
@@ -1084,6 +1141,10 @@ float sheetT(vec3 p, float h, vec3 L){ float T = 1.0; if (L.y <= 0.01) return T;
   if (uSheetOn.y > 0.5 && h < uCiH - 0.05){ float dd = (uCiH-h)/L.y; vec2 xz = p.xz + L.xz*dd; T *= exp(-cirrusDensity(xz, 3.0 + log2(1.0 + dd/4.0))*uCiTau/max(L.y,0.05)); }
   if (uSheetOn.x > 0.5 && h < uMid.y - 0.05){ float dd = (uMid.y-h)/L.y; vec2 xz = p.xz + L.xz*dd; T *= exp(-midDensity(xz, 2.0 + log2(1.0 + dd/4.0))*uMid.z/max(L.y,0.05)); }
   return T; }
+// light a sheet takes out of the direct beam but scatters on downward (two-stream: flux below = E·μ0·(Tt − Td)), relative to
+// the beam's irradiance on a level surface; ts is the sheet's transmittance along the light, m0 the light's elevation sine
+float sheetDiff(float ts, float m0){ if (m0 <= 0.0 || ts >= 0.999) return 0.0; float tv = -log(max(ts, 1e-6))*max(m0, 0.03); float mm = min(m0, 1.0);
+  return max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*ts)/(1.0 + 0.105*tv) - ts, 0.0)*m0; }
 float phaseCloudC(float c){ c=clamp(c,-1.0,1.0); float g2=uCPh.x*uCPh.x; float hg=(1.0-g2)/(4.0*PI*pow(max(1.0+g2-2.0*uCPh.x*c,1e-7),1.5));
   float gd=uCPh.y, gd2=gd*gd; float dr=(1.0-gd2)*(1.0+uCPh.z*c*c)/(4.0*PI*(1.0+uCPh.z*(1.0+2.0*gd2)/3.0)*pow(max(1.0+gd2-2.0*gd*c,1e-7),1.5));
   return mix(hg, dr, uCPh.w); }
@@ -1154,13 +1215,18 @@ void main(){
           for (int k=0;k<4+uZero;k++){ float tk = ta + dt*(float(k) + fract(jit + float(k)*0.618034))*0.25; vec3 pk = ro + rd*tk; float hk = length(pk-C0) - Rg;
             shS += uSunOn>0.5 ? cloudShadow(pk,hk,Ls,0) : 0.0; shM += uMoonOn>0.5 ? cloudShadow(pk,hk,Lm,1) : 0.0; }
           shS *= 0.25; shM *= 0.25; msS = meanS; msM = meanM; }
-        if (sheets){ if (uSunOn>0.5) shS *= sheetT(p,h,Ls); if (uMoonOn>0.5) shM *= sheetT(p,h,Lm); }
+        // under a sheet, the air loses the direct beam but is still lit by what the sheet diffuses downward (without this, the air
+        // beneath thicker parts of an altostratus deck went dark, showing as dark patches low in the sky)
+        float dsS = 0.0, dsM = 0.0;
+        if (sheets){ if (uSunOn>0.5){ float t1 = sheetT(p,h,Ls); shS *= t1; dsS = sheetDiff(t1, muS); } if (uMoonOn>0.5){ float t2 = sheetT(p,h,Lm); shM *= t2; dsM = sheetDiff(t2, muM); } }
         for (int g=0; g<NG+uZero; g++){
           vec4 sR = uBR[g]*dR, sM = uBMs[g]*dM; vec4 ext = sR + sM + uBMa[g]*dM + uBO[g]*dO + vec4(dF); vec4 sT = sR + sM + vec4(dF);
           vec4 S = vec4(0.0);
           if (uSunOn > 0.5) S += uSunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g,r,muS)*shS + sT*msLUT(g,h,muS)*msS);
           if (uMoonOn > 0.5) S += uMoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g,r,muM)*shM + sT*msLUT(g,h,muM)*msM);
           if (msS < 1.0) S += sT*(1.0-msS)*(uEdiff[g] + uAlb[g]*uEground[g])*(0.25/PI);
+          if (dsS > 0.0) S += sT*uSunE[g]*transmittance(g,r,muS)*dsS*(0.5/PI);   // diffuse from above: F/(2π) for one hemisphere
+          if (dsM > 0.0) S += sT*uMoonE[g]*transmittance(g,r,muM)*dsM*(0.5/PI);
           vec4 att = exp(-ext*dt); L[g] += uLw0.x*w*T[g]*(S - S*att)/max(ext, vec4(1e-9)); T[g] *= att; }
       }
     }
@@ -1624,7 +1690,7 @@ const DEFAULTS = {
   aerosol:'continental', aod:0.10, humidity:50, aerH:1.2, ozone:300, fogVis:50, fogH:0.15, camH:0.002, diurnal:true, climate:true, siteAlt:0,
   cov:0.3, cclump:0.3, cbillow:0.6, cvar:0.5, cairy:0.3, cbasevar:0.4, cscud:0.2, ctype:0.72, cbase:1.2, cthick:1.8, cdm:1, cscale:0.65, cerode:0.6, cdrop:18, seed:7, windX:0, windZ:0, evolve:0,
   midCov:0, midH:4.2, midTau:4, midType:0.7, midScale:1,
-  ciCov:0.12, ciH:9.0, ciTau:0.35, ciRot:30, ciHalo:0,
+  ciCov:0.12, ciH:9.0, ciTau:0.35, ciRot:30, ciForm:0, ciHalo:0,
   surface:'grey', albedo:0.18, groundMode:'lit', groundVar:0.35,
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
@@ -1705,7 +1771,7 @@ function computePhysics(){
     uSunK:f32(a.SunK), uSunAlpha:f32(a.SunA), uSunRad:sunRad, uSunSquash:sunSquash(P.sunEl), uMoonK:f32(a.MoonK), uMoonRad:moonRad*P.moonScale, uMoonTexOn:MOONTEX, uMoonLight:ml, uPole:pole,
     uAirglow:f32(a.Air), uEqX:eqX, uEqY:eqY, uEqZ:zp, uGx:GALACTIC.x, uGy:GALACTIC.y, uGz:GALACTIC.z,
     uStars:P.stars?1:0, uStarMag:P.starMag, uMW:P.mw, uMWIdx:Math.round(15*Math.log10(4600/2500)), uNight:P.sunEl < 0 ? 1 : 0,
-    uCiCov:P.ciCov, uCiH:P.ciH, uCiTau:P.ciTau, uCiRot:P.ciRot*D2R, uCiHalo:P.ciHalo, uHalo22:f32(a.H22), uHalo46:f32(a.H46),
+    uCiCov:P.ciCov, uCiH:P.ciH, uCiTau:P.ciTau, uCiRot:P.ciRot*D2R, uCiForm:P.ciForm||0, uCiHalo:P.ciHalo, uHalo22:f32(a.H22), uHalo46:f32(a.H46),
     uMid:[P.midCov, P.midH, P.midTau, P.midType], uMid2:[P.midScale, 0, P.evolve, P.groundVar], uSheetOn:[(P.midCov > 0 || MASKINFO.add[1]) ? 1 : 0, (P.ciCov > 0 || MASKINFO.add[2]) ? 1 : 0],
     ...terrUniforms(),
     uMaskOn: MASKINFO.any ? 1 : 0, uMaskCamH:P.camH, uMaskOff:[P.windX - MASKINFO.wind[0], P.windZ - MASKINFO.wind[1]], uShear:[0.14, 0.05],
@@ -2298,7 +2364,7 @@ function goboProgram(){
   if (P_GOBO) return P_GOBO;
   const sheets = FS_COMP.slice(FS_COMP.indexOf('vec3 maskDir('), FS_COMP.indexOf('float phaseCloudC('));
   const FS_GOBO = HDR + LIGHTS + CLOUD + PIXEL + `
-uniform sampler2D uCirrus; uniform vec2 uSheetOn; uniform float uCiCov; uniform float uCiH; uniform float uCiTau; uniform float uCiRot; uniform vec4 uMid; uniform vec4 uMid2;
+uniform sampler2D uCirrus; uniform vec2 uSheetOn; uniform float uCiCov; uniform float uCiH; uniform float uCiTau; uniform float uCiRot; uniform float uCiForm; uniform vec4 uMid; uniform vec4 uMid2;
 const vec3 C0 = vec3(0.0, -6360.0, 0.0);
 ` + sheets + `
 uniform vec2 uGoboN; uniform float uGoboExt; uniform int uGoboMode; uniform vec3 uGU; uniform vec3 uGV; uniform vec3 uGL; uniform float uGJit; uniform float uGRow0;
@@ -3012,6 +3078,9 @@ function realWeather(kind, X){
     if (Math.random() < 0.4){ stratoCu(); set({cov:[0.05,0.2], ctype:[0.4,0.55], cthick:[0.5,0.8]}); P.cbase = r2(lcl()); } }
   if (kind === 'mixed'){
     stratoCu(); set({cov:[0.2,0.45], ctype:[0.55,0.72], cthick:[0.8,1.6], midCov:[0.25,0.55], midType:[0.6,0.95], midTau:[1.5,4], midH:[3.5,5.5], ciCov:[0.25,0.6]}); P.cbase = r2(lcl()); }
+  // which kind of cirrus: hooked trails and filaments in fair weather, a veil ahead of a front, dense debris near storms
+  P.ciForm = kind === 'cirrus' ? weighted([[0,0.45],[1,0.15],[2,0.25],[3,0.05],[5,0.1]]) : kind === 'alto' ? weighted([[4,0.5],[0,0.5]])
+    : kind === 'storm' ? weighted([[3,0.6],[0,0.4]]) : kind === 'mixed' ? weighted([[0,0.5],[4,0.3],[1,0.2]]) : 0;
   // ground fog: forms in still, humid air overnight and lingers into the early morning
   const fogOdds = X.desert || !['clear','strato','overcast'].includes(kind) ? 0 : (X.dawn ? 0.3 : X.el < -6 ? 0.15 : 0)*(X.rh0 > 50 ? 1 : 0.3);
   if (Math.random() < fogOdds){ set({fogVis:[0.3,3], fogH:[0.05,0.3]}); rh(rnd(92, 97)); if (kind === 'clear') P.cov = 0; }
@@ -3035,6 +3104,7 @@ function wildWeather(kind){
   if (kind==='cirrus') Object.assign(P, {cov:+rnd(0,0.1).toFixed(2), ciCov:+rnd(0.5,0.9).toFixed(2), ciTau:+rnd(0.2,1).toFixed(2)});
   if (kind==='alto') Object.assign(P, {midCov:+rnd(0.5,1).toFixed(2), midType:+rnd(0,1).toFixed(2), midH:+rnd(3,5.5).toFixed(1), midTau:+rnd(2,10).toFixed(1), midScale:+rnd(0.7,1.5).toFixed(2), cov:+rnd(0,0.2).toFixed(2), ciCov:+rnd(0,0.4).toFixed(2)});
   if (kind==='mixed'){ cu(); Object.assign(P, {midCov:+rnd(0.2,0.6).toFixed(2), midType:+rnd(0.5,1).toFixed(2), midTau:+rnd(1.5,5).toFixed(1), ciCov:+rnd(0.2,0.6).toFixed(2)}); }
+  P.ciForm = Math.floor(rnd(0, 6));
   if (Math.random() < 0.08){ P.fogVis = +rnd(0.4,6).toFixed(1); P.fogH = +rnd(0.05,0.4).toFixed(2); }
   P.seed = Math.floor(Math.random()*997); P.windX = +rnd(-20,20).toFixed(1); P.windZ = +rnd(-20,20).toFixed(1); P.ciRot = Math.round(rnd(0,180)); P.evolve = +rnd(0,20).toFixed(2); }
 function randomizeWeather(){
@@ -3044,7 +3114,7 @@ function randomizeWeather(){
     // blend: numbers part-way from the realistic value toward the wild one, choices picked one way or the other
     for (const k of wxKeys()){ const a = R[k], b = W[k];
       if (k === 'fogVis' || k === 'aod') P[k] = +Math.exp(Math.log(a) + (Math.log(b) - Math.log(a))*v).toFixed(3);   // ratios blend on a log scale
-      else if (typeof a === 'number' && typeof b === 'number') P[k] = ['seed','ciRot','humidity','ozone'].includes(k) ? Math.round(a + (b - a)*v) : +(a + (b - a)*v).toFixed(3);
+      else if (typeof a === 'number' && typeof b === 'number') P[k] = ['seed','ciRot','humidity','ozone','ciForm'].includes(k) ? Math.round(a + (b - a)*v) : +(a + (b - a)*v).toFixed(3);
       else P[k] = Math.random() < v ? b : a; } }
   lastWxKind = kind; dirtyCirrus = true; afterBulk(); }
 // realistic sun and moon: a real date and time, so the sun's height, direction and the moon's place and phase all agree
@@ -3204,7 +3274,8 @@ const SECTIONS = [
     {k:'ciCov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`},
     {k:'ciH', label:'Altitude', min:5, max:13, step:0.1, fmt:v=>`${v.toFixed(1)} km`},
     {k:'ciTau', label:'Optical depth', min:0.02, max:3, log:true, fmt:v=>v.toFixed(2)},
-    {k:'ciRot', label:'Streak direction', min:0, max:180, step:1, fmt:v=>`${v}°`},
+    {k:'ciForm', label:'Form', type:'select', opts:[[0,'Natural mix'],[1,'Fibratus · filaments'],[2,'Uncinus · mares\' tails'],[3,'Spissatus · dense patches'],[4,'Cirrostratus · veil'],[5,'Cirrocumulus · ripples']], num:true},
+    {k:'ciRot', label:'Upper wind direction', min:0, max:180, step:1, fmt:v=>`${v}°`},
     {k:'ciHalo', label:'Ice-crystal halos (22°, 46°)', min:0, max:1, step:0.01, fmt:v=>v<0.005?'off':v.toFixed(2)},
   ]},
   {title:'Paint clouds', items:[
@@ -3400,7 +3471,7 @@ function changed(lut, noScene){ if (lut) dirtyLUT = true; if (!noScene){ compute
 
 /* ---------- presets ---------- */
 const BASEWX = {aerosol:'continental', aod:0.1, humidity:50, aerH:1.2, ozone:300, fogVis:50, fogH:0.15, cov:0, cclump:0.5, cbillow:0.5, cvar:0.5, cairy:0.3, cbasevar:0.4, cscud:0.15, ctype:0.68, cbase:1.3, cthick:1.7, cdm:1, cscale:1, cerode:0.6, cdrop:18,
-  midCov:0, midH:4.2, midTau:4, midType:0.7, midScale:1, ciCov:0, ciH:9, ciTau:0.35, ciRot:30, ciHalo:0};
+  midCov:0, midH:4.2, midTau:4, midType:0.7, midScale:1, ciCov:0, ciH:9, ciTau:0.35, ciRot:30, ciForm:0, ciHalo:0};
 const PRESETS = [
   ['Clear noon', {sunEl:62, sunAz:180, aod:0.06, humidity:40}],
   ['Fair-weather cumulus', {sunEl:46, sunAz:150, cov:0.3, ctype:0.72, cbase:1.2, cthick:1.8, cscale:0.65, cdm:0.7, cclump:0.25, cbillow:0.65, cvar:0.45, cairy:0.25, cbasevar:0.35, cscud:0.1, cerode:0.42, ciCov:0.12, clear:'sun'}],
