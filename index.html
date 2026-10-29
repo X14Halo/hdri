@@ -379,12 +379,18 @@ float phaseFog(float c){ return mix(phaseHG(c,uFogPh.x), phaseDraine(c,uFogPh.y,
 const LIGHTS = `
 uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform vec4 uSunE[NG]; uniform vec4 uMoonE[NG]; uniform float uSunOn; uniform float uMoonOn;
 `;
+// texture lookups for the cloud fields (one place to change how they are filtered)
+const EXACT_GLSL = `
+vec4 t3S(vec3 p, float lod){ return textureLod(uShape, p, lod); }
+vec4 t2W(vec2 uv, float lod){ return textureLod(uWeather, uv, lod); }
+`;
 const CLOUD = `
 // always 0 (never set). Added to loop bounds that contain the density function so shader compilers cannot unroll them:
 // unrolled, each loop pastes dozens of copies of a large function into the program, and on some drivers (Windows/D3D)
 // compiling that can take long enough to hang the browser's GPU process
 uniform int uZero;
 uniform sampler3D uShape; uniform sampler3D uDetail; uniform sampler2D uWeather; uniform sampler2D uMask;
+${EXACT_GLSL}vec4 t3D(vec3 p, float lod){ return textureLod(uDetail, p, lod); }
 uniform float uCBase; uniform float uCTop; uniform float uCovBias; uniform float uCType; uniform float uCDens; uniform float uCScale; uniform float uCErode; uniform vec2 uWind; uniform float uCloudOn; uniform float uEvolve;
 uniform vec2 uShear; uniform float uMaskOn; uniform float uMaskCamH; uniform vec2 uMaskOff; uniform float uClump; uniform float uBillow; uniform float uCVar;
 uniform float uBaseVar; uniform float uScud; uniform float uAiry; uniform float uCBot; uniform vec3 uSkyKeyDir; uniform float uSkyKeyF;
@@ -418,20 +424,20 @@ vec4 bilinW(int l, vec2 uv){ vec2 sz = vec2(textureSize(uWeather, l)); vec2 q = 
 vec4 weatherLod(vec2 uv, float L, float lod){
   // magnification: texel size at level L over the pixel's footprint (lod is in shape-texel units of 0.0625·scale km)
   // (only where a texel spans over ~128 pixels: elsewhere the steps are far below a pixel, and the exact blend costs 8 reads)
-  if (log2((WSCALE/512.0)/(0.0625*uCScale)) + L - lod < 7.0) return textureLod(uWeather, uv, L);
+  if (log2((WSCALE/512.0)/(0.0625*uCScale)) + L - lod < 7.0) return t2W(uv, L);
   float Lc = clamp(L, 0.0, 8.0); int l0 = int(floor(Lc)); float fl = Lc - float(l0);
   vec4 a = bilinW(l0, uv); return fl > 0.002 ? mix(a, bilinW(l0 + 1, uv), fl) : a; }
 float cloudDensity(vec3 p, float h, bool detail, float lod){
   if (h <= uCBot || h >= uCTop) return 0.0;
   vec2 xz = p.xz + uWind; float hb = h - uCBase; float thick0 = uCTop - uCBase; float hf0 = clamp(hb/thick0, 0.0, 1.0);
   // clouds lean with wind shear and meander with height, so towers are not vertical extrusions of a 2-D map
-  vec3 wn = textureLod(uShape, vec3(xz.x*0.03, h*0.07 + uEvolve*0.01, xz.y*0.03), 2.0).gba;
+  vec3 wn = t3S( vec3(xz.x*0.03, h*0.07 + uEvolve*0.01, xz.y*0.03), 2.0).gba;
   vec2 xw = xz + uShear*hb + (wn.xy - 0.5)*(0.6 + 1.6*hf0)*uCScale;
   // convective clouds: a smooth ~1.3 km warp of space that changes with height, so towers and cell sides wander and bulge
   // (cauliflower outlines) while staying connected — steep-sided columns cannot get this from surface detail alone
   // How tall a cell grows is read at the unbent position (xw0), so a tower stays one connected column.
   float convW = smoothstep(0.45, 0.8, uCType); vec2 xw0 = xw;
-  if (convW > 0.0){ vec4 wv = textureLod(uShape, vec3(xz.x, h*1.1 + uEvolve*0.6, xz.y)/(1.3*uCScale) + vec3(0.6, 0.2, 0.9), max(lod + 1.0, 0.0));
+  if (convW > 0.0){ vec4 wv = t3S( vec3(xz.x, h*1.1 + uEvolve*0.6, xz.y)/(1.3*uCScale) + vec3(0.6, 0.2, 0.9), max(lod + 1.0, 0.0));
     xw0 += (wv.gb - 0.5)*0.5*uCScale*convW;   // ±250 m: tower sides bulge, gently enough that columns never tear apart
     xw += (wv.gb - 0.5)*(0.15 + 0.4*hf0)*uCScale*convW; }
   // fine detail must come from 3-D noise: reading the 2-D coverage map coarsely keeps it from being extruded into striations
@@ -463,8 +469,8 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
     if (y >= 1.0 || under <= 0.0) return 0.0;
     if (!detail) return 0.02*uCDens;
     vec3 qs = vec3(xw.x, h*2.4 + uEvolve*0.5, xw.y);
-    vec4 a = textureLod(uDetail, qs/(1.6*uCScale) + vec3(0.13, 0.0, 0.29), max(lod + 3.0, 0.0));
-    vec4 b = textureLod(uDetail, qs/(0.5*uCScale) + vec3(0.57, uEvolve*0.4, 0.11), max(lod + 4.7, 0.0));
+    vec4 a = t3D( qs/(1.6*uCScale) + vec3(0.13, 0.0, 0.29), max(lod + 3.0, 0.0));
+    vec4 b = t3D( qs/(0.5*uCScale) + vec3(0.57, uEvolve*0.4, 0.11), max(lod + 4.7, 0.0));
     float n = a.a*0.55 + b.a*0.25 + b.r*0.2;
     float thr = 1.0 - 0.5*uScud*under*(1.0 - y*y) - 0.08;
     return smoothstep(thr, thr + 0.14, n)*(0.25 + 0.4*a.r)*0.5*uCDens; }
@@ -477,7 +483,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // switches on fairly sharply with the cell's strength, which is broken up by a turret-scale pattern
   float tw = 0.5;
   float cl0 = clCell, wg0 = w.g;
-  if (tall > 0.0){ vec4 tn = textureLod(uShape, vec3(xw0.x, 7.3, xw0.y)/(3.6*uCScale), max(lod + 1.5, 0.0)); tw = smoothstep(0.25, 0.75, tn.r*0.6 + tn.g*0.4);
+  if (tall > 0.0){ vec4 tn = t3S( vec3(xw0.x, 7.3, xw0.y)/(3.6*uCScale), max(lod + 1.5, 0.0)); tw = smoothstep(0.25, 0.75, tn.r*0.6 + tn.g*0.4);
     if (convW > 0.0){ vec4 w0 = weatherLod(xw0/WSCALE, max(lod - 0.5, 2.0 + 1.6*smoothstep(0.45, 0.9, uCType)), lod); cl0 = clamp(uCovBias + (w0.r - 0.5)*uClump, 0.0, 1.0); wg0 = w0.g; }
     if (stormW > 0.0) cl0 = clamp(cl0 + stormW*(0.12*ring - 0.06) + 0.1*core, 0.0, 1.0); }   // the cells keep their own turret structure
   // the height lookup (w0) is smoother than the cloud's own outline: broad towers, never lone chimneys
@@ -498,7 +504,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   if (cl <= 0.0 && anv <= 0.0) return 0.0;
   hs *= mix(1.0, 0.5 + 0.5*sqrt(cl), conv*(1.0 - tall));
   vec3 q = vec3(xw.x, h*mix(1.4, 0.8, conv) + uEvolve, xw.y);   // layered decks: flattened features; towers: rising, vertically stretched
-  vec4 s = textureLod(uShape, q/(8.0*uCScale), max(lod, 0.0));
+  vec4 s = t3S( q/(8.0*uCScale), max(lod, 0.0));
   float hf2 = (hf + (s.b - 0.5)*0.05*uBaseVar)/hs;                // slightly ragged base
   float prof = hf2 < 1.0 ? heightProfile(hf2, uCType) : 0.0;
   float base = remap(s.r, (s.g*0.625 + s.b*0.25 + s.a*0.125) - 1.0, 1.0, 0.0, 1.0);
@@ -509,8 +515,8 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // and a stratocumulus deck into its lumpy rolls and cells
   float lumpE = lump;   // the lighting lookups see the lumps too: that is what makes thick cell cores dark and thin rims bright
   if (lumpE > 0.0 && uBillow > 0.0){
-    vec4 s2 = textureLod(uShape, q/(2.6*uCScale) + vec3(0.37, 0.11, 0.73), max(lod + 1.6, 0.0));
-    vec4 s3 = textureLod(uShape, q/(0.9*uCScale) + vec3(0.83, 0.47, 0.19), max(lod + 3.15, 0.0));
+    vec4 s2 = t3S( q/(2.6*uCScale) + vec3(0.37, 0.11, 0.73), max(lod + 1.6, 0.0));
+    vec4 s3 = t3S( q/(0.9*uCScale) + vec3(0.83, 0.47, 0.19), max(lod + 3.15, 0.0));
     float b2 = remap(s2.r, (s2.g*0.625 + s2.b*0.25 + s2.a*0.125) - 1.0, 1.0, 0.0, 1.0);
     float b3 = remap(s3.r, (s3.g*0.625 + s3.b*0.25 + s3.a*0.125) - 1.0, 1.0, 0.0, 1.0);
     base = mix(base, base*(0.3 + 0.9*b2), lumpE*uBillow);
@@ -541,7 +547,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // anvil: a coherent, softly textured ice sheet spreading out from the storm cells (never eroded into dust)
   float anvD = anv*smoothstep(0.12, 0.4, cl)*(0.25 + 0.75*smoothstep(0.25, 0.75, s.g*0.6 + s.b*0.4))*0.5;   // patchy at the km scale
   // dense, puffy regions mixed with light, airy ones (low-frequency selector)
-  float airy = uAiry > 0.0 ? uAiry*smoothstep(0.42, 0.66, textureLod(uShape, q/(19.0*uCScale) + vec3(0.21, 0.4, 0.67), max(lod - 1.3, 0.0)).g) : 0.0;
+  float airy = uAiry > 0.0 ? uAiry*smoothstep(0.42, 0.66, t3S( q/(19.0*uCScale) + vec3(0.21, 0.4, 0.67), max(lod - 1.3, 0.0)).g) : 0.0;
   float amp = 0.04 + (0.34*lump + 0.08)*uBillow + 0.08*uCErode + 0.06*airy;
   // mesoscale water content: over a few km some parts of a deck or cloud field hold two to three times the water of others.
   // Under a solid deck this is what you see: thick patches dark, thinner ones glowing (T ≈ 1/(1 + kτ))
@@ -557,7 +563,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // small and edge fragments (coverage just above threshold) are mostly mixed-in, evaporating cloud: ragged and thin
   // — judged against the cover around it (a ~4x wider read of the map), so the margins of a big cloud mass keep their
   // crisp, dense cauliflower edges and only the small, isolated clouds and outlying bits turn thin and ragged
-  float clB = clamp(uCovBias + (textureLod(uWeather, xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, uCType)) + 2.0).r - 0.5)*uClump, 0.0, 1.0);
+  float clB = clamp(uCovBias + (t2W( xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, uCType)) + 2.0).r - 0.5)*uClump, 0.0, 1.0);
   float small = 1.0 - smoothstep(0.12, 0.34, clB);
   float frag = (1.0 - smoothstep(0.12, 0.45, cl))*small;
   // liquid water grows with height above the base (rising air keeps condensing), so small, shallow clouds and the lower
@@ -579,9 +585,11 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   // three detail octaves: billows = Worley cells (centres bulge out), wisps = fBm (shreds); gentle warp only
   vec3 warp = (vec3(s.g, 0.5*(s.g + s.b), s.b) - 0.5)*0.09*uCScale*(1.0 + (1.0 - hf));
   vec3 qd = q + warp;
-  vec4 d1 = textureLod(uDetail, qd/(1.2*uCScale) + vec3(0.0, uEvolve*0.37, 0.0), max(lod + 2.74, 0.0));
-  vec4 d2 = textureLod(uDetail, qd/(0.4*uCScale) + vec3(0.31, uEvolve*0.9, 0.17), max(lod + 4.32, 0.0));
-  vec4 d3 = textureLod(uDetail, (qd + (d1.rgb - 0.5)*0.05*uCScale)/(0.13*uCScale) + vec3(0.71, uEvolve*2.1, 0.43), max(lod + 5.94, 0.0));
+  vec4 d1 = t3D( qd/(1.2*uCScale) + vec3(0.0, uEvolve*0.37, 0.0), max(lod + 2.74, 0.0));
+  // turbulence: each finer octave is carried around by the eddies of the one above it (a cascade), so the small features
+  // curl and smear into one another instead of sitting as separate round cells on a smooth surface
+  vec4 d2 = t3D( (qd + (d1.gba - 0.5)*0.11*uCScale)/(0.4*uCScale) + vec3(0.31, uEvolve*0.9, 0.17), max(lod + 4.32, 0.0));
+  vec4 d3 = t3D( (qd + (d1.rgb - 0.5)*0.05*uCScale + (d2.gba - 0.5)*0.035*uCScale)/(0.13*uCScale) + vec3(0.71, uEvolve*2.1, 0.43), max(lod + 5.94, 0.0));
   float W1 = d1.r*0.625 + d1.g*0.25 + d1.b*0.125, W2 = d2.r*0.625 + d2.g*0.25 + d2.b*0.125, W3 = d3.r*0.625 + d3.g*0.25 + d3.b*0.125;
   // towers are read at a distance as big lobes; heavy fine octaves turned them into froth/speckle
   // (stratocumulus seen from close below: lumpy, textured undersides rather than smooth blobs — more of the fine octave)
@@ -589,16 +597,30 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
   float wisp = (d1.a - 0.5)*0.5 + (d2.a - 0.5)*0.3 + (d3.a - 0.5)*0.2;
   // a fourth, ~40 m octave for clouds close to the camera (overhead, or low bases), where 130 m was the finest detail
   if (lod < -1.0){ float nf = 1.0 - smoothstep(-3.0, -1.0, lod);
-    vec4 d4 = textureLod(uDetail, (qd + (d2.rgb - 0.5)*0.02*uCScale)/(0.042*uCScale) + vec3(0.19, uEvolve*4.3, 0.61), max(lod + 7.55, 0.0));
+    vec4 d4 = t3D( (qd + (d2.rgb - 0.5)*0.02*uCScale)/(0.042*uCScale) + vec3(0.19, uEvolve*4.3, 0.61), max(lod + 7.55, 0.0));
     billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*(0.12 + 0.1*lumpS)*nf*(1.0 - 0.7*tall); wisp += (d4.a - 0.5)*0.16*nf; }
   float field0 = field;
-  float disp = mix(wisp, billow, bw*(1.0 - 0.6*frag))*amp*(2.4 + 1.2*frag);
+  // how ragged the margin is. Cloud edges are where cloudy and clear air mix (entrainment): turbulent eddies at every scale
+  // fray them, so an outline is fractal and partly see-through rather than a smooth blob. Only the tops of actively growing
+  // convective towers stay hard (the rising core pushes the edge out faster than mixing eats it); the sides and bases of
+  // cumulus, small and decaying clouds and airy parts are ragged. (Stratocumulus heaps: firm tops, soft frayed sides.)
+  float topCrisp = lump*smoothstep(0.45, 0.9, hf2)*(0.6 + 0.4*tall)*(1.0 - frag);
+  float rag = mix(1.0, 0.3, topCrisp)*(1.0 + 0.5*frag + 0.4*airy);
+  // near the margin the round Worley billows give way to the shredded fBm: lumps with frayed surfaces, not smooth balls
+  float edgeB = 1.0 - smoothstep(0.0, 0.07, field0);
+  float bwE = bw*(1.0 - 0.6*frag)*(1.0 - 0.45*edgeB*rag);
+  float disp = mix(wisp, billow, bwE)*amp*(2.4 + 1.2*frag);
   disp = disp < 0.0 ? disp : disp*0.4*smoothstep(-0.1*amp, 0.02, field);
   field += disp;
   field -= (uCErode*0.1 + airy*0.08 + 0.07*lumpS + 0.1*frag*lump)*(1.0 - smoothstep(0.0, 0.25, field))*max(d2.a - 0.35, 0.0);
-  // fine breakup of the rim: ragged, partly translucent margins rather than a clean cut-out edge
-  field -= (0.05 + 0.06*lumpS)*uCErode*(1.0 - smoothstep(0.0, 0.12, field))*max(d3.a - 0.45, 0.0)*2.0;
-  float sharp = mix(1.5, 9.0, sharpT*smoothstep(0.01, 0.09, field0)*(1.0 - 0.7*frag));
+  // the margin itself: the two finer octaves push the edge both in and out (fringes and notches) and thin it in patches
+  // (translucent wisps between denser tufts), within a band whose width scales with how ragged this part of the cloud is
+  float band = exp(-(field*field)/(0.0012 + 0.0024*rag));
+  float fray = ((d2.a - 0.5)*0.6 + (d3.a - 0.5)*0.4 + (W3 - 0.56)*0.5)*amp*rag*band*(0.9 + 0.4*uCErode);
+  field += fray;
+  field -= (0.05 + 0.06*lumpS + 0.04*rag)*uCErode*(1.0 - smoothstep(0.0, 0.12, field))*max(d3.a - 0.45, 0.0)*2.0;
+  // edges are a soft ramp where they are ragged (mixing: liquid water fades over tens of metres), hard on growing tops
+  float sharp = mix(1.5, 9.0, sharpT*smoothstep(0.01, 0.09, field0)*(1.0 - 0.7*frag)*mix(0.7, 1.0, topCrisp));
   sharp = mix(sharp, 1.2, airy);
   float dens = clamp(field*sharp, 0.0, 1.0);
   dens = dens*dens*(3.0 - 2.0*dens)*0.5 + dens*0.5;
@@ -615,7 +637,7 @@ float cloudDensity(vec3 p, float h, bool detail, float lod){
     float yA = qd.y + ((s.g - 0.5)*0.9 + (s.b - 0.5)*0.5 + (W1 - 0.56)*0.6)*uCScale;
     // fibres, not sheets: long along the wind (x), thin across it (z), and thick in height — thin horizontal layers are cut by
     // the flat underside into contour lines, which from below look like wood grain
-    vec4 dA = textureLod(uDetail, vec3(qd.x/(1.6*uCScale), yA/(0.9*uCScale), qd.z/(0.3*uCScale)) + vec3(0.42, uEvolve*0.2, 0.77), max(lod + 3.5, 0.0));
+    vec4 dA = t3D( vec3(qd.x/(1.6*uCScale), yA/(0.9*uCScale), qd.z/(0.3*uCScale)) + vec3(0.42, uEvolve*0.2, 0.77), max(lod + 3.5, 0.0));
     float fib = smoothstep(0.25, 0.75, dA.a*0.6 + d2.a*0.25 + d3.a*0.15);
     float aD = anvD*(0.7 + 0.45*fib)*(0.6 + 0.6*W1);   // gentle: strong layering made the underside a stack of sheets, each lit differently (banding)
     aD = max(aD - 0.12*(1.0 - smoothstep(0.05, 0.3, anvD))*d2.a, 0.0);   // eroded, translucent margins
@@ -962,7 +984,8 @@ float terrainShadow(vec3 p, vec3 L){
 /* ----- distant tree lines: belts of woodland and hedgerow on the flat ground, each at a distance that wanders with azimuth.
    A view ray keeps one azimuth, so each belt is a curtain at one distance with a crown-shaped top edge ----- */
 uniform vec4 uTr0; uniform vec4 uTr1;   // (on, tree height km, nearest km, farthest km) (coverage, shape 0 broadleaf..1 conifer, seed, —)
-float trHash(float a, float b){ return fract(sin(a*127.1 + b*311.7)*43758.5453); }
+// integer hash of the (rounded) inputs: fract(sin(big)) hashes differ between GPUs, which would move the trees
+float trHash(float a, float b){ uvec3 h = pcg3d(uvec3(uint(int(round(a*64.0)) + 1073741824), uint(int(round(b*64.0)) + 1073741824), 6151u)); return float(h.x)*(1.0/4294967296.0); }
 // top of belt k's canopy above the ground along unit horizontal direction cs; R = its distance (km)
 float treeTop(int k, vec2 cs, float az, out float R, out float side, out float rnd){
   float fk = float(k), sd = uTr1.z*7.31 + fk*19.7, h = uTr0.y, sh = uTr1.y;
@@ -999,7 +1022,7 @@ float treeHit(vec3 ro, vec3 rd, float tLimit, out vec4 info){
 const FS_COMP = HDR + ATM + LIGHTS + PIXEL + `
 uniform int uZero;   // always 0: added to loop bounds so the Direct3D compiler cannot unroll big loops (unrolled, this shader took minutes to compile and froze Chrome)
 uniform sampler2D uCloud0; uniform sampler2D uCloud1; uniform sampler2D uShadow; uniform sampler2D uCirrus; uniform sampler2D uAmb; uniform sampler2D uStarTex; uniform sampler2D uWeather; uniform sampler3D uShape;
-uniform float uCBase; uniform float uCBot; uniform float uCTop; uniform float uCloudOn; uniform float uShadowExt; uniform vec2 uWind; uniform vec2 uMaskOff; uniform sampler2D uMask; uniform float uMaskOn; uniform vec2 uSheetOn;
+${EXACT_GLSL}uniform float uCBase; uniform float uCBot; uniform float uCTop; uniform float uCloudOn; uniform float uShadowExt; uniform vec2 uWind; uniform vec2 uMaskOff; uniform sampler2D uMask; uniform float uMaskOn; uniform vec2 uSheetOn;
 uniform vec4 uAlb[NG]; uniform vec4 uEdiff[NG]; uniform vec4 uEground[NG]; uniform vec4 uCEnh[NG];
 uniform sampler2D uMoonTex; uniform float uMoonTexOn;
 uniform vec4 uSunK[NG]; uniform vec4 uSunAlpha[NG]; uniform float uSunRad; uniform float uSunSquash; uniform vec4 uMoonK[NG]; uniform float uMoonRad; uniform vec3 uMoonLight; uniform vec3 uPole;
@@ -1008,6 +1031,7 @@ uniform float uStars; uniform float uStarMag; uniform float uMW; uniform float u
 uniform float uStarSplit;   // interactive preview: stars are drawn by the display at screen resolution; alpha = transmittance to space
 uniform float uCiCov; uniform float uCiH; uniform float uCiTau; uniform float uCiRot; uniform float uCiForm; uniform float uCiHalo; uniform vec4 uHalo22[NG]; uniform vec4 uHalo46[NG];
 uniform vec4 uMid;    // mid sheet: coverage, altitude km, optical depth, type (0 altostratus … 1 altocumulus)
+uniform float uLowCov;   // fraction of the sky covered by the low cloud layer (its tops brighten the undersides of the sheets above)
 uniform vec4 uMid2;   // mid cell scale, unused, evolution, ground texture
 uniform vec4 uCPh;
 uniform vec4 uCMFx[NG]; uniform vec4 uCMFy[NG]; uniform vec4 uCMFz[NG];
@@ -1067,7 +1091,7 @@ vec4 ciTex(vec2 q, float lod){ return textureLod(uCirrus, q/40.0, lod); }
 float cirrusDensity(vec2 xz, float lod){
   vec2 x0 = xz + uWind*0.6;
   // slowly varying flow (±25°, ~100 km) and form selector, from the large-scale weather map
-  vec4 rg = textureLod(uWeather, x0/260.0 + vec2(0.31, 0.67), 3.0);
+  vec4 rg = t2W( x0/260.0 + vec2(0.31, 0.67), 3.0);
   float ang = uCiRot + (rg.g - 0.5)*0.9; float c = cos(ang), s = sin(ang); vec2 q = mat2(c,-s,s,c)*x0;
   // a second, differently scaled copy breaks up the 40 km repeat
   // (turned only slightly: two streak sets crossing at a wide angle drew a cross-hatched ladder where they overlapped)
@@ -1096,27 +1120,27 @@ float cirrusDensity(vec2 xz, float lod){
 float midDensity(vec2 xz, float lod){
   vec2 q = xz + uWind*0.8;
   float sc = uMid2.x;
-  vec4 wr = textureLod(uWeather, q/110.0 + vec2(0.37,0.61), max(lod-2.0, 0.0));   // regional (~20 km features)
-  vec4 wm = textureLod(uWeather, q/31.0 + vec2(0.71,0.18), max(lod-1.0, 0.0));    // sub-regional (~6 km)
+  vec4 wr = t2W( q/110.0 + vec2(0.37,0.61), max(lod-2.0, 0.0));   // regional (~20 km features)
+  vec4 wm = t2W( q/31.0 + vec2(0.71,0.18), max(lod-1.0, 0.0));    // sub-regional (~6 km)
   float mc = maskCov(uMid.x, sheetMask(xz + uMaskOff*0.8, uMid.y).g);
   float reg = wr.g*0.72 + wm.g*0.28;
   float th0 = 1.0 - mc*1.15;
   float cov = mc >= 0.98 ? 1.0 : smoothstep(th0, th0 + 0.3, reg);
   // smooth sheet (altostratus): broad, gently varying thickness
   vec2 qb = mat2(0.825, -0.565, 0.565, 0.825)*q;
-  vec4 a = textureLod(uShape, vec3(q/(4.0*sc), 0.37 + uMid2.z*0.013), lod);
-  vec4 b = textureLod(uShape, vec3(qb/(6.3*sc), 0.71 - uMid2.z*0.011), max(lod-0.66, 0.0));
+  vec4 a = t3S( vec3(q/(4.0*sc), 0.37 + uMid2.z*0.013), lod);
+  vec4 b = t3S( vec3(qb/(6.3*sc), 0.71 - uMid2.z*0.011), max(lod-0.66, 0.0));
   float sheet = cov*(0.45 + 0.3*a.r + 0.25*b.r);
   float dens = sheet;
   if (uMid.w > 0.0){
     // cells: space is gently warped (no straight Worley lattice), stretched into rows in some regions, and the cell size
     // itself changes from region to region
-    vec4 wp = textureLod(uWeather, q/(9.0*sc) + vec2(0.43, 0.17) + uMid2.z*0.004, max(lod - 2.0, 0.0));
+    vec4 wp = t2W( q/(9.0*sc) + vec2(0.43, 0.17) + uMid2.z*0.004, max(lod - 2.0, 0.0));
     float wx = wp.g, wy = wp.b;
     vec2 qw = q + (vec2(wx, wy) - 0.5)*0.6*sc;   // smooth (Perlin) warp, a fraction of a cell: bends rows, no streaks
     // (all coordinate transforms are fixed for the scene: varying them across the sky would swirl the pattern)
-    vec4 c1 = textureLod(uShape, vec3(qw/(4.0*sc), 0.37 + uMid2.z*0.013), lod);
-    vec4 c2 = textureLod(uShape, vec3((mat2(0.825, -0.565, 0.565, 0.825)*qw)/(6.3*sc), 0.71 - uMid2.z*0.011), max(lod-0.66, 0.0));
+    vec4 c1 = t3S( vec3(qw/(4.0*sc), 0.37 + uMid2.z*0.013), lod);
+    vec4 c2 = t3S( vec3((mat2(0.825, -0.565, 0.565, 0.825)*qw)/(6.3*sc), 0.71 - uMid2.z*0.011), max(lod-0.66, 0.0));
     float big = smoothstep(0.3, 0.75, wm.r*0.6 + wr.r*0.4);   // regions of larger cells / rafts
     float small = c1.b*0.6 + c1.a*0.4, large = c1.g*0.55 + c2.b*0.45;
     float cellv = mix(small, large, big)*0.75 + (c2.b*0.6 + c2.a*0.4)*0.25;
@@ -1125,7 +1149,7 @@ float midDensity(vec2 xz, float lod){
     float rows = smoothstep(0.5, 0.8, wm.b);
     if (rows > 0.0){ float ang = uCiRot + 1.2; vec2 dr = vec2(cos(ang), sin(ang));
       vec2 qr = vec2(dot(qw, dr)/2.3, dot(qw, vec2(-dr.y, dr.x)));
-      vec4 r1 = textureLod(uShape, vec3(qr/(4.0*sc), 0.21 + uMid2.z*0.013), lod);
+      vec4 r1 = t3S( vec3(qr/(4.0*sc), 0.21 + uMid2.z*0.013), lod);
       cellv = mix(cellv, mix(r1.b*0.6 + r1.a*0.4, r1.g*0.55 + r1.b*0.45, big), rows*0.85); }
     // toward a patch edge the threshold rises: cells shrink and separate, rather than every cell fading together
     float edge = mc >= 0.98 ? 0.0 : 1.0 - smoothstep(th0 - 0.05, th0 + 0.45, reg);
@@ -1271,6 +1295,12 @@ void main(){
         float fwdT = 0.5*(1.0 + gS)*Td1, back = max(1.0 - Td1, 0.5*(1.0 - gS));   // scattered onward / back, thin → thick
         float Aamb = (below ? fwdT : back)*ev/PI;
         float Abnc = (below ? back : fwdT)*ev/PI;
+        // light coming up at the sheet: the ground where the low clouds leave gaps, and the sunlit tops of the low clouds where
+        // they do not (cloud tops reflect 60-75 % against a few % to 30 % for the ground, so a sheet over a cumulus or
+        // stratocumulus field is lit from below as well)
+        float lowC = (uCloudOn > 0.5 && h > uCTop) ? clamp(uLowCov, 0.0, 1.0) : 0.0;
+        float rTop = Rg + uCTop; vec3 upTop = up;   // the cloud tops below this point share its vertical
+        float muTop = max(dot(upTop, Ls), 0.0);
         float aS = (!cir && uSunOn > 0.5) ? midPathRatio(p.xz, tv, Ls, 0.0) : 1.0;
         vec2 Gs = sheetGeom(tv, muS, mv, below, kk, aS), Gm = sheetGeom(tv, muM, mv, below, kk, 1.0);
         float tsS = 1.0, tsM = 1.0;
@@ -1283,7 +1313,10 @@ void main(){
           if (cir && uCiHalo > 0.0){ for (int c=0;c<4+uZero;c++){
             phS[c] = mix(baseS, 0.9*haloLobe(thS,uHalo22[g][c],0.03)+0.1*haloLobe(thS,uHalo46[g][c],0.04), uCiHalo*0.02);   // full strength ≈ 1.8× the surrounding cirrus
             phM[c] = mix(baseM, 0.9*haloLobe(thM,uHalo22[g][c],0.03)+0.1*haloLobe(thM,uHalo46[g][c],0.04), uCiHalo*0.02); } }
-          vec4 Lc = uLw0.z*(ambE(g,h)*Aamb + uAlb[g]*uEground[g]*Abnc);
+          vec4 upw = uAlb[g]*uEground[g];
+          if (lowC > 0.0){ vec4 Etop = (uSunOn > 0.5 ? uSunE[g]*transmittance(g, rTop, muTop)*muTop : vec4(0.0)) + ambE(g, uCTop);
+            upw = mix(upw, 0.68*Etop, lowC); }
+          vec4 Lc = uLw0.z*(ambE(g,h)*Aamb + upw*Abnc);
           if (uSunOn > 0.5) Lc += uLw0.y*uSunE[g]*transmittance(g,r,muS)*tsS*(phS*Gs.x + Gs.y);
           if (uMoonOn > 0.5) Lc += uLw0.y*uMoonE[g]*transmittance(g,r,muM)*tsM*(phM*Gm.x + Gm.y);
           L[g] += w*T[g]*Lc; }
@@ -1594,7 +1627,7 @@ if (!gl) fail('This browser does not provide WebGL2. Try a current version of Ch
 if (!gl.getExtension('EXT_color_buffer_float')) fail('Your GPU or browser cannot render to floating-point targets (EXT_color_buffer_float), which HDR output requires.');
 const FLOAT_LINEAR = !!gl.getExtension('OES_texture_float_linear');
 const LUT_FMT = FLOAT_LINEAR ? gl.RGBA32F : gl.RGBA16F;
-const UNITS = {uTrans:0,uMS:1,uShape:2,uDetail:3,uWeather:4,uCloud0:5,uCloud1:6,uShadow:7,uCirrus:8,uAmb:9,uStarTex:10,uImg:11,uImgA:12,uTerrain:20,uA:12,uB:13,uEnv:14,uPrev:15,uMask:16,uEnvCdf:17,uEnvPdf:18,uMoonTex:19,uShotP:21,uShotN:22,uShotA:23,uShotSM:24,uShotC:25};
+const UNITS = {uTrans:0,uMS:1,uShape:2,uDetail:3,uWeather:4,uCloud0:5,uCloud1:6,uShadow:7,uCirrus:8,uAmb:9,uStarTex:10,uImg:11,uImgA:12,uTerrain:20,uA:12,uB:13,uEnv:14,uPrev:15,uMask:16,uEnvCdf:17,uEnvPdf:18,uMoonTex:19,uShotP:21,uShotN:22,uShotA:23,uShotSM:24,uShotC:25,uMipSrc2:27,uMipSrc3:28};
 const vao = gl.createVertexArray();
 function compile(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
 // shaders are compiled in the background where the browser supports it (KHR_parallel_shader_compile): a first compile on
@@ -1661,13 +1694,45 @@ function bindAll(){ bindTex(20, gl.TEXTURE_2D, P.mtnOn && T_TERRAIN && terrKey ?
   bindTex(4, gl.TEXTURE_2D, T_WEATHER); bindTex(7, gl.TEXTURE_2D, T_SHADOW); bindTex(8, gl.TEXTURE_2D, T_CIRRUS); bindTex(9, gl.TEXTURE_2D, T_AMB); bindTex(10, gl.TEXTURE_2D, T_STAR); bindTex(16, gl.TEXTURE_2D, T_MASK); bindTex(17, gl.TEXTURE_2D, T_ECDF); bindTex(18, gl.TEXTURE_2D, T_EPDF); bindTex(19, gl.TEXTURE_2D, T_MOON); }
 function unbind(unit, target){ bindTex(unit, target, null); }
 
+// mipmaps built here with a fixed 2×2(×2) box filter instead of generateMipmap(), whose filter is left to the driver:
+// the clouds read these coarser levels, so a driver that filtered differently would give a slightly different sky
+const FS_MIP2 = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+uniform sampler2D uMipSrc2; out vec4 o;
+void main(){ ivec2 m = textureSize(uMipSrc2, 0) - 1, c = ivec2(gl_FragCoord.xy)*2;
+  vec4 a = texelFetch(uMipSrc2, min(c, m), 0), b = texelFetch(uMipSrc2, min(c + ivec2(1, 0), m), 0);
+  vec4 d = texelFetch(uMipSrc2, min(c + ivec2(0, 1), m), 0), e = texelFetch(uMipSrc2, min(c + ivec2(1, 1), m), 0);
+  o = ((a + b) + (d + e))*0.25; }`;
+const FS_MIP3 = `#version 300 es
+precision highp float; precision highp int; precision highp sampler3D;
+uniform sampler3D uMipSrc3; uniform int uZ; out vec4 o;
+void main(){ ivec3 m = textureSize(uMipSrc3, 0) - 1, c = ivec3(ivec2(gl_FragCoord.xy), uZ)*2; vec4 s = vec4(0.0);
+  for (int k=0; k<2; k++){ vec4 a = texelFetch(uMipSrc3, min(c + ivec3(0, 0, k), m), 0), b = texelFetch(uMipSrc3, min(c + ivec3(1, 0, k), m), 0);
+    vec4 d = texelFetch(uMipSrc3, min(c + ivec3(0, 1, k), m), 0), e = texelFetch(uMipSrc3, min(c + ivec3(1, 1, k), m), 0); s += (a + b) + (d + e); }
+  o = s*0.125; }`;
+let P_MIP2 = null, P_MIP3 = null;
+// each level is drawn from the one above it; the texture's base/max level are narrowed to that source level meanwhile, so
+// reading it while writing the next level is not a feedback loop (texelFetch's level counts from the base level)
+function genMips2D(tex){ if (!P_MIP2) P_MIP2 = program(FS_MIP2, 'mipmaps');
+  const w = tex.w, h = tex.h, levels = Math.floor(Math.log2(Math.max(w, h))) + 1;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, F_TMP); gl.drawBuffers([gl.COLOR_ATTACHMENT0]); bindTex(27, gl.TEXTURE_2D, tex);
+  for (let L=1; L<levels; L++){ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, L - 1); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, L - 1);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, L); gl.viewport(0, 0, Math.max(1, w >> L), Math.max(1, h >> L)); setU(P_MIP2, {}); draw(); }
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 1000); unbind(27, gl.TEXTURE_2D); }
+function genMips3D(tex, n){ if (!P_MIP3) P_MIP3 = program(FS_MIP3, 'mipmaps 3D');
+  const levels = Math.log2(n) + 1; gl.bindFramebuffer(gl.FRAMEBUFFER, F_TMP); gl.drawBuffers([gl.COLOR_ATTACHMENT0]); bindTex(28, gl.TEXTURE_3D, tex);
+  for (let L=1; L<levels; L++){ const m = n >> L; gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_BASE_LEVEL, L - 1); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAX_LEVEL, L - 1); gl.viewport(0, 0, m, m);
+    for (let z=0; z<m; z++){ gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, tex, L, z); setU(P_MIP3, {uZ:z}); draw(); } gl.flush(); }
+  gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, null, 0, 0);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_BASE_LEVEL, 0); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAX_LEVEL, 1000); unbind(28, gl.TEXTURE_3D); }
 function genNoise3D(tex, n, mode, seed){ unbind(2, gl.TEXTURE_3D); unbind(3, gl.TEXTURE_3D);
   gl.bindFramebuffer(gl.FRAMEBUFFER, F_TMP); gl.drawBuffers([gl.COLOR_ATTACHMENT0]); gl.viewport(0,0,n,n);
   for (let z=0; z<n; z++){ gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, tex, 0, z); setU(P_NOISE, {uMode:mode, uZ:z, uSize:n, uSeed:seed}); draw(); if ((z & 7) === 7) gl.flush(); }
-  gl.bindTexture(gl.TEXTURE_3D, tex); gl.generateMipmap(gl.TEXTURE_3D); }
+  genMips3D(tex, n); }
 function genNoise2D(tex, n, mode, seed){ unbind(4, gl.TEXTURE_2D); unbind(8, gl.TEXTURE_2D);
   gl.bindFramebuffer(gl.FRAMEBUFFER, F_TMP); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-  gl.viewport(0,0,n,n); setU(P_NOISE, {uMode:mode, uZ:0, uSize:n, uSeed:seed}); draw(); gl.bindTexture(gl.TEXTURE_2D, tex); gl.generateMipmap(gl.TEXTURE_2D); }
+  gl.viewport(0,0,n,n); setU(P_NOISE, {uMode:mode, uZ:0, uSize:n, uSeed:seed}); draw(); genMips2D(tex); }
 
 /* ---------- render contexts (one per output size) ---------- */
 function makeCtx(w, h, accum){
@@ -1707,7 +1772,7 @@ const DEFAULTS = {
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
   tlStart:'19:00', tlEnd:'21:30', tlFrames:120, tlWind:20, tlWindDir:250, tlEvolve:0.6, tlFormat:'png', tlRes:1024, tlSpp:2, tlExpo:'auto',
-  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun', shotUnits:'cm', shotUp:'y', shotRot:0, shotDome:true, shotSun:true, shotClouds:false, shotCam:'shot', shotAlbedo:true, shotBg:true,
+  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun', shotUnits:'cm', shotUp:'y', shotRot:0, shotDome:true, shotSun:true, shotClouds:false, shotCam:'shot', shotAlbedo:true, shotBg:true, shotSeq:'tst', shotId:'0010', shotPass:'lit',
 };
 const P = structuredClone(DEFAULTS);
 const G = {};      // shared uniform values
@@ -1778,6 +1843,7 @@ function computePhysics(){
     uFogPh:[dropF.gHG, dropF.gD, dropF.a, dropF.wD], uCPh:[dropC.gHG, dropC.gD, dropC.a, dropC.wD],
     uSunDir:sd, uMoonDir:md, uSunE:f32(a.SunE), uMoonE:f32(a.MoonE), uSunOn:sunOn, uMoonOn:moonOn,
     uCBase:P.cbase, uCTop:P.cbase+P.cthick, uCovBias: G.uCovBias ?? 0, uClump:0.4 + 1.2*P.cclump, uBillow:P.cbillow, uCVar:P.cvar, uAiry:P.cairy, uBaseVar:P.cbasevar, uScud:P.cscud,
+    uLowCov:cloudOn ? P.cov : 0,
     uCBot:P.cbase - P.cbasevar*Math.min(0.6, 0.35*P.cthick + 0.12) - (P.cscud > 0 ? 0.1 + 0.45*P.cscud : 0) - 0.02, uCType:P.ctype, uCDens:typeExt(P.ctype)*P.cdm, uSkyKeyDir:G.uSkyKeyDir||[0,1,0], uSkyKeyF:G.uSkyKeyF||0, uCScale:P.cscale, uCErode:P.cerode, uWind:[P.windX, P.windZ], uOrgOff:orgOff(), uCloudOn:cloudOn, uEvolve:P.evolve,
     uShadowExt:SH_EXT, uShadowRes:SH_RES, uCamH:P.camH, uAzOff:P.azOff*D2R,
     uSunK:f32(a.SunK), uSunAlpha:f32(a.SunA), uSunRad:sunRad, uSunSquash:sunSquash(P.sunEl), uMoonK:f32(a.MoonK), uMoonRad:moonRad*P.moonScale, uMoonTexOn:MOONTEX, uMoonLight:ml, uPole:pole,
@@ -1837,10 +1903,13 @@ function orgOff(){ let tl = null; try { tl = TL; } catch (e){}   // (TL is decla
   const d = Math.max(12, (2.4 + 1.6*ORG.r)*(P.cbase + P.cthick));
   const x = Math.sin(ORG.az)*d + b.windX, z = Math.cos(ORG.az)*d + b.windZ; return [ORG.uv[0] - x/S, ORG.uv[1] - z/S]; }
 // find the coverage bias at which the fraction of ground footprint under optically visible cloud (τ > 0.5) matches the slider
-let covKey = '';
+let covKey = '', COV_LOCK = null; const COV_VER = 2;
 function calibrateCoverage(){
   const key = [P.cdm, P.cov, P.cclump, P.cbillow, P.cvar, P.cairy, P.cbasevar, P.cscud, P.ctype, P.cscale, P.cerode, P.cthick, P.cbase, P.seed, MASKINFO.add[0]].join('|'); if (key === covKey) return; covKey = key;
   // (a clear sky can still be painted into)
+  // a scene file carries the calibration it was made with: every machine then renders it with the same cloud cover
+  // (the measurement itself runs on the GPU, so two GPUs can land a hair apart)
+  if (COV_LOCK && COV_LOCK.key === key){ G.uCovBias = COV_LOCK.bias; return; }
   if (P.cov <= 0.001){ G.uCovBias = MASKINFO.add[0] ? -0.25 : -1; return; } if (P.cov >= 0.995){ G.uCovBias = 1.4; return; }
   const N = 160, buf = new Float32Array(N*N*4); let lo = -0.9, hi = 1.3;
   for (let it=0; it<9; it++){ const mid = (lo + hi)/2;
@@ -1878,7 +1947,7 @@ function stageSun(){ if (dirtyNoise) buildNoise(); if (dirtyCirrus) buildWeather
   return false; }
 function buildShadow(){ unbind(7, gl.TEXTURE_2D); gl.bindFramebuffer(gl.FRAMEBUFFER, F_SHADOW); setU(P_SHADOW, G);
   for (let y=0; y<SH_RES; y+=96){ gl.viewport(0, y, SH_RES, Math.min(96, SH_RES - y)); draw(); gl.flush(); }
-  gl.bindTexture(gl.TEXTURE_2D, T_SHADOW); gl.generateMipmap(gl.TEXTURE_2D); bindTex(7, gl.TEXTURE_2D, T_SHADOW); }
+  genMips2D(T_SHADOW); bindTex(7, gl.TEXTURE_2D, T_SHADOW); }
 function buildAmbient(){ unbind(9, gl.TEXTURE_2D); gl.bindFramebuffer(gl.FRAMEBUFFER, F_AMB); gl.viewport(0,0,32,NG); setU(P_AMB, G); draw();
   const buf = new Float32Array(32*NG*4); gl.readPixels(0,0,32,NG,gl.RGBA,gl.FLOAT,buf); bindTex(9, gl.TEXTURE_2D, T_AMB); return buf; }
 
@@ -2166,6 +2235,8 @@ in vec3 vP; in vec3 vN; in vec3 vA; in float vFoot; out vec4 o;
 uniform vec3 uSH[9]; uniform vec3 uSunE; uniform vec3 uSunDir; uniform float uDomeOn; uniform float uSunOn; uniform float uCloudsOn; uniform float uHasC; uniform vec3 uViewPos;
 uniform sampler2D uShotSM; uniform mat4 uSMVP; uniform float uSMTexel; uniform float uSMOn;
 uniform sampler2D uShadow; uniform float uShadowExt; uniform float uCBot; uniform float uCTop; uniform float uCloudOn; uniform float uGroundY;
+// pass display: 0 lit, 1 albedo, 2 normals, 3 world position, 4 depth (written with alpha 2: shown as is, no exposure)
+uniform int uPass; uniform mat3 uToSky; uniform vec3 uShotOrigin; uniform float uUnitM; uniform vec3 uBBLo; uniform vec3 uBBHi; uniform vec3 uCamFwd; uniform float uDepthFar;
 vec3 shIrr(vec3 n){ float x = n.x, y = n.y, z = n.z;
   const float c1 = 0.429043, c2 = 0.511664, c3 = 0.743125, c4 = 0.886227, c5 = 0.247708;
   return c1*uSH[8]*(x*x - y*y) + c3*uSH[6]*z*z + c4*uSH[0] - c5*uSH[6] + 2.0*c1*(uSH[4]*x*y + uSH[7]*x*z + uSH[5]*y*z) + 2.0*c2*(uSH[3]*x + uSH[1]*y + uSH[2]*z); }
@@ -2182,6 +2253,12 @@ float cloudSh(vec3 p){ if (uCloudsOn < 0.5 || uCloudOn < 0.5) return 1.0;
   return pow(max(Tm, 1e-6), fr); }
 void main(){ vec2 pc = gl_PointCoord*2.0 - 1.0; if (dot(pc, pc) > 1.0) discard;
   vec3 n = vN;
+  if (uPass > 0){ vec3 c;   // the stored data, back in the render's own world space
+    if (uPass == 1) c = pow(clamp(vA, 0.0, 1.0), vec3(1.0/2.2));
+    else if (uPass == 2) c = clamp(transpose(uToSky)*n, -1.0, 1.0)*0.5 + 0.5;
+    else if (uPass == 3) c = clamp((transpose(uToSky)*vP/uUnitM + uShotOrigin - uBBLo)/max(uBBHi - uBBLo, vec3(1e-6)), 0.0, 1.0);
+    else { float d = max(dot(vP, uCamFwd), 0.0); c = vec3(1.0 - log2(1.0 + d)/log2(1.0 + uDepthFar)); }
+    o = vec4(c, 2.0); return; }
   vec3 alb = uHasC > 0.5 ? max(vA, vec3(0.0)) : vec3(0.18);
   vec3 E = uDomeOn*max(shIrr(n), vec3(0.0));
   float cs = dot(n, uSunDir); if (uSunOn > 0.5 && cs > 0.0) E += uSunE*cs*sunShadow(vP, n)*cloudSh(vP);
@@ -2207,7 +2284,8 @@ vec3 agx(vec3 v){ const mat3 M = mat3(0.842479062253094,0.0423282422610123,0.042
   const float mn=-12.47393, mx=4.026069; v = M*v; v = clamp(log2(max(v,vec3(1e-10))), mn, mx); v = (v-mn)/(mx-mn); return clamp(Mi*agxContrast(v), 0.0, 1.0); }
 void main(){ vec4 c = texelFetch(uShotC, ivec2(gl_FragCoord.xy - uOff), 0);
   vec3 col = vec3(0.027, 0.035, 0.047);
-  if (c.a > 0.0) col = agx(c.rgb*uExpo);
+  if (c.a > 1.5) col = c.rgb;
+  else if (c.a > 0.0) col = agx(c.rgb*uExpo);
   else if (uBg == 1){ // the sky behind the scene, through the same camera
     vec2 ndc = (gl_FragCoord.xy - uOff)/uRectSz*2.0 - 1.0; vec3 d = normalize(uCF + ndc.x*uTan.x*uCR + ndc.y*uTan.y*uCU);
     float az = atan(d.x, d.z) - uAzOff, el = asin(clamp(d.y, -1.0, 1.0)); vec2 es = vec2(textureSize(uEnv, 0));
@@ -2227,18 +2305,175 @@ function shotProgVF(vs, fs, name){ const p = gl.createProgram(); const v = compi
 function shotProgs(){ if (SHOT.progs) return SHOT.progs;
   SHOT.progs = { pts:shotProgVF(SHOT_VS, SHOT_FS, 'shot'), sm:shotProgVF(SHOT_VS, SHOT_SMFS, 'shot shadow'), ds:program(SHOT_DSFS, 'shot env'), disp:program(SHOT_DISPFS, 'shot display') };
   return SHOT.progs; }
+// ---------- built-in test shots: a small village street, ray-cast into a geometry utility pass ----------
+// Stand-in until the pipeline hookup exists: the same data a render's geometry utility pass carries (world position,
+// normals, surface colour, depth, alpha, in centimetres, Y up) plus the shot camera's metadata, so the Shot view works
+// exactly as it will with real shots. Fully deterministic (integer hashing only): the same scene on every machine.
+const TEST_SEQS = [{id:'tst', name:'TST · test village', shots:[
+  {id:'0010', name:'0010 · street, 35 mm', desc:'Down the street at eye level, 35 mm', pos:[-170, 165, -2650], look:[20, 520, 3600], hfov:54.43},
+  {id:'0020', name:'0020 · low angle, 24 mm', desc:'Low angle up at the houses, 24 mm', pos:[120, 40, -1300], look:[-900, 600, -500], hfov:73.74},
+  {id:'0030', name:'0030 · window, 50 mm', desc:'From a first-floor window across the street, 50 mm', pos:[535, 520, 900], look:[-620, 380, 1500], hfov:39.6}]}];
+const vHash = (a, b, c) => { let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b); h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35); return ((h ^ (h >>> 16)) >>> 0)/4294967296; };
+const primBox = q => q.k === 0 || q.k === 3 ? q.bb : q.k === 1 ? [[q.c[0] - q.r, q.c[1] - q.r, q.c[2] - q.r], [q.c[0] + q.r, q.c[1] + q.r, q.c[2] + q.r]] : [[q.c[0] - q.r, q.y0, q.c[1] - q.r], [q.c[0] + q.r, q.y1, q.c[1] + q.r]];
+function villageScene(){
+  const prims = []; let seed = 11; const rnd = () => vHash(seed++, 77, 5);
+  const pick = a => a[Math.floor(rnd()*a.length)];
+  const jit = (c, k) => { const f = 1 + (rnd() - 0.5)*k; return c.map(v => v*f); };
+  // convex solids as plane sets (n·p ≤ d inside); boxes, roofs and spires are all this one primitive
+  const poly = (planes, col, tex, bb) => { const pl = planes.map(([n, d]) => { const l = Math.hypot(n[0], n[1], n[2]); return [n[0]/l, n[1]/l, n[2]/l, d/l]; });
+    prims.push({k:0, pl, col, tex:tex || 0, bb}); };
+  const box = (x0, y0, z0, x1, y1, z1, col, tex) => poly([[[1,0,0],x1],[[-1,0,0],-x0],[[0,1,0],y1],[[0,-1,0],-y0],[[0,0,1],z1],[[0,0,-1],-z0]], col, tex, [[x0,y0,z0],[x1,y1,z1]]);
+  const sph = (x, y, z, r, col, tex) => prims.push({k:1, c:[x, y, z], r, col, tex:tex || 0});
+  const cyl = (x, z, r, y0, y1, col) => prims.push({k:2, c:[x, z], r, y0, y1, col, tex:0});
+  // a group: one bounding box around many small parts (a facade's windows, a tree, a car), so most rays skip them at once
+  const group = g0 => { const kids = prims.splice(g0); const lo = [1e9,1e9,1e9], hi = [-1e9,-1e9,-1e9];
+    kids.forEach(q => { const b = primBox(q); for (let i = 0; i < 3; i++){ lo[i] = Math.min(lo[i], b[0][i]); hi[i] = Math.max(hi[i], b[1][i]); } }); prims.push({k:3, bb:[lo, hi], kids}); };
+  const PLASTER = [[0.72,0.70,0.66],[0.70,0.62,0.48],[0.62,0.45,0.24],[0.46,0.55,0.62],[0.70,0.52,0.48],[0.55,0.58,0.50],[0.40,0.38,0.35]];
+  const BRICK = [0.32,0.14,0.09], ROOFS = [[0.36,0.14,0.07],[0.10,0.11,0.12],[0.17,0.10,0.07],[0.30,0.16,0.10]];
+  const GLASS = [0.035,0.04,0.05], FRAME = [0.74,0.73,0.70], WOOD = [0.09,0.06,0.04], DARK = [0.04,0.04,0.04];
+  // gable roof over [x0,x1]×[z0,z1] from height y, ridge along z (alongZ) or x; overhang o, pitch t = tan(angle)
+  const gable = (x0, x1, z0, z1, y, t, alongZ, col) => { const o = 30; x0 -= o; x1 += o; z0 -= o; z1 += o;
+    if (alongZ){ const c = (x0 + x1)/2, hw = (x1 - x0)/2; poly([[[t,1,0], y + t*hw + t*c],[[-t,1,0], y + t*hw - t*c],[[0,-1,0], -(y - 12)],[[0,0,1], z1],[[0,0,-1], -z0]], col, 2, [[x0, y - 12, z0],[x1, y + t*hw, z1]]); }
+    else { const c = (z0 + z1)/2, hw = (z1 - z0)/2; poly([[[0,1,t], y + t*hw + t*c],[[0,1,-t], y + t*hw - t*c],[[0,-1,0], -(y - 12)],[[1,0,0], x1],[[-1,0,0], -x0]], col, 2, [[x0, y - 12, z0],[x1, y + t*hw, z1]]); } };
+  // ground-level street furniture
+  for (const s of [-1, 1]) box(s > 0 ? 350 : -560, 0, -6000, s > 0 ? 560 : -350, 15, 3300, [0.31,0.30,0.28], 1);   // pavements with kerbs
+  for (let z = -5800; z < 3000; z += 600) box(-6, 0, z, 6, 0.6, z + 300, [0.62,0.60,0.55]);                             // centre line
+  // houses: a terrace down each side, facades on the pavement line
+  for (const s of [-1, 1]){ let z = -5600;
+    while (z < 3000){ const w = 520 + Math.floor(rnd()*420), gap = rnd() < 0.22 ? 160 + Math.floor(rnd()*160) : 0;
+      const z0 = z, z1 = z + w; const st = rnd() < 0.55 ? 2 : 3, H = st*300 + 60 + Math.floor(rnd()*40); const dep = 750 + Math.floor(rnd()*250);
+      const fx = s*560, bx = s*(560 + dep), x0 = Math.min(fx, bx), x1 = Math.max(fx, bx);
+      const brick = rnd() < 0.2, col = brick ? jit(BRICK, 0.15) : jit(pick(PLASTER), 0.08);
+      box(x0, 0, z0, x1, H, z1, col, brick ? 3 : 4);
+      const out = -s;   // facade details stand proud of the wall toward the street (out)
+      const along = rnd() < 0.7; gable(x0, x1, z0, z1, H, Math.tan((36 + rnd()*12)*D2R), along, jit(pick(ROOFS), 0.12));
+      if (rnd() < 0.7){ const cz = z0 + 80 + rnd()*(w - 200), cx = (x0 + x1)/2 + s*(rnd() - 0.5)*dep*0.4; box(cx - 35, H + 80, cz - 25, cx + 35, H + 330 + rnd()*120, cz + 25, jit(brick ? BRICK : [0.42,0.38,0.34], 0.1), 3); }
+      const g0 = prims.length;
+      box(Math.min(fx - out*1, fx + out*4), 0, z0, Math.max(fx - out*1, fx + out*4), 45, z1, jit([0.28,0.27,0.25], 0.1));   // plinth
+      // street-facing windows and the door: proud frames with dark glass
+      const X = (a, b) => [Math.min(fx + out*a, fx + out*b), Math.max(fx + out*a, fx + out*b)];
+      const nW = Math.max(2, Math.floor(w/190)), sp = w/nW, door = Math.floor(rnd()*nW);
+      for (let f = 0; f < st; f++) for (let i = 0; i < nW; i++){ const zc = z0 + sp*(i + 0.5), yb = f*300 + (f === 0 ? 95 : 85);
+        const gw = prims.length;
+        if (f === 0 && i === door){ let [a, b] = X(-1, 5); box(a, 0, zc - 60, b, 230, zc + 60, jit(FRAME, 0.05)); [a, b] = X(5, 7); box(a, 0, zc - 50, b, 220, zc + 50, jit(pick([WOOD,[0.18,0.05,0.04],[0.05,0.12,0.09]]), 0.1)); group(gw); continue; }
+        const wh = f === 0 ? 135 : 140, ww = 95; let [a, b] = X(-1, 3);
+        box(a, yb - 8, zc - ww/2 - 8, b, yb + wh + 8, zc + ww/2 + 8, jit(FRAME, 0.05));
+        [a, b] = X(3, 4); box(a, yb, zc - ww/2, b, yb + wh, zc + ww/2, GLASS, 5);
+        [a, b] = X(-1, 12); box(a, yb - 14, zc - ww/2 - 14, b, yb - 6, zc + ww/2 + 14, jit([0.55,0.53,0.50], 0.05)); group(gw); }
+      group(g0);
+      if (gap){ const g1 = prims.length; const tz = z1 + gap/2, tx = s*(560 + 220); cyl(tx, tz, 16, 0, 320, [0.11,0.08,0.06]);
+        for (let k = 0; k < 3; k++) sph(tx + (rnd() - 0.5)*120, 380 + rnd()*160, tz + (rnd() - 0.5)*120, 130 + rnd()*70, jit([0.06,0.12,0.035], 0.25), 6); group(g1); }
+      z = z1 + gap; } }
+  // street lamps and a few trees along the pavements, two parked cars, a cart
+  for (let z = -5000; z < 2800; z += 1500){ const g = prims.length; cyl(470, z, 6, 15, 430, DARK); box(380, 418, z - 6, 476, 428, z + 6, DARK); sph(390, 405, z, 22, [0.82,0.80,0.74]); group(g); }
+  for (const [x, z] of [[-470, -3200], [-470, 1500], [470, -1300]]){ const g = prims.length; cyl(x, z, 14, 15, 280, [0.12,0.09,0.06]); for (let k = 0; k < 3; k++) sph(x + (rnd() - 0.5)*110, 360 + rnd()*120, z + (rnd() - 0.5)*110, 110 + rnd()*50, jit([0.06,0.12,0.035], 0.2), 6); group(g); }
+  const car = (x, z, col) => { const g = prims.length; box(x - 85, 22, z - 210, x + 85, 95, z + 210, col); box(x - 75, 95, z - 110, x + 75, 145, z + 90, [0.04,0.045,0.05]);
+    for (const [dx, dz] of [[-80,-140],[80,-140],[-80,140],[80,140]]) cyl(x + dx, z + dz, 32, 0, 24, DARK); group(g); };
+  car(250, -400, [0.34,0.05,0.04]); car(250, 700, [0.48,0.47,0.44]);
+  box(-520, 15, 600, -400, 85, 700, [0.30,0.20,0.12]); box(-525, 85, 590, -395, 92, 710, [0.30,0.20,0.12]);
+  // look-dev spheres on the road: 18 % grey and white
+  sph(-70, 26, -1750, 26, [0.18,0.18,0.18]); sph(10, 26, -1750, 26, [0.80,0.80,0.80]);
+  // the church closing the view, on a paved square
+  box(-1400, 0, 3300, 1400, 2, 5600, [0.30,0.29,0.27], 1);
+  const ST = [0.46,0.43,0.38]; box(-450, 0, 4300, 450, 1100, 5500, ST, 4); gable(-450, 450, 4300, 5500, 1100, Math.tan(48*D2R), true, [0.12,0.12,0.13]);
+  box(-210, 0, 3800, 210, 2300, 4300, ST, 4); box(-225, 2300, 3785, 225, 2360, 4315, [0.40,0.37,0.33]);
+  { const cx = 0, cz = 4050, hw = 225, t = 3.2, y = 2360; poly([[[t,1,0], y + t*hw + t*cx],[[-t,1,0], y + t*hw - t*cx],[[0,1,t], y + t*hw + t*cz],[[0,1,-t], y + t*hw - t*cz],[[0,-1,0], -y]], [0.10,0.11,0.12], 2, [[cx - hw, y, cz - hw],[cx + hw, y + t*hw, cz + hw]]); }
+  for (const y of [1900, 2050]) box(-60, y, 3790, 60, y + 120, 3800, GLASS, 5);
+  box(-90, 15, 3790, 90, 330, 3800, WOOD);
+  return prims; }
+// material detail (albedo variation in world space): 1 pavement, 2 roof tiles, 3 brick, 4 render, 5 glass, 6 leaves
+function vTex(t, p, n){
+  if (!t) return 1;
+  const cell = (s, a, b) => vHash(Math.floor(a/s), Math.floor(b/s), t*131);
+  if (t === 1) return 0.9 + 0.2*cell(28, p[0], p[2]);
+  if (t === 2){ const row = Math.floor(p[1]/14); return (0.82 + 0.3*vHash(Math.floor((p[0] + p[2] + row*9)/24), row, 7))*((p[1] % 14) < 2 ? 0.7 : 1); }
+  if (t === 3){ const row = Math.floor(p[1]/7.5), u = Math.abs(n[0]) > 0.5 ? p[2] : p[0], k = Math.floor((u + (row & 1)*11)/22);
+    return (p[1] % 7.5 < 1.1 || ((u + (row & 1)*11) % 22 + 22) % 22 < 1.1) ? 2.1 : 0.8 + 0.4*vHash(k, row, 3); }
+  if (t === 4){ const u = Math.abs(n[0]) > 0.5 ? p[2] : p[0]; return 0.93 + 0.1*vHash(Math.floor(u/9), Math.floor(p[1]/9), 4) + 0.04*vHash(Math.floor(u/60), Math.floor(p[1]/60), 5); }
+  if (t === 5) return 1;
+  if (t === 6) return 0.7 + 0.6*vHash(Math.floor(p[0]/18), Math.floor(p[1]/18), Math.floor(p[2]/18));
+  return 1; }
+// ray-cast one shot into a utility pass shaped like a decoded EXR (rows top-first), with its camera in the metadata
+async function buildTestShot(seq, shot, W, H, onProg){
+  const prims = villageScene(); const CELL = 250, GX0 = -2600, GZ0 = -6200, NX = 22, NZ = 50; const grid = Array.from({length:NX*NZ}, () => []);
+  let maxY = 0;
+  prims.forEach((q, i) => { const b = primBox(q);
+    maxY = Math.max(maxY, b[1][1]);
+    const i0 = Math.max(0, Math.floor((b[0][0] - GX0)/CELL)), i1 = Math.min(NX - 1, Math.floor((b[1][0] - GX0)/CELL));
+    const k0 = Math.max(0, Math.floor((b[0][2] - GZ0)/CELL)), k1 = Math.min(NZ - 1, Math.floor((b[1][2] - GZ0)/CELL));
+    for (let k = k0; k <= k1; k++) for (let j = i0; j <= i1; j++) grid[k*NX + j].push(i); });
+  const stamp = new Int32Array(prims.length).fill(-1); let ray = 0;
+  const hit = { t:1e30, n:[0,1,0], q:null };
+  const test = (q, o, d) => {
+    if (q.k === 3){ const b = q.bb; let t0 = 0, t1 = hit.t;
+      for (let i = 0; i < 3; i++){ const inv = 1/(d[i] || 1e-12); let ta = (b[0][i] - o[i])*inv, tb = (b[1][i] - o[i])*inv; if (ta > tb){ const x = ta; ta = tb; tb = x; } if (ta > t0) t0 = ta; if (tb < t1) t1 = tb; if (t0 > t1) return; }
+      for (const k of q.kids) test(k, o, d); return; }
+    if (q.k === 0){ let tn = 0, tf = hit.t, nn = null;
+      for (const p of q.pl){ const dn = p[0]*d[0] + p[1]*d[1] + p[2]*d[2], on = p[0]*o[0] + p[1]*o[1] + p[2]*o[2];
+        if (Math.abs(dn) < 1e-12){ if (on > p[3]) return; continue; }
+        const t = (p[3] - on)/dn; if (dn < 0){ if (t > tn){ tn = t; nn = p; } } else if (t < tf) tf = t; if (tn > tf) return; }
+      if (nn && tn < hit.t){ hit.t = tn; hit.n = [nn[0], nn[1], nn[2]]; hit.q = q; } }
+    else if (q.k === 1){ const ox = o[0] - q.c[0], oy = o[1] - q.c[1], oz = o[2] - q.c[2]; const b = ox*d[0] + oy*d[1] + oz*d[2], c = ox*ox + oy*oy + oz*oz - q.r*q.r; const D = b*b - c; if (D < 0) return;
+      const t = -b - Math.sqrt(D); if (t > 0 && t < hit.t){ hit.t = t; hit.n = [(ox + t*d[0])/q.r, (oy + t*d[1])/q.r, (oz + t*d[2])/q.r]; hit.q = q; } }
+    else { const ox = o[0] - q.c[0], oz = o[2] - q.c[1]; const a = d[0]*d[0] + d[2]*d[2], b = ox*d[0] + oz*d[2], c = ox*ox + oz*oz - q.r*q.r;
+      if (a > 1e-12){ const D = b*b - a*c; if (D >= 0){ const t = (-b - Math.sqrt(D))/a, y = o[1] + t*d[1]; if (t > 0 && t < hit.t && y >= q.y0 && y <= q.y1){ hit.t = t; hit.n = [(ox + t*d[0])/q.r, 0, (oz + t*d[2])/q.r]; hit.q = q; } } }
+      if (Math.abs(d[1]) > 1e-9){ const t = (q.y1 - o[1])/d[1]; if (t > 0 && t < hit.t){ const x = ox + t*d[0], z = oz + t*d[2]; if (x*x + z*z <= q.r*q.r){ hit.t = t; hit.n = [0, 1, 0]; hit.q = q; } } } } };
+  const cam = shot; const f = V.norm(V.sub(cam.look, cam.pos)), r = V.norm(V.cross(f, [0,1,0])), u = V.cross(r, f);
+  const tanH = Math.tan(cam.hfov*D2R/2), tanV = tanH*H/W, o = cam.pos;
+  const n = W*H, ch = {}; for (const k of ['P.R','P.G','P.B','N.R','N.G','N.B','albedo.R','albedo.G','albedo.B','depth.Z','alpha.A']) ch[k] = new Float32Array(n);
+  const GROUND = [0.08,0.078,0.075]; const d = [0, 0, 1];
+  for (let y = 0; y < H; y++){ if ((y & 31) === 0){ if (onProg) onProg(y/H); await new Promise(r => setTimeout(r, 0)); } for (let x = 0; x < W; x++){
+    const sx = ((x + 0.5)/W*2 - 1)*tanH, sy = (1 - (y + 0.5)/H*2)*tanV; const dx = f[0] + sx*r[0] + sy*u[0], dy = f[1] + sx*r[1] + sy*u[1], dz = f[2] + sx*r[2] + sy*u[2], dl = 1/Math.hypot(dx, dy, dz); d[0] = dx*dl; d[1] = dy*dl; d[2] = dz*dl;
+    hit.t = d[1] < -1e-6 ? -o[1]/d[1] : 1e30; hit.n = [0, 1, 0]; hit.q = null; ray++;
+    // walk the grid cells under the ray (2-D DDA in x/z), nearest first; stop once a hit lies before the next cell
+    let gx = (o[0] - GX0)/CELL, gz = (o[2] - GZ0)/CELL; let ix = Math.floor(gx), iz = Math.floor(gz);
+    const sxs = d[0] > 0 ? 1 : -1, szs = d[2] > 0 ? 1 : -1; const tdx = Math.abs(CELL/(d[0] || 1e-12)), tdz = Math.abs(CELL/(d[2] || 1e-12));
+    let tmx = ((d[0] > 0 ? ix + 1 - gx : gx - ix)*CELL)/Math.abs(d[0] || 1e-12), tmz = ((d[2] > 0 ? iz + 1 - gz : gz - iz)*CELL)/Math.abs(d[2] || 1e-12);
+    for (let it = 0; it < 400; it++){
+      if (ix >= 0 && ix < NX && iz >= 0 && iz < NZ){ const cl = grid[iz*NX + ix]; for (let m = 0; m < cl.length; m++){ const pi = cl[m]; if (stamp[pi] !== ray){ stamp[pi] = ray; test(prims[pi], o, d); } } }
+      const tn = Math.min(tmx, tmz); if (hit.t <= tn) break; if (o[1] + tn*d[1] > maxY && d[1] > 0) break;
+      if ((ix < 0 && sxs < 0) || (ix >= NX && sxs > 0) || (iz < 0 && szs < 0) || (iz >= NZ && szs > 0)) break;
+      if (tmx < tmz){ ix += sxs; tmx += tdx; } else { iz += szs; tmz += tdz; } }
+    const s = y*W + x; if (hit.t >= 1e29) continue;
+    const p = [o[0] + hit.t*d[0], o[1] + hit.t*d[1], o[2] + hit.t*d[2]]; let nn = hit.n; if (nn[0]*d[0] + nn[1]*d[1] + nn[2]*d[2] > 0) nn = nn.map(v => -v);
+    let c = hit.q ? hit.q.col : GROUND, k = hit.q ? vTex(hit.q.tex, p, nn) : 0.85 + 0.3*vHash(Math.floor(p[0]/16), Math.floor(p[2]/16), 9);
+    if (!hit.q && Math.abs(p[0]) > 600) c = [0.10,0.15,0.05];   // grass behind the houses
+    ch['P.R'][s] = p[0]; ch['P.G'][s] = p[1]; ch['P.B'][s] = p[2]; ch['N.R'][s] = nn[0]; ch['N.G'][s] = nn[1]; ch['N.B'][s] = nn[2];
+    ch['albedo.R'][s] = Math.min(c[0]*k, 0.95); ch['albedo.G'][s] = Math.min(c[1]*k, 0.95); ch['albedo.B'][s] = Math.min(c[2]*k, 0.95);
+    ch['depth.Z'][s] = hit.t*(d[0]*f[0] + d[1]*f[1] + d[2]*f[2]); ch['alpha.A'][s] = 1; } }
+  const M = [r[0], r[1], r[2], 0, u[0], u[1], u[2], 0, -f[0], -f[1], -f[2], 0, o[0], o[1], o[2], 1];
+  return {width:W, height:H, channels:ch, attrs:{'test/camera/camToWorld':M, 'test/camera/horizontalFOV_deg':cam.hfov, 'test/units':'cm', 'test/shot':seq.id + '_' + shot.id}}; }
+
 // ---------- loading ----------
 async function loadShotFile(file){
   const info = $('#shotInfo'); const say = t => { if (info) info.innerHTML = t; };
   try {
     say(`Reading <b>${file.name.replace(/</g,'&lt;')}</b>…`); const buf = await file.arrayBuffer();
     const exr = await readEXR(buf, f => say(`Reading <b>${file.name.replace(/</g,'&lt;')}</b>… ${Math.round(f*100)}%`));
-    SHOT.file = file.name; SHOT.data = exr; SHOT.groups = shotGroups(Object.keys(exr.channels));
-    for (const k of ['P','N','C','A']) SHOT.sel[k] = shotPick(SHOT.groups, k);
-    SHOT.cam = shotCamera(exr.attrs, exr.width, exr.height);
-    const u = Object.entries(exr.attrs).find(([k]) => /(^|\/)units?$/i.test(k)); if (u){ const s = String(u[1]).toLowerCase(); P.shotUnits = s.startsWith('mm') ? 'mm' : s.startsWith('cm') ? 'cm' : s.startsWith('m') ? 'm' : P.shotUnits; }
-    buildShotPanel(); shotUpload(); if (view.mode !== 4) setView(4);
+    SHOT.source = 'file'; useShotData(exr, file.name);
   } catch(e){ console.error(e); say(`<span style="color:var(--warn)">${String(e.message || e).replace(/</g,'&lt;')}</span>`); } }
+function useShotData(exr, name){
+  SHOT.file = name; SHOT.data = exr; SHOT.groups = shotGroups(Object.keys(exr.channels));
+  for (const k of ['P','N','C','A']) SHOT.sel[k] = shotPick(SHOT.groups, k);
+  SHOT.cam = shotCamera(exr.attrs, exr.width, exr.height);
+  const u = Object.entries(exr.attrs).find(([k]) => /(^|\/)units?$/i.test(k)); if (u){ const s = String(u[1]).toLowerCase(); P.shotUnits = s.startsWith('mm') ? 'mm' : s.startsWith('cm') ? 'cm' : s.startsWith('m') ? 'm' : P.shotUnits; syncUI(); }
+  buildShotPanel(); shotUpload(); if (view.mode !== 4) setView(4); overlayKey = ''; }
+// the selected sequence and shot. Today only the built-in test village exists; with the pipeline hooked up, the shot's
+// published geometry utility pass is found from the show / sequence / shot and read the same way as a file
+const TEST_RES = [1920, 1080];
+async function loadTestShot(){
+  const seq = TEST_SEQS.find(q => q.id === P.shotSeq) || TEST_SEQS[0], shot = seq.shots.find(q => q.id === P.shotId) || seq.shots[0];
+  const key = seq.id + '_' + shot.id; if (SHOT.loading === key) return; SHOT.loading = key;
+  const info = $('#shotInfo'); SHOT.cache = SHOT.cache || {};
+  try {
+    let exr = SHOT.cache[key];
+    if (!exr){ const say = f => { if (info) info.innerHTML = `Building the test utility pass for <b>${shot.name.split(' · ')[0]}</b>… ${Math.round(f*100)}%`; setStatus(`Building test shot ${shot.id} · ${Math.round(f*100)}%`); };
+      say(0); exr = await buildTestShot(seq, shot, TEST_RES[0], TEST_RES[1], say); SHOT.cache = {[key]:exr}; }   // ~90 MB a shot: keep only the current one
+    if (SHOT.loading !== key) return;   // another shot was picked meanwhile
+    SHOT.source = 'test'; SHOT.shotName = `${seq.id.toUpperCase()} ${shot.id} · ${shot.desc}`; useShotData(exr, `${seq.id.toUpperCase()}_${shot.id}`); setStatus(`Shot ${shot.id} loaded`);
+  } catch(e){ console.error(e); if (info) info.innerHTML = `<span style="color:var(--warn)">${String(e.message || e).replace(/</g,'&lt;')}</span>`; }
+  finally { if (SHOT.loading === key) SHOT.loading = null; } }
 function shotUpload(){
   const d = SHOT.data; if (!d) return; const W = d.width, H = d.height, n = W*H; const ch = d.channels;
   const get = (kind) => { const base = SHOT.sel[kind]; if (!base) return null; const g = (kind === 'A' ? SHOT.groups.one : SHOT.groups.three).find(e => e.base === base); return g ? g.comps.map(c => ch[c]) : null; };
@@ -2268,8 +2503,8 @@ function shotUpload(){
   updateShotInfo(); }
 function updateShotInfo(){ const el = $('#shotInfo'); if (!el) return;
   if (!SHOT.data){ el.innerHTML = 'Load a geometry utility pass (multi-part or layered EXR) with world position and normals, and ideally surface colour. Its camera is read from the file\'s metadata (camera-to-world matrix and field of view).'; return; }
-  const c = SHOT.cam; el.innerHTML = `<b>${SHOT.file.replace(/</g,'&lt;')}</b> · ${SHOT.W}×${SHOT.H} · ${(SHOT.n/1e6).toFixed(2)} M points<br>` +
-    `Camera: ${c.guessed ? '<span style="color:var(--warn)">none in the file — showing an estimated view; use Orbit</span>' : `from the file, ${c.hfov.toFixed(1)}° horizontal field of view`}` +
+  const c = SHOT.cam; el.innerHTML = (SHOT.source === 'test' ? `<b>${SHOT.shotName.replace(/</g,'&lt;')}</b><br>Built-in test utility pass (P, N, albedo, depth, alpha) · ` : `<b>${SHOT.file.replace(/</g,'&lt;')}</b> · `) + `${SHOT.W}×${SHOT.H} · ${(SHOT.n/1e6).toFixed(2)} M points<br>` +
+    `Camera: ${c.guessed ? '<span style="color:var(--warn)">none in the file — showing an estimated view; use Orbit</span>' : `${SHOT.source === 'test' ? 'temporary shotcam' : 'from the file'}, ${c.hfov.toFixed(1)}° horizontal field of view`}` +
     `${SHOT.hasC ? '' : '<br>No surface colour layer: shown as 18 % grey.'}<br><i>Points only exist where the shot camera saw a surface, so geometry it cannot see casts no shadow.</i>`; }
 function buildShotPanel(){ const box = $('#shotLayers'); if (!box) return; if (!SHOT.groups){ box.innerHTML = ''; return; }
   const opt = (list, cur) => `<option value="">(none)</option>` + list.map(e => `<option value="${e.base.replace(/"/g,'&quot;')}"${e.base === cur ? ' selected' : ''}>${e.base.replace(/</g,'&lt;')}</option>`).join('');
@@ -2304,7 +2539,7 @@ function renderShot(){
   const unitM = {mm:0.001, cm:0.01, m:1, km:1000}[P.shotUnits] || 0.01; const toSky = shotToSky(); const cam = SHOT.cam;
   const tanH = Math.tan(cam.hfov*D2R/2); const footK = 2*tanH/SHOT.W;
   const [rx, ry, rw, rh] = shotRect();
-  const key = [rw, rh, P.shotCam, P.shotUnits, P.shotUp, P.shotRot, P.shotDome, P.shotSun, P.shotClouds, SHOT.shKey, SHOT.orbit.yaw, SHOT.orbit.pitch, SHOT.orbit.dist, G.uSunDir && G.uSunDir.join(), sceneVersion, SHOT.sel.P].join('|');
+  const key = [rw, rh, P.shotPass, SHOT.file, P.shotCam, P.shotUnits, P.shotUp, P.shotRot, P.shotDome, P.shotSun, P.shotClouds, SHOT.shKey, SHOT.orbit.yaw, SHOT.orbit.pitch, SHOT.orbit.dist, G.uSunDir && G.uSunDir.join(), sceneVersion, SHOT.sel.P].join('|');
   if (key === SHOT.key && SHOT.rt && SHOT.rt.w === rw && SHOT.rt.h === rh) return; SHOT.key = key;
   // camera in sky space (metres, shot camera at the origin)
   const ext = Math.max(...SHOT.bbox[1].map((v, i) => v - SHOT.bbox[0][i]))*unitM; const ctr = ap3(toSky, SHOT.bbox[0].map((v, i) => (0.5*(v + SHOT.bbox[1][i]) - cam.pos[i])*unitM));
@@ -2340,7 +2575,8 @@ function renderShot(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, SHOT.rt.f); gl.viewport(0, 0, rw, rh); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
   if (sunOK) bindTex(24, gl.TEXTURE_2D, SHOT.sm.t);
   const clouds = P.shotClouds && G.uCloudOn; const sunE = sunOK ? ((clouds ? S.sunRGBClear : S.sunRGB) || [0,0,0]) : [0,0,0];
-  setU(pr.pts, {...common, uVP:VP, uSizeMax:P.shotCam === 'orbit' ? 32 : 6, uOrtho:0, uSH:SHOT.sh, uSunE:sunE, uSunDir:L, uDomeOn:P.shotDome ? 1 : 0, uSunOn:sunOK ? 1 : 0,
+  const pass = {lit:0, albedo:1, normal:2, pos:3, depth:4}[P.shotPass] || 0, cf = ap3(toSky, cam.fwd);
+  setU(pr.pts, {...common, uPass:pass, uBBLo:SHOT.bbox[0], uBBHi:SHOT.bbox[1], uCamFwd:cf, uDepthFar:ext*1.2, uVP:VP, uSizeMax:P.shotCam === 'orbit' ? 32 : 6, uOrtho:0, uSH:SHOT.sh, uSunE:sunE, uSunDir:L, uDomeOn:P.shotDome ? 1 : 0, uSunOn:sunOK ? 1 : 0,
     uCloudsOn:clouds ? 1 : 0, uHasC:SHOT.hasC && P.shotAlbedo ? 1 : 0, uSMVP:SMVP, uSMTexel:smTexel, uSMOn:sunOK ? 1 : 0, uShadowExt:G.uShadowExt, uCBot:G.uCBot, uCTop:G.uCTop, uCloudOn:G.uCloudOn,
     uGroundY:ap3(toSky, [0, (SHOT.groundY - cam.pos[1])*unitM, 0])[1]});
   gl.drawArrays(gl.POINTS, 0, SHOT.W*SHOT.H); gl.disable(gl.DEPTH_TEST);
@@ -2352,7 +2588,7 @@ function shotDisplay(){
   const [rx, ry, rw, rh] = shotRect(); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(rx, ry, rw, rh);
   bindTex(25, gl.TEXTURE_2D, SHOT.rt.t); const pr = shotProgs();
   // gl_FragCoord is relative to the window: offset the fetch by the viewport origin
-  const b = SHOT.basis, ctx = shownCtx, bg = P.shotBg && P.shotCam !== 'orbit' && b && ctx && ctx.acc ? 1 : 0; if (bg) bindTex(14, gl.TEXTURE_2D, ctx.acc[ctx.cur]);
+  const b = SHOT.basis, ctx = shownCtx, bg = P.shotBg && P.shotCam !== 'orbit' && (P.shotPass || 'lit') === 'lit' && b && ctx && ctx.acc ? 1 : 0; if (bg) bindTex(14, gl.TEXTURE_2D, ctx.acc[ctx.cur]);
   setU(pr.disp, {uExpo:exposure(), uOff:[rx, ry], uRectSz:[rw, rh], uBg:bg, uCR:b ? b.r : [1,0,0], uCU:b ? b.u : [0,1,0], uCF:b ? b.f : [0,0,1], uTan:b ? b.t : [1,1], uAzOff:P.azOff*D2R});
   draw(); unbind(25, gl.TEXTURE_2D); if (bg) unbind(14, gl.TEXTURE_2D); drawOverlay(); }
 
@@ -2381,7 +2617,7 @@ function drawOverlay(){
   const key = [view.mode, rect.join(','), P.azOff, canvas.clientWidth, canvas.clientHeight, !!SHOT.tex, P.shotCam].join('|'); if (key === overlayKey) return; overlayKey = key;
   if (view.mode === 1){ ov.innerHTML=''; return; }
   if (view.mode === 3){ ov.innerHTML = '<div class="hint">Drag to turn the sky around the set · scroll to move closer</div>'; return; }
-  if (view.mode === 4){ ov.innerHTML = SHOT.tex ? `<div class="hint">${P.shotCam === 'orbit' ? 'Drag to orbit · scroll to move closer' : 'Shot camera · switch to Orbit in the Shot view section to look around'}</div>` : '<div class="hint">Load a geometry utility pass in the <b>Shot view</b> section of the panel</div>'; return; }
+  if (view.mode === 4){ ov.innerHTML = SHOT.tex ? `<div class="hint">${P.shotCam === 'orbit' ? 'Drag to orbit · scroll to move closer' : 'Shot camera · switch to Orbit in the Shot view section to look around'}</div>` : '<div class="hint">Loading the shot…</div>'; return; }
   const [x0,y0,w,h] = rect.map(v=>v/dpr); const top = canvas.clientHeight - (y0+h);
   let s = `<div class="hline" style="left:${x0}px;width:${w}px;top:${top+h/2}px"></div>`;
   [['N',0],['NE',45],['E',90],['SE',135],['S',180],['SW',225],['W',270],['NW',315]].forEach(([n,az])=>{ let u = ((az - P.azOff)/360 + 0.5) % 1; if (u<0) u+=1; s += `<div class="compass" style="left:${x0+u*w}px;top:${top+h/2+4}px">${n}</div>`; });
@@ -2558,7 +2794,7 @@ function sceneObject(){
   return { app:'Spectral Sky', sceneVersion:SCENE_VERSION, saved:new Date().toISOString(), preset:$('#presetName')?.textContent || '',
     settings, view:{mode:view.mode, yaw:view.yaw, pitch:view.pitch, fov:view.fov, auto:view.auto, expoComp:view.expoComp, ld:view.ld},
     mask, moonMap: MOONTEX ? 'a custom moon photo map was loaded (not included)' : null,
-    derived:{ ...num(S), covBias:G.uCovBias, skyKeyF:G.uSkyKeyF, cloudExt:G.uCDens, exposureK:autoK() },
+    derived:{ ...num(S), covBias:G.uCovBias, covKey, covVer:COV_VER, skyKeyF:G.uSkyKeyF, cloudExt:G.uCDens, exposureK:autoK() },
     system:{ gpu:GPU_NAME, browser:navigator.userAgent, screen:`${screen.width}×${screen.height} @${devicePixelRatio}x` },
     snapshot: sceneSnapshot() }; }
 async function saveScene(){
@@ -2580,7 +2816,7 @@ function applyScene(o){
   MASK.fill(0); MASKINFO.any = false; MASKINFO.add = [false,false,false];
   if (o.mask && o.mask.data && o.mask.w === MW && o.mask.h === MH){ const q = new Int8Array(bytesFromB64(o.mask.data).buffer); for (let i=0;i<Math.min(q.length, MASK.length);i++) MASK[i] = q[i]/127;
     MASKINFO.any = true; MASKINFO.add = (o.mask.add || [false,false,false]).slice(0,3); MASKINFO.wind = (o.mask.wind || [P.windX, P.windZ]).slice(0,2); }
-  uploadMask(); dirtyCirrus = true; covKey = ''; afterBulk(); setPresetName(o.preset && o.preset !== 'Custom' ? o.preset : 'Loaded scene');
+  uploadMask(); dirtyCirrus = true; covKey = ''; COV_LOCK = o.derived && o.derived.covVer === COV_VER && typeof o.derived.covKey === 'string' && isFinite(o.derived.covBias) ? {key:o.derived.covKey, bias:o.derived.covBias} : null; afterBulk(); setPresetName(o.preset && o.preset !== 'Custom' ? o.preset : 'Loaded scene');
   if (o.view && typeof o.view.mode === 'number') setView(o.view.mode); syncUI();
   const si = $('#sceneInfo'); if (si) si.textContent = `Loaded a scene saved ${o.saved ? new Date(o.saved).toLocaleString() : ''}${o.moonMap ? ' (it used a custom moon map, which is not stored in the file)' : ''}.`; }
 async function loadSceneFile(file){ try { applyScene(JSON.parse(await file.text())); notify(`Loaded ${file.name}`); } catch(e){ notify('Could not load that scene file: ' + e.message); } }
@@ -3017,7 +3253,7 @@ void main(){ vec2 f = vec2(gl_FragCoord.x, gl_FragCoord.y + uRow0)/uTN; float az
   unbind(20, gl.TEXTURE_2D); const f = fboFor([T_TERRAIN]); gl.bindFramebuffer(gl.FRAMEBUFFER, f); const [rS, rE] = terrRange();
   for (let y=0; y<TERR_H; y+=64){ gl.viewport(0, y, TERR_W, 64);
     setU(P_TERRGEN, {uZero:0, uMt0:[rS, rE, 0, 1], uMt2:[0, 0, 0, P.mtnSeed], uMtG:[P.mtnDist, P.mtnDepth, P.mtnHeight, P.mtnCover], uMtG2:[P.mtnDir*D2R, P.mtnRidge, P.mtnRough, 0], uTN:[TERR_W, TERR_H], uRow0:0}); draw(); gl.flush(); }
-  gl.deleteFramebuffer(f); gl.bindTexture(gl.TEXTURE_2D, T_TERRAIN); gl.generateMipmap(gl.TEXTURE_2D); bindTex(20, gl.TEXTURE_2D, T_TERRAIN); terrKey = key; }
+  gl.deleteFramebuffer(f); genMips2D(T_TERRAIN); bindTex(20, gl.TEXTURE_2D, T_TERRAIN); terrKey = key; }
 function terrUniforms(){
   const [rS, rE] = terrRange(); const spec = t => f32(LAM.map(l => lerpT(t, l)));
   return { uMt0:[rS, rE, P.mtnHeight*1.15 + 0.05, P.mtnOn ? 1 : 0], uMt1:[P.mtnSnow > 0.005 ? P.mtnHeight*(1.02 - 0.8*P.mtnSnow) : 99, 99, P.mtnVeg, P.mtnRidge], uMt2:[P.mtnRough, P.lat >= 0 || P.mode !== 'location' ? 1 : -1, 0, P.mtnSeed],
@@ -3687,10 +3923,12 @@ const SECTIONS = [
     {type:'info', id:'sceneInfo'},
   ]},
   {title:'Shot view', items:[
-    {type:'buttons', btns:[['Load utility pass (EXR)…', ()=>{ const i = document.createElement('input'); i.type = 'file'; i.accept = '.exr'; i.onchange = () => i.files[0] && loadShotFile(i.files[0]); i.click(); }], ['Open shot view', ()=>setView(4)]]},
+    {k:'shotSeq', label:'Sequence', type:'select', opts:TEST_SEQS.map(q => [q.id, q.name]), noScene:true, after:()=>{ P.shotId = (TEST_SEQS.find(q => q.id === P.shotSeq) || TEST_SEQS[0]).shots[0].id; syncUI(); loadTestShot(); }},
+    {k:'shotId', label:'Shot', type:'select', opts:TEST_SEQS[0].shots.map(q => [q.id, q.name]), noScene:true, after:()=>{ loadTestShot(); if (view.mode !== 4) setView(4); }},
+    {type:'note', html:'Placeholder: once this is connected to the pipeline, these list the show\'s sequences and shots, and the shot\'s published geometry utility pass (world position, normals, albedo, depth) and camera are found and loaded automatically. For now there is one built-in test sequence: a village street with three temporary shotcams.'},
     {type:'info', id:'shotInfo'},
-    {type:'info', id:'shotLayers'},
-    {k:'shotCam', label:'Camera', type:'select', opts:[['shot','Shot camera (from the file)'],['orbit','Orbit around the scene']], noScene:true, after:()=>{ overlayKey = ''; if (view.mode !== 4) setView(4); }},
+    {k:'shotPass', label:'Show', type:'select', opts:[['lit','Lit by the sky'],['albedo','Surface colour (albedo)'],['normal','Normals'],['pos','World position'],['depth','Depth']], noScene:true},
+    {k:'shotCam', label:'Camera', type:'select', opts:[['shot','Shot camera'],['orbit','Orbit around the scene']], noScene:true, after:()=>{ overlayKey = ''; if (view.mode !== 4) setView(4); }},
     {k:'shotUnits', label:'Scene units', type:'select', opts:[['mm','millimetres'],['cm','centimetres'],['m','metres'],['km','kilometres']], noScene:true},
     {k:'shotUp', label:'Up axis', type:'select', opts:[['y','Y up'],['z','Z up']], noScene:true},
     {k:'shotRot', label:'Sky rotation around the scene', min:-180, max:180, step:1, fmt:v=>`${v}°`, noScene:true},
@@ -3699,6 +3937,8 @@ const SECTIONS = [
     {k:'shotClouds', label:'Cloud shadows (gobo)', type:'check', noScene:true},
     {k:'shotAlbedo', label:'Use surface colour', type:'check', noScene:true},
     {k:'shotBg', label:'Show the sky behind the scene (shot camera)', type:'check', noScene:true},
+    {type:'info', id:'shotLayers'},
+    {type:'buttons', btns:[['Load a utility EXR from disk (testing)…', ()=>{ const i = document.createElement('input'); i.type = 'file'; i.accept = '.exr'; i.onchange = () => i.files[0] && loadShotFile(i.files[0]); i.click(); }]]},
   ]},
   {title:'Look-dev checks', items:[
     {k:'ldcFace', label:'Chart and card facing', type:'select', opts:[['sun','Toward the sun (vertical)'],['away','Away from the sun (vertical)'],['up','Up (horizontal)']], noScene:true, after:()=>renderChecks()},
@@ -3734,6 +3974,9 @@ const SECTIONS = [
     {k:'layersOn', label:'Light layers in the EXR (for comp)', type:'check', noScene:true},
     {type:'info', id:'layersInfo', show:()=>P.layersOn},
     {type:'render'},
+    {type:'note', html:'<b>Same result on every GPU.</b> The noise, hashing and mipmaps are computed the same way on every machine, and a saved scene carries its cloud-cover calibration, so a scene file renders the same sky everywhere. GPUs still round texture blending and a few maths functions slightly differently: expect the overall level to agree within about 0.1 %, with a scattering of pixels along cloud edges differing by a few percent (not visible side by side). Files are not bit-identical. To verify two machines, load the same scene on both, run the check, and paste one report into the other.'},
+    {type:'buttons', btns:[['Check this GPU', ()=>gpuCheck()]]},
+    {type:'info', id:'gpuChk'},
   ]},
 ];
 const ctrls = {};
@@ -3753,6 +3996,7 @@ function buildPanel(){
         x.oninput=()=>{ P.time = hhmm(Number(x.value)); changed(false); syncUI(); }; c.sync=()=>{ x.value=toMin(P.time); v.textContent=P.time; }; }
       else if (it.type==='buttons'){ row.classList.add('full'); row.innerHTML='<div class="btns"></div>'; const b=row.firstChild; it.btns.forEach(([l,fn,off])=>{ const e=document.createElement('button'); e.className='btn'; e.textContent=l; if (off){ e.disabled = true; e.title = off; } else e.onclick=fn; b.appendChild(e); }); }
       else if (it.type==='info'){ row.classList.add('full'); row.innerHTML = `<div class="note" id="${it.id}"></div>`; }
+      else if (it.type==='note'){ row.classList.add('full'); row.innerHTML = `<div class="note">${it.html}</div>`; }
       else if (it.type==='map'){ row.classList.add('full'); row.innerHTML = `<div style="display:grid;gap:6px"><canvas class="map" id="worldMap" role="img" aria-label="World map. Click to choose the observer's location."></canvas><div class="note" id="mapInfo"></div></div>`;
         const cv = row.querySelector('canvas'); let down = false; cv.addEventListener('pointerdown', e=>{ down = true; cv.setPointerCapture(e.pointerId); mapPick(e); }); cv.addEventListener('pointermove', e=>{ if (down) mapPick(e); }); cv.addEventListener('pointerup', ()=>{ down = false; }); }
       else if (it.type==='tl'){ row.classList.add('full'); row.innerHTML = `<div style="display:grid;gap:10px;padding-top:4px">
@@ -3905,7 +4149,7 @@ function brushCursor(e){ const el = $('#brush'); if (!(view.place==='add' || vie
 
 /* ---------- viewport interaction ---------- */
 const viewEl = $('#view');
-function setView(m){ view.mode = m; $('#viewSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on', Number(x.dataset.v)===m)); $('#legend').hidden = m!==2; $('#placeSeg').hidden = m>=3; overlayKey = ''; if (m!==3) setStatus(shownCtx===CTX_PREVIEW ? `Preview ${P.previewRes}×${P.previewRes/2} · sample ${previewN}/${P.previewSpp}` : ''); }
+function setView(m){ view.mode = m; $('#viewSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on', Number(x.dataset.v)===m)); $('#legend').hidden = m!==2; $('#placeSeg').hidden = m>=3; overlayKey = ''; if (m!==3) setStatus(shownCtx===CTX_PREVIEW ? `Preview ${P.previewRes}×${P.previewRes/2} · sample ${previewN}/${P.previewSpp}` : ''); if (m === 4 && !SHOT.data) loadTestShot(); }
 $('#viewSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>setView(Number(b.dataset.v)));
 $('#placeSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>setTool(b.dataset.p));
 $('#autoEx').onchange = e => { view.auto = e.target.checked; view.expoComp = view.auto ? 0 : Math.round(Math.log2(Math.max(S.ghi,1e-6)/2.5)*10)/10; $('#exSlider').min = view.auto?-8:-12; $('#exSlider').max = view.auto?8:18; $('#exSlider').value = view.expoComp; exLabel(); };
@@ -4013,6 +4257,36 @@ function diagSetup(){
   window.diagFinish = () => { box.querySelector('#dNow').textContent = 'All steps finished. The app is running; use Copy log and paste it to Claude.'; log.push('✓ app running (frame loop started)'); out(); }; }
 // copy text from a button click. Inside an embedded page the async clipboard API can be blocked, and its promise may never
 // settle (the button then did nothing), so copy through a selected text box first, and leave that box visible as a fallback
+
+/* ---------- cross-GPU consistency check: a small final render of the current scene, summarised so two machines can compare ---------- */
+let GPU_REP = null;
+function sceneHash(){ const skip = new Set(['previewRes','previewSpp','brushLayer','brushSize','brushStrength','maskShow','outRes','outSpp','format','rigUSD','layersOn','ldcFace','wipeOn','wipePos','variety','goboExt','goboRes','goboMode'].concat(Object.keys(P).filter(k => k.startsWith('shot'))));
+  const o = {}; for (const k of Object.keys(P).sort()) if (!skip.has(k) && typeof P[k] !== 'function') o[k] = P[k];
+  let h = 2166136261 >>> 0; const t = JSON.stringify(o) + '|' + (MASKINFO.any ? 'mask' : ''); for (let i=0;i<t.length;i++){ h ^= t.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16).padStart(8, '0'); }
+async function gpuCheck(){
+  const el = $('#gpuChk'); if (finalJob || TL.rendering){ el.textContent = 'Wait for the current render to finish.'; return; }
+  el.textContent = 'Rendering a 512 × 256 check image…';
+  const W = 512, H = 256, rgb = await renderFinal({W, spp:8, quality:P.quality, units:'nits', label:'Consistency check'});
+  if (!rgb){ el.textContent = 'Check cancelled.'; return; }
+  // 16 × 8 regions over the whole panorama (sky and ground), mean luminance and colour of each
+  const R = []; for (let j=0;j<8;j++) for (let i=0;i<16;i++){ let r = 0, g = 0, b = 0, n = 0;
+    for (let y=j*H/8; y<(j+1)*H/8; y++) for (let x=i*W/16; x<(i+1)*W/16; x++){ const o = (y*W + x)*3; r += rgb[o]; g += rgb[o+1]; b += rgb[o+2]; n++; }
+    R.push([r/n, g/n, b/n].map(v => +v.toPrecision(5))); }
+  GPU_REP = {app:'spectral-sky-check', v:1, scene:sceneHash(), quality:P.quality, gpu:GPU_NAME, regions:R};
+  const txt = JSON.stringify(GPU_REP);
+  el.innerHTML = `Check rendered on <b>${GPU_NAME.replace(/</g,'&lt;')}</b> · scene ${GPU_REP.scene}.<div class="btns" style="margin-top:8px"><button class="btn" id="gpuCopy">Copy this report</button></div>
+    <textarea id="gpuPaste" placeholder="Paste the report from the other machine here to compare" style="display:block;width:100%;height:64px;margin-top:8px;font:11px var(--mono);background:var(--raise);color:var(--fg);border:1px solid var(--line2);border-radius:6px;padding:6px"></textarea><div id="gpuCmp" style="margin-top:6px"></div>`;
+  $('#gpuCopy').onclick = e => copyText(txt, e.target, el);
+  $('#gpuPaste').oninput = e => gpuCompare(e.target.value); }
+function gpuCompare(t){ const out = $('#gpuCmp'); let o; try { o = JSON.parse(t.trim()); } catch(_){ out.textContent = t.trim() ? 'That is not a check report.' : ''; return; }
+  if (!o || o.app !== 'spectral-sky-check' || !Array.isArray(o.regions) || o.regions.length !== GPU_REP.regions.length){ out.textContent = 'That is not a check report from this version.'; return; }
+  if (o.scene !== GPU_REP.scene || o.quality !== GPU_REP.quality){ out.innerHTML = '<span style="color:var(--warn)">The two checks used different scenes or ray-march quality: load the same scene file on both machines first.</span>'; return; }
+  // relative difference per region and channel, against a floor of 1 % of the brightest region (so near-black regions do not dominate)
+  let peak = 0; GPU_REP.regions.forEach(c => c.forEach(v => { peak = Math.max(peak, v); })); const fl = 0.01*peak;
+  let mx = 0, sum = 0, n = 0; GPU_REP.regions.forEach((c, i) => c.forEach((v, k) => { const w = o.regions[i][k]; const d = Math.abs(v - w)/Math.max(Math.max(v, w), fl); mx = Math.max(mx, d); sum += d; n++; }));
+  const pc = v => (v*100).toFixed(v < 0.001 ? 3 : 2) + ' %';
+  out.innerHTML = `Against <b>${String(o.gpu).replace(/</g,'&lt;')}</b>: mean difference ${pc(sum/n)}, largest region ${pc(mx)}. ` +
+    (mx < 0.01 ? '<span style="color:#5fd08c">Matches: well below anything visible.</span>' : mx < 0.03 ? '<span style="color:var(--warn)">Close, but a little more than expected. Send both reports to look into it.</span>' : '<span style="color:var(--bad)">These differ visibly. Send both reports to look into it.</span>'); }
 function copyText(txt, btn, box){
   let ta = box.querySelector('textarea.copy-box');
   if (!ta){ ta = document.createElement('textarea'); ta.className = 'copy-box'; ta.readOnly = true; ta.style.cssText = 'display:block;width:100%;height:150px;margin-top:8px;font:11px ui-monospace,Menlo,Consolas,monospace;background:#0b0e12;color:#dde3ea;border:1px solid #2a3340;border-radius:6px'; box.appendChild(ta); }
