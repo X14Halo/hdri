@@ -504,6 +504,27 @@ vec4 cellPt(vec2 x, uint seed){ vec2 i = floor(x); float best = 1e9; vec4 o = ve
     if (dd < best){ best = dd; o = vec4(d, r.z, fract(r.x*7.31 + r.y*3.17)); } }
   return o; }
 #if CLOUD_KIND == 0
+// cumulus cells: each fair-weather cumulus sits on its own thermal, so a cumulus field is a scatter of separate heaps
+// ~0.5-3 km across with clear air between them (about as wide as the cloud layer is deep), many small ones and a few
+// big ones, crowding together where the air is moister. Two jittered grids of domes (≈1.4 km and ≈3.3 km apart at cell size
+// ×0.65); each dome's strength varies, and the large-scale coverage map (org) favours cells in some regions, so cells
+// cluster and merge there. Returns the strongest dome at x (0 between cells).
+float cuGrid(vec2 g, uint seed, float rad, float keep, float org){ vec2 i = floor(g); float v = 0.0;
+  for (int dy=-1; dy<=1+uZero; dy++) for (int dx=-1; dx<=1+uZero; dx++){ vec2 c = i + vec2(float(dx), float(dy));
+    vec3 r = hash3u(uvec3(uvec2(ivec2(c) + 32768), seed)); float k = fract(r.x*7.31 + r.y*3.17);
+    if (k > keep*(1.0 + 0.55*org)) continue;
+    vec2 d = g - (c + 0.15 + 0.7*r.xy); float R = rad*(0.55 + 0.6*r.z);
+    float q = 1.0 - dot(d, d)/(R*R); if (q <= 0.0) continue;
+    v = max(v, (0.5 + 0.5*fract(r.z*5.3 + k) + 0.45*org)*sqrt(q)); }
+  return v; }
+// wq: a smooth warp (−1…1, ~cell-sized features) that bends each cell's outline out of round; sd: the shear direction,
+// along which cumulus are drawn out a little
+float cuCells(vec2 x, float cs, float org, vec2 wq, vec2 sd){
+  x += wq*0.55*cs; x = vec2(dot(x, sd)/1.3, dot(x, vec2(-sd.y, sd.x)));
+  float a = cuGrid(x/(2.0*cs), 401u, 0.46, 0.8, org);                       // single cumulus
+  float b = cuGrid(x/(4.8*cs) + vec2(0.37, 0.71), 409u, 0.44, 0.42, org);   // clusters: larger clouds of several turrets
+  float c = cuGrid(x/(0.95*cs) + vec2(0.61, 0.13), 419u, 0.42, 0.22, org);  // small fragments and young cells
+  return max(max(a*(1.0 + 0.55*b), 0.85*b), 0.5*c); }
 float gPile = 0.0;
 float lowDensity0(vec3 p, float h, bool detail, float lod){
   if (h <= uCBot || h >= uCTop) return 0.0;
@@ -526,6 +547,14 @@ float lowDensity0(vec3 p, float h, bool detail, float lod){
     xw += (wv.gb - 0.5)*(0.15 + 0.4*hf0)*uCScale*convW; }
   // fine detail must come from 3-D noise: reading the 2-D coverage map coarsely keeps it from being extruded into striations
   vec4 w = weatherLod(xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, cType)), lod);
+  // cumulus: separate cells, each on its own thermal (the coverage map now only says where they crowd together); far away,
+  // where a cell is smaller than a couple of pixels, they blend back into the map's mean pattern
+  float cuW = smoothstep(0.47, 0.62, cType)*(1.0 - smoothstep(4.0, 5.5, lod));
+  vec2 cuWq = vec2(0.0), cuSd = length(uShear) > 1e-4 ? normalize(uShear) : vec2(1.0, 0.0);
+  // (a convective cell is about as wide as it is deep: congestus and cumulonimbus grow from much larger cells)
+  float cuCs = uCScale*clamp(mix(1.0, (cTop - cBase)/1.6, smoothstep(0.62, 0.9, cType)), 1.0, 4.0);
+  if (cuW > 0.0){ cuWq = (t2W(xw0/(4.0*cuCs) + vec2(0.29, 0.53), max(lod - 4.0, 0.0)).gb - 0.5)*2.2;
+    w.r = mix(w.r, 0.12 + 0.5*cuCells(xw0, cuCs, (w.r - 0.5)*3.0, cuWq, cuSd), cuW); }
   float cl = clamp(cBias + (w.r - 0.5)*uClump, 0.0, 1.0);
   float clCell = cl;   // the convective cells themselves (towers grow only from these)
   // storms are organised on a much larger scale than single cells (~50 km): a storm complex is a connected mass of many
@@ -568,9 +597,9 @@ float lowDensity0(vec3 p, float h, bool detail, float lod){
   // only real cells grow tall, and they grow as columns of separate turrets (~2-3 km), not as one broad hill: the height
   // switches on fairly sharply with the cell's strength, which is broken up by a turret-scale pattern
   float tw = 0.5;
-  float cl0 = clCell, wg0 = w.g;
+  float cl0 = clCell, wg0 = w.g, cuV0 = -1.0;
   if (tall > 0.0){ vec4 tn = t3S( vec3(xw0.x, 7.3, xw0.y)/(3.6*uCScale), max(lod + 1.5, 0.0)); tw = smoothstep(0.25, 0.75, tn.r*0.6 + tn.g*0.4);
-    if (convW > 0.0){ vec4 w0 = weatherLod(xw0/WSCALE, max(lod - 0.5, 2.0 + 1.6*smoothstep(0.45, 0.9, cType)), lod); cl0 = clamp(cBias + (w0.r - 0.5)*uClump, 0.0, 1.0); wg0 = w0.g; }
+    if (convW > 0.0){ vec4 w0 = weatherLod(xw0/WSCALE, max(lod - 0.5, 2.0 + 1.6*smoothstep(0.45, 0.9, cType)), lod); if (cuW > 0.0){ cuV0 = cuCells(xw0, cuCs, (w0.r - 0.5)*3.0, cuWq, cuSd); w0.r = mix(w0.r, 0.12 + 0.5*cuV0, cuW); } cl0 = clamp(cBias + (w0.r - 0.5)*uClump, 0.0, 1.0); wg0 = w0.g; }
     if (stormW > 0.0) cl0 = clamp(cl0 + stormW*(0.12*ring - 0.06) + 0.1*core, 0.0, 1.0); }   // the cells keep their own turret structure
   // the height lookup (w0) is smoother than the cloud's own outline: broad towers, never lone chimneys
   float cellX = cl0*(0.6 + 0.8*wg0)*mix(1.0, 0.62 + 0.55*tw, tall);   // broad turrets
@@ -580,6 +609,9 @@ float lowDensity0(vec3 p, float h, bool detail, float lod){
   // so sparse storm scenes still have proper towers), and every cell inside a complex gets a boost
   if (stormW > 0.0){ float cs = (cl0 - cBias)/max(0.22*uClump, 0.05) + 0.6*(wg0 - 0.5) + 0.4*(tw - 0.5);
     hT = mix(hT, smoothstep(-0.1, 1.1, cs + 0.3*core), stormW); }   // a range of heights: towers at different stages, not a table top
+  // cumulus cells: a tower rises highest over the middle of its thermal and rounds off toward its edges (a dome of turrets,
+  // not a flat-topped wall); stronger cells reach higher
+  if (cuV0 >= 0.0) hT = mix(hT, pow(clamp(cuV0/1.25, 0.0, 1.0), 0.75)*(0.8 + 0.25*tw) + 0.25*core, cuW);
   hs = mix(hs, mix(0.22, 1.0, hT)*mix(0.82 + 0.18*tw, 0.68 + 0.32*tw, stormW)*mix(0.3, 1.0, ringH), tall);
   // pileus: air pushed up ahead of a fast-rising tower cools to saturation in a thin, smooth cap a few hundred metres above
   // its top (laminar, so no turbulent detail); the tower often punches through it later
@@ -657,7 +689,7 @@ float lowDensity0(vec3 p, float h, bool detail, float lod){
   // crisp, dense cauliflower edges and only the small, isolated clouds and outlying bits turn thin and ragged
   float clB = clamp(cBias + (t2W( xw/WSCALE, max(lod - 0.5, 2.0 + smoothstep(0.45, 0.9, cType)) + 2.0).r - 0.5)*uClump, 0.0, 1.0);
   float small = 1.0 - smoothstep(0.12, 0.34, clB);
-  float frag = (1.0 - smoothstep(0.12, 0.45, cl))*small;
+  float frag = (1.0 - smoothstep(0.12, 0.45, cl))*small*(1.0 - 0.75*cuW);
   // liquid water grows with height above the base (rising air keeps condensing), so small, shallow clouds and the lower
   // fringes are optically thin — translucent wisps, not solid balls. Big masses keep most of their density down to a
   // crisp base: they hold far more water, and their edges stay hard against the sky.
@@ -1883,24 +1915,24 @@ function buildVar(){
       // the air's moisture over ~100-400 km: more of every layer where it is moist, less where it is dry
       const M = 0.75*nM(x/260, z/260) + 0.35*nM2(x/110, z/110);
       // mid and high first (they shade the low clouds)
-      const mc = P.midCov > 0.001 ? (P.midCov >= 0.995 ? sigm(5.3 + 1.2*M + 0.5*nMid(x/150, z/150)) : sigm(lc(P.midCov) + 1.5*M + 0.8*nMid(x/150, z/150))) : 0;
+      const mc = P.midCov > 0.001 ? (P.midCov >= 0.995 ? sigm(5.3 + 1.2*M + 0.5*nMid(x/150, z/150)) : sigm(lc(P.midCov) + 0.9*M + 0.6*nMid(x/150, z/150))) : 0;
       const mb = Math.max(P.midH + 0.35*nMidH(x/200, z/200), 1.8), mD = P.midThick*Math.exp(0.25*M), mTau = P.midTau*Math.exp(0.35*M + 0.15*nMid(x/90, z/90));
       put(4, o, mc, mb, mD, P.midType); put(5, o, mTau, 0, 0, 0);
       if (mc > 0.01){ st.any[2] = true; st.bot[2] = Math.min(st.bot[2], mb - midBot*mD - 0.02); st.top[2] = Math.max(st.top[2], mb + midTop*mD + 0.02); }
-      const hc = P.ciCov > 0.001 ? (P.ciCov >= 0.995 ? sigm(5.3 + M + 0.6*nHi(x/180, z/180)) : sigm(lc(P.ciCov) + 1.2*M + 0.9*nHi(x/180, z/180))) : 0;
+      const hc = P.ciCov > 0.001 ? (P.ciCov >= 0.995 ? sigm(5.3 + M + 0.6*nHi(x/180, z/180)) : sigm(lc(P.ciCov) + 0.8*M + 0.7*nHi(x/180, z/180))) : 0;
       const hz = P.ciH + 0.5*nHiH(x/220, z/220), hD = P.ciThick*Math.exp(0.2*M), hTau = P.ciTau*Math.exp(0.4*M);
       put(6, o, hc, hz - hD/2, hz + hD/2, hTau); put(7, o, 0, 0, 0, 0);
       if (hc > 0.01){ st.any[3] = true; st.bot[3] = Math.min(st.bot[3], hz - hD/2 - 0.02); st.top[3] = Math.max(st.top[3], hz + hD/2 + 0.02); }
       // low: cover with the moisture, base lower where moister (smaller dew-point spread), convective clouds deeper there
       const sh = conv > 0 ? 1 + conv*day*(shade(mc, hc)/shade0 - 1) : 1;
-      let c = P.cov > 0.001 ? sigm((P.cov >= 0.995 ? 5.3 : lc(P.cov)) + 1.3*M + 0.6*nL(x/120, z/120)) : 0; c = Math.min(c*sh, 1);
+      let c = P.cov > 0.001 ? sigm((P.cov >= 0.995 ? 5.3 : lc(P.cov)) + 0.75*M + 0.4*nL(x/120, z/120)) : 0; c = Math.min(c*sh, 1);
       const b = Math.max(P.cbase*(1 - 0.16*M + 0.1*nB(x/140, z/140)), 0.12);
       const dd = conv*(0.35*M + 0.2*nD(x/90, z/90)), h = Math.max(P.cthick*Math.exp(dd), 0.15);
       const t = clamp(P.ctype + 0.03*conv*(M + nD(x/90, z/90)), 0, 1);   // deeper cumulus read as congestus
       put(0, o, dq(c, P.cov), b, b + h, t); put(1, o, typeExt(t)*P.cdm*Math.exp(0.1*nB(x/70, z/70)), P.cscud, 0, 0);
       if (c > 0.01){ st.any[0] = true; st.bot[0] = Math.min(st.bot[0], b - P.cbasevar*Math.min(0.6, 0.35*h + 0.12) - (P.cscud > 0 ? 0.1 + 0.45*P.cscud : 0) - 0.03); st.top[0] = Math.max(st.top[0], b + h); }
       // second low layer: the same air, its own pattern
-      if (P.l2On && P.l2Cov > 0.001){ const c2 = sigm((P.l2Cov >= 0.995 ? 5.3 : lc(P.l2Cov)) + 1.1*M + 0.7*nL2(x/120, z/120))*(conv2 > 0 ? 1 + conv2*day*(shade(mc, hc)/shade0 - 1) : 1);
+      if (P.l2On && P.l2Cov > 0.001){ const c2 = sigm((P.l2Cov >= 0.995 ? 5.3 : lc(P.l2Cov)) + 0.7*M + 0.45*nL2(x/120, z/120))*(conv2 > 0 ? 1 + conv2*day*(shade(mc, hc)/shade0 - 1) : 1);
         const b2 = Math.max(P.l2Base*(1 - 0.12*M + 0.08*nL2(x/160, z/160)), 0.12), h2 = Math.max(P.l2Thick*Math.exp(conv2*0.3*M), 0.12);
         put(2, o, dq(c2, P.l2Cov), b2, b2 + h2, P.l2Type); put(3, o, typeExt(P.l2Type)*P.l2Dm, 0, 0, 0);
         if (c2 > 0.01){ st.any[1] = true; st.bot[1] = Math.min(st.bot[1], b2 - 0.35*Math.min(0.6, 0.35*h2 + 0.12) - 0.03); st.top[1] = Math.max(st.top[1], b2 + h2); } }
