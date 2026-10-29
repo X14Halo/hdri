@@ -59,7 +59,6 @@ button,select,input{font:inherit;color:inherit}
 .brush{position:absolute;border:1.5px solid #5fd08c;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.45),inset 0 0 0 1px rgba(0,0,0,.25)}
 .brush.rem{border-color:#f0675c}
 .hint{position:absolute;left:12px;bottom:10px;font:11px var(--mono);color:var(--muted);background:rgba(10,13,17,.8);padding:3px 8px;border-radius:6px}
-.wxplot{width:100%;aspect-ratio:2/1;border-radius:6px;display:block;background:#0b121b}
 .map{width:100%;aspect-ratio:2/1;border-radius:6px;display:block;cursor:crosshair;background:#0f1a26;touch-action:none;max-width:100%}
 .tgrid{display:flex;flex-wrap:wrap;gap:6px}
 .tchip{border:1px solid var(--line2);background:var(--raise);border-radius:6px;padding:4px 8px;cursor:pointer;font:11px var(--mono);font-variant-numeric:tabular-nums;color:var(--fg);text-align:left;display:grid;gap:1px}
@@ -450,17 +449,13 @@ uniform vec2 uOrgOff;   // places the storm-organisation pattern so a storm comp
 uniform vec2 uWOff;      // where this layer reads the coverage map: a second low layer gets its own, unrelated pattern
 uniform float uPileus;   // smooth caps (pileus) over the tallest growing towers
 uniform float uMamma;    // pouches (mammatus) sagging from the underside of an anvil
-// weather system: this layer's state across the ~800 km of sky the camera sees, as two slices of a map (see buildSyn) —
-// where it has cloud, its base, top, type and water — so each layer forms where the air mass and the fronts put it.
+// natural variation: this layer's cover, base, top, type and water across the ~800 km of sky the camera sees, as two slices
+// of a map (see buildVar), so clouds change gradually and in groups away from the camera instead of being the same everywhere.
 // The map is finer near the camera (~1.7 km cells) and coarser toward the horizon (~20 km at 400 km).
 uniform highp sampler2DArray uSyn; uniform float uSynOn; uniform float uSynL;
-uniform vec4 uWave; uniform vec4 uWave2;   // lee waves: ridge normal (xz), its distance km, wavelength km; front-line wander phases, on
 vec2 synUV(vec2 xz){ return 0.5 + 0.5*xz*(400.0 + 150.0)/(400.0*(abs(xz) + 150.0)); }
 vec4 synA(vec2 xz){ return textureLod(uSyn, vec3(synUV(xz), uSynL), 0.0); }
 vec4 synB(vec2 xz){ return textureLod(uSyn, vec3(synUV(xz), uSynL + 1.0), 0.0); }
-// distance downwind of the ridge (the same wandering line the weather map uses) and along it
-vec2 waveSU(vec2 xz){ float a = xz.x*uWave.y - xz.y*uWave.x;
-  return vec2(uWave.z + 22.0*sin(a/170.0 + uWave2.x) + 10.0*sin(a/61.0 + uWave2.y) - dot(xz, uWave.xy), a); }
 // painted art-direction mask, stored per sky direction as seen from the camera (r = low, g = mid, b = high clouds; −1 remove … +1 add)
 // looked up for the cloud column through p as seen at the height of the cloud bases — the part of a cloud you see from
 // the ground, so the painted cloud appears where the brush was (looked up at mid-height, the bases showed up below it).
@@ -512,13 +507,11 @@ vec4 cellPt(vec2 x, uint seed){ vec2 i = floor(x); float best = 1e9; vec4 o = ve
 float gPile = 0.0;
 float lowDensity0(vec3 p, float h, bool detail, float lod){
   if (h <= uCBot || h >= uCTop) return 0.0;
-  // this spot's layer: from the weather system's map, or the scene-wide settings
+  // this spot's layer: the settings, varied across the sky by the variation map
   float cBase = uCBase, cTop = uCTop, cBot = uCBot, cBias = uCovBias, cType = uCType, cDens = uCDens, cScud = uScud, synC = 0.0;
   if (uSynOn > 0.5){ vec4 sa = synA(p.xz); if (sa.r < -1.5) return 0.0; synC = sa.r;
     vec4 sb = synB(p.xz); cBias = uCovBias + uClump*sa.r; cBase = sa.g; cTop = sa.b; cType = sa.a; cDens = sb.r; cScud = sb.g;
     cBot = cBase - uBaseVar*min(0.6, 0.35*(cTop - cBase) + 0.12) - (cScud > 0.0 ? 0.1 + 0.45*cScud : 0.0) - 0.02;
-    // rotor clouds: only under the lee-wave crests (rising air), in rows parallel to the ridge
-    if (uWave2.z > 0.5 && uSynL > 1.5){ vec2 su = waveSU(p.xz); float ph = fract(su.x/uWave.w - 0.62); cBias -= 0.9*(1.0 - exp(-pow((ph - 0.5)*uWave.w/1.6, 2.0))); }
     if (h <= cBot || h >= cTop) return 0.0; }
   vec2 xz = p.xz + uWind + uWOff; float hb = h - cBase; float thick0 = cTop - cBase; float hf0 = clamp(hb/thick0, 0.0, 1.0);
   // clouds lean with wind shear and meander with height, so towers are not vertical extrusions of a 2-D map
@@ -541,8 +534,7 @@ float lowDensity0(vec3 p, float h, bool detail, float lod){
   float stormW = smoothstep(0.75, 0.9, cType);
   float core = 0.0, ring = 1.0, ringH = 1.0, org = 0.0;
   if (stormW > 0.0){ org = weatherLod(xw/(WSCALE*2.4) + uOrgOff, 1.5, lod - log2(2.4)).a;
-    // weather system: where the weather forces storms together (a front, a squall line, a convergence line: more cover
-    // than the air mass alone gives) they merge into complexes; elsewhere they stay scattered as the pattern places them
+    // where the air is moister than around the camera (more cover) storms merge into complexes more readily
     if (uSynOn > 0.5) org = max(org, org + 0.4*smoothstep(0.88, 0.97, cType)*smoothstep(0.05, 0.4, synC));
     core = smoothstep(0.74, 0.86, org)*stormW;   // ~10 % of the area
     ring = mix(1.0, smoothstep(0.42, 0.8, org), stormW);
@@ -753,7 +745,7 @@ uniform vec4 uMid2;   // mid cell scale, unused, evolution, ground texture
 uniform float uMidForm;   // 0 natural, 1 undulatus, 2 castellanus, 3 lenticularis, 4 floccus, 5 mammatus
 uniform vec4 uMid3;   // mid layer: cloud thickness km
 vec3 maskDir(vec3 d){ float az = atan(d.x, d.z), el = asin(clamp(d.y,-1.0,1.0)); return textureLod(uMask, vec2(fract(az/(2.0*PI) + 0.5), 0.5 - el/PI), 0.0).rgb; }
-// this spot's mid / high layer (weather system or scene settings): cover, base, type; depth, water; special forms
+// this spot's mid / high layer (settings, varied across the sky): cover, base, type; depth, water; special forms
 vec4 gMid = vec4(0.0); float gDb = 0.4, gDens = 1.0, gCas = 0.0, gMam = 0.0, gLen = 0.0, gCiCov = 0.0;
 float maskCov(float cov, float m){ return m >= 0.0 ? min(cov + 0.6*m, 1.0) : cov*(1.0 + m); }
 vec3 sheetMask(vec2 xz, float H){ return uMaskOn > 0.5 ? maskDir(normalize(vec3(xz.x, H - uMaskCamH, xz.y))) : vec3(0.0); }
@@ -823,7 +815,7 @@ float midDensity(vec2 xz, float lod){
     float cellv = mix(small, large, big)*0.75 + (c2.b*0.6 + c2.a*0.4)*0.25;
     // rows: the same cells stretched 2.3x along one direction (across the shear, which follows the upper wind), blended
     // in where wm.b is high
-    float rows = int(uMidForm + 0.5) == 1 && uSynOn < 0.5 ? 1.0 : smoothstep(0.5, 0.8, wm.b);   // undulatus: rows everywhere
+    float rows = int(uMidForm + 0.5) == 1 ? 1.0 : smoothstep(0.5, 0.8, wm.b);   // undulatus: rows everywhere
     if (rows > 0.0){ float ang = uCiRot + 1.2; vec2 dr = vec2(cos(ang), sin(ang));
       vec2 qr = vec2(dot(qw, dr)/2.3, dot(qw, vec2(-dr.y, dr.x)));
       vec4 r1 = t3Sxy( vec3(qr/(4.0*sc), 0.21 + uMid2.z*0.013), lod);
@@ -843,34 +835,15 @@ float midDensity(vec2 xz, float lod){
    a flat-ish base and a rounded, sunlit top (shallow convection inside the layer). Special forms: castellanus (turrets
    rising out of the cells), lenticularis (smooth lenses in the crest of a mountain wave, often stacked), floccus (small
    ragged tufts), mammatus (round pouches sagging from the base). */
-// lee-wave lenticulars: smooth lenses in the crests of the standing waves, ~λ apart downwind of the ridge and parallel to it,
-// broken along the crest into separate lenses, often stacked in plates where moist and dry layers alternate
-float lensPlates(float rr, float z, float Db, float nP){ float d = 0.0;
-  for (int i=0;i<3+uZero;i++){ float fi = float(i); if (fi >= nP) break;
-    float pr = sqrt(max(1.0 - rr*(1.0 + 0.45*fi), 0.0)); float zc = Db*(0.45 + 1.15*fi), ht = 0.5*Db*pr;
-    d = max(d, 1.0 - smoothstep(ht*0.35, ht, abs(z - zc))); }
-  return d; }
-float lensWave(vec2 xz, float z, float Db, float cov){ float lam = uWave.w; vec2 su = waveSU(xz); if (su.x < 0.3*lam) return 0.0;
-  float ci = floor(su.x/lam - 0.25); float sc = lam*(ci + 0.75) + 0.1*lam*sin(su.y/23.0 + ci*1.7); float ex = su.x - sc;
-  float best = 0.0;
-  for (int k=-1;k<=1+uZero;k++){ float j = floor((su.y + 37.0*ci)/16.0) + float(k);
-    vec3 r = hash3u(uvec3(uvec2(ivec2(int(ci), int(j)) + 32768), 191u)); if (fract(r.x*7.31 + r.y*3.17) > cov) continue;
-    float A = 4.0 + 7.0*r.x, B = (0.12 + 0.07*r.z)*lam, ey = su.y + 37.0*ci - ((j + 0.5)*16.0 + (r.y - 0.5)*4.0);
-    float rr = (ex*ex)/(B*B) + (ey*ey)/(A*A); rr *= 1.0 + 0.25*(t3Sxy(vec3(xz/9.0, 0.53), 2.0).g - 0.5); if (rr >= 1.0) continue;
-    best = max(best, lensPlates(rr, z, Db, 1.0 + floor(3.0*fract(r.z*13.7 + r.x)))); }
-  return best; }
 float midDensity3D(vec3 p, float h, bool detail, float lod){
   if (h <= uCBot || h >= uCTop) return 0.0;
   int form = int(uMidForm + 0.5);
   gMid = uMid; gDb = uMid3.x; gDens = uCDens; gCas = form == 2 ? 1.0 : 0.0; gMam = form == 5 ? 1.0 : 0.0; gLen = 0.0;
-  if (uSynOn > 0.5){ vec4 sa = synA(p.xz); vec4 sb = synB(p.xz); if (sa.r < 0.004 && sb.a < 0.02) return 0.0;
-    gMid = vec4(sa.r, sa.g, sb.r, sa.a); gDb = sa.b; gDens = sb.r/(0.8*max(sa.b, 0.1)); gCas = sb.g; gMam = sb.b; gLen = sb.a; form = 0;
-    if (h < gMid.y - gDb*(0.12 + 1.25*gMam) || h > gMid.y + gDb*max(1.25 + 2.35*gCas, gLen > 0.02 ? 3.3 : 0.0)) return 0.0; }
+  if (uSynOn > 0.5){ vec4 sa = synA(p.xz); if (sa.r < 0.004) return 0.0; vec4 sb = synB(p.xz);
+    gMid = vec4(sa.r, sa.g, sb.r, sa.a); gDb = sa.b; gDens = sb.r/(0.8*max(sa.b, 0.1));
+    if (h < gMid.y - gDb*(form == 5 ? 1.75 : 0.4) || h > gMid.y + gDb*(form == 2 ? 3.6 : form == 3 ? 3.4 : 1.25)) return 0.0; }
   float Db = gDb, z = h - gMid.y, sc = uMid2.x, typ = gMid.w, lx = max(lod, 0.0);
   vec2 q = p.xz + uWind*0.8;
-  float dLen = 0.0;
-  if (gLen > 0.02 && uWave2.z > 0.5) dLen = lensWave(p.xz, z, Db, 0.35 + 0.5*gLen)*gDens;
-  if (gLen > 0.98) return dLen;
   if (form == 3){
     // lenses: almond-shaped, long across the wind (the wave crest) and short along it, thick in the middle and tapering to a
     // knife edge, often a stack of plates where moist and dry layers alternate; laminar, so smooth (no turbulent detail)
@@ -883,8 +856,8 @@ float midDensity3D(vec3 p, float h, bool detail, float lod){
       float pr = sqrt(max(1.0 - rr*(1.0 + 0.45*fi), 0.0)); float zc = Db*(0.45 + 1.15*fi), ht = 0.5*Db*pr;
       d = max(d, 1.0 - smoothstep(ht*0.35, ht, abs(z - zc))); }
     return d*gDens; }
-  float m = midDensity(p.xz, lx)*(1.0 - gLen);   // the layer's column structure: patches, cells, rafts, rows
-  if (m <= 0.003) return dLen;
+  float m = midDensity(p.xz, lx);   // the layer's column structure: patches, cells, rafts, rows
+  if (m <= 0.003) return 0.0;
   // the base undulates gently; altostratus is thick everywhere, altocumulus cells are mounds, thin at their rims
   vec4 bn = t3Sxy(vec3(q/(5.0*sc), 0.61 + uMid2.z*0.01), max(lod - 0.3, 0.0));
   float base = Db*(0.05 + 0.25*(bn.g - 0.5));
@@ -897,7 +870,7 @@ float midDensity3D(vec3 p, float h, bool detail, float lod){
     base -= Db*1.1*pouch; th += Db*1.1*pouch; }
   float fK = min(z - base, base + th - z);   // depth inside the cloud (km) to its nearer surface
   float A = Db*mix((0.1 + 0.12*typ)*(form == 4 ? 1.8 : 1.0), 0.04, mamF);
-  if (fK < -1.2*A) return dLen;
+  if (fK < -1.2*A) return 0.0;
   float rel = clamp((z - base)/max(th, 1e-3), 0.0, 1.0), dens;
   if (!detail) dens = smoothstep(-0.3*A, 0.5*A, fK);
   else {
@@ -912,7 +885,7 @@ float midDensity3D(vec3 p, float h, bool detail, float lod){
     float disp = mix(wisp, billow, tops)*A*2.4;
     dens = smoothstep(-0.1*A, 0.45*A, fK + disp)*mix(0.8 + 0.4*d2.a, 1.0, mamF); }
   // optical depth varies across a deck: thin, translucent parts and thick, dark ones
-  return max(dens*mix(0.55 + 0.6*clamp(m, 0.0, 1.2), 1.0, typ)*gDens, dLen); }
+  return dens*mix(0.55 + 0.6*clamp(m, 0.0, 1.2), 1.0, typ)*gDens; }
 #define cloudDensity midDensity3D
 #elif CLOUD_KIND == 2
 /* cirrus as a volume: ice crystals form in small generating cells near the top of a moist layer and fall out below them,
@@ -1862,264 +1835,81 @@ function tex3D(n){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D,t); 
 const T_SHAPE = tex3D(128), T_DETAIL = tex3D(128);
 const T_WEATHER = tex2D(512,512,gl.RGBA16F,gl.LINEAR_MIPMAP_LINEAR,gl.REPEAT,true), T_CIRRUS = tex2D(1024,1024,gl.RGBA16F,gl.LINEAR_MIPMAP_LINEAR,gl.REPEAT,true);
 /* =====================================================================
-   Weather: an air mass (a vertical sounding of temperature and humidity) and a synoptic situation (fronts, a high,
-   a squall line, a sea breeze, a mountain wave) that changes it across the ~800 km of sky the camera can see.
-   Every layer's clouds are diagnosed from the local sounding the way a forecaster reads one: the cumulus base is the
-   lifting condensation level, a rising parcel's buoyancy decides whether cumulus stay flat under the inversion, grow into
-   congestus or reach the tropopause as cumulonimbus, a moist layer under an inversion holds stratocumulus, moist mid
-   and upper layers hold altocumulus/altostratus and cirrus/cirrostratus, and the clouds then act on each other
-   (upper decks shade the ground and stop convection, decks above stratocumulus weaken it, anvils spread cirrus
-   downwind, rain from a thick deck brings down low ragged cloud).
+   Natural variation across the sky. Real cloud fields are never the same everywhere: over tens to hundreds of km the
+   air is moister in some places and drier in others, so there the clouds are more numerous, their bases lower (the
+   condensation level sits ~125 m higher per °C of dew-point spread) and convective clouds grow deeper; the decks above
+   shade the ground and hold back the cumulus under their thick parts. The settings describe the sky around the camera;
+   this map lets each layer change gradually away from it, in groups and bands, the way it does in the real atmosphere.
+   The map (128² over ±400 km, finer near the camera) holds two slices per layer:
+   low (Δcoverage threshold, base, top, type) (extinction, scud); mid (cover, base, depth, type) (τ); high (cover, bottom, top, τ)
    ===================================================================== */
-const clampN = (x, a, b) => Math.min(Math.max(x, a), b);
-const WX_R = 400, WX_K = 150, WX_N = 128;   // domain half-width (km) and grid (6.25 km cells; fronts and bands are tens of km wide)
-const WX_PATTERNS = [['none','Uniform air mass'],['warm','Warm front approaching'],['cold','Cold front approaching'],['occl','Occluded front'],
-  ['high','High pressure (subsidence)'],['squall','Squall line / storm complex'],['sea','Sea breeze (coast)'],['wave','Mountain wave (lee waves)']];
+const VAR_R = 400, VAR_K = 150, VAR_N = 128;
 const sstep = (a, b, x) => { const t = Math.min(Math.max((x - a)/(b - a), 0), 1); return t*t*(3 - 2*t); };
-const wxEs = T => 6.112*Math.exp(17.67*T/(T + 243.5));                       // saturation vapour pressure over water, hPa
-const WX_PT = Float32Array.from({length:241}, (_, i) => 1013.25*Math.pow(Math.max(1 - 0.0065*i*100/288.15, 0.05), 5.255));
-const wxP = z => { const x = Math.min(Math.max(z, 0), 23.9)*10, i = Math.floor(x); return WX_PT[i] + (WX_PT[i + 1] - WX_PT[i])*(x - i); };   // standard pressure, hPa (z km)
-// moist (saturated) adiabatic lapse rate, K/km
-function wxGm(T, p){ const Tk = T + 273.15, es = wxEs(T), r = 0.622*es/Math.max(p - es, 1);
-  return 9.81*(1 + 2.5e6*r/(287*Tk))/(1004 + 2.5e6*2.5e6*r*0.622/(287*Tk*Tk))*1000; }
-// smooth, seeded value noise (for mesoscale differences in the air mass over tens to hundreds of km)
-function wxNoise(seed){ const sd = Math.imul(seed, 2147483647) | 0;
+// smooth, seeded value noise, roughly −1 … 1
+function varNoise(seed){ const sd = Math.imul(seed, 2147483647) | 0;
   const h = (i, j) => { let n = (Math.imul(i | 0, 374761393) + Math.imul(j | 0, 668265263) + sd) | 0; n = Math.imul(n ^ (n >>> 13), 1274126177); n ^= n >>> 16; return (n >>> 0)/4294967296; };
   const v = (x, y) => { const i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j, u = fx*fx*(3 - 2*fx), w = fy*fy*(3 - 2*fy);
     return (h(i, j)*(1 - u) + h(i + 1, j)*u)*(1 - w) + (h(i, j + 1)*(1 - u) + h(i + 1, j + 1)*u)*w; };
-  return (x, y) => (v(x, y)*0.6 + v(x*2.3 + 17.1, y*2.3 + 4.7)*0.3 + v(x*5.1 + 3.3, y*5.1 + 9.2)*0.1)*2 - 1; }
-
-// the sounding's temperature (°C) at height z (km): a dry-adiabatic mixed layer up to the condensation level, a
-// conditionally unstable cloud layer (a little steeper than a moist adiabat) up to the inversion, the inversion step, then
-// the free troposphere's lapse rate up to the tropopause, isothermal above
-function wxTe(c, z){ const lc = c.lcl0;
-  if (z < Math.min(lc, c.zi)) return c.T0 - 9.8*z;
-  if (z < c.zi) return c.T0 - 9.8*lc - c.Gc*(z - lc);
-  const Ti = c.T0 - 9.8*Math.min(lc, c.zi) - c.Gc*Math.max(c.zi - lc, 0) + c.dTi; return Ti - c.G*(Math.min(z, c.trop) - c.zi); }
-function wxPrep(c){ c.Td0 = Math.min(c.Td0, c.T0); c.lcl0 = Math.max(0.03, 0.125*(c.T0 - c.Td0)); c.Gc = wxGm(c.T0 - 9.8*c.lcl0, wxP(c.lcl0)) + 1.0; return c; }
-// evaporative cooling of a cloudy parcel that mixes in unsaturated air of relative humidity rh at temperature T (K per
-// unit mixing): the drier the surroundings, the more cloud water evaporates into them
-function wxEvap(T, z, rh){ const es = wxEs(T), qs = 0.622*es/Math.max(wxP(z) - es, 1), Tk = T + 273.15, g = 2.5e6*2.5e6*qs/(1004*461.5*Tk*Tk);
-  return Math.max(1 - rh, 0)*2.5e6*qs/(1004*(1 + g)); }
-// a surface thermal (warmer than its surroundings by `heat` K in sunshine) rising to the condensation level and on
-// along a moist adiabat while it mixes in its surroundings (entrainment), which cools it by mixing and by evaporating
-// cloud water into the entrained air. Moist surroundings let towers grow; dry ones stop them.
-function wxParcel(c){
-  const lcl = c.lcl0, out = {lcl, top:lcl, capped:true, cloud:false, cape:0, Ttop:0, path:[[0, c.T0 + c.heat]]};
-  let Tp = c.T0 + c.heat - 9.8*Math.min(lcl, c.zi);
-  if (lcl >= c.zi){   // dry boundary layer: an unsaturated thermal stops at the inversion
-    if (Tp - wxTe(c, c.zi + 1e-3) < 0) return out; Tp -= 9.8*(lcl - c.zi); }
-  let z = lcl, cape = 0; out.cloud = true; out.path.push([lcl, Tp]);
-  while (z < c.trop + 3){ const Te = wxTe(c, z), B = Tp - Te;
-    if (z > c.zi + 0.02 && B < -0.3) break;
-    if (B > 0) cape += 9.81*B/(Te + 273.15)*0.1*1000;
-    // (entrainment falls off with height above the base, ~1/z: wide, deep updraft cores mix in less of their surroundings)
-    const free = z >= c.zi, rh = free ? (z < 8 ? c.midRH/100 : 0.75*c.hiRH/100) : 0.92, eps = free ? Math.min(0.8, 0.75/(z - lcl + 0.4)) : 0.8;
-    Tp += (-wxGm(Tp, wxP(z)) - eps*(Tp - Te + wxEvap(Te, z, rh)))*0.1; z += 0.1; out.path.push([z, Tp]); }
-  out.top = z; out.capped = z <= c.zi + 0.25; out.cape = cape; out.Ttop = wxTe(c, z); return out; }
-// the boundary-layer and convective clouds of one column
-function wxLow(c){
-  const pr = wxParcel(c), heatF = clampN(c.heat/1.8, -1, 1), r = {cov:0, base:pr.lcl, top:pr.lcl + 0.2, type:0.4, scud:0, pr};
-  if (!pr.cloud) return r;
-  if (pr.capped){
-    // kept under the inversion. A strong inversion over a moist boundary layer holds a stratocumulus deck (stronger
-    // inversion, more cloud; its tops cool by radiation at night and it fills in); a deep cloud layer heated from below
-    // by sunshine over land breaks into separate cumulus instead; very low condensation level: stratus
-    const h = c.zi - pr.lcl; if (h <= 0.04) return r;
-    const S = clampN(sstep(2.5, 7, c.dTi)*(1 - 0.65*Math.max(heatF, 0)*sstep(0.25, 0.9, h)) + (heatF < 0 ? 0.25 : 0), 0, 1);
-    const cu = clampN(0.05 + 0.3*sstep(0.1, 1.2, h) + 0.15*c.lift, 0, 0.5);
-    const sc = clampN((0.4 + 0.07*c.dTi)*sstep(0.02, 0.4, h) - 0.25*Math.max(heatF, 0)*(1 - sstep(0.2, 0.6, h)), 0, 1);
-    r.cov = cu + (sc - cu)*S; r.top = c.zi; r.base = pr.lcl;
-    r.type = (0.56 + 0.05*Math.min(h, 1.6)) + ((pr.lcl < 0.35 ? 0.06 + 0.25*pr.lcl : 0.37) - (0.56 + 0.05*Math.min(h, 1.6)))*S;
-  } else {
-    // free convection: cumulus mediocris, congestus, or cumulonimbus once the tops glaciate
-    const D = pr.top - pr.lcl, glac = pr.Ttop < -22 && D > 4;
-    r.top = Math.min(pr.top, c.trop + 1.2);
-    r.type = D < 1.8 ? 0.6 + 0.06*D : D < 4.5 ? 0.708 + 0.13*(D - 1.8)/2.7 : glac ? 0.9 + 0.075*sstep(4.5, 10, D) : 0.86;
-    r.cov = clampN(0.08 + 0.12*Math.max(heatF, 0) + 0.35*c.lift + 0.1*sstep(200, 1500, pr.cape), 0.05, 0.65);
-  }
-  return r; }
-
-// the synoptic situation's effect on one column at (x, z) km (x east, z north, camera at 0,0). Returns the modified
-// sounding and the clouds the large-scale ascent makes directly (frontal decks, which no parcel argument describes)
-function wxColumn(P, x, z, N, t){
-  const n = WX.n, a = x*n[1] - z*n[0], st = P.wxStr;
-  const c = {T0:P.wxT + 0.8*N.t(x/140, z/140), Td0:P.wxTd + 1.3*N.d(x/110, z/110), zi:P.wxZi*(1 + 0.12*N.z(x/90, z/90)), dTi:P.wxInv, G:P.wxLapse,
-    midRH:clampN(P.wxMidRH + 9*N.m(x/120, z/120), 0, 100), midZ:P.wxMidZ, hiRH:P.wxHiRH + 12*N.h(x/160, z/160), trop:P.wxTrop, lift:0, heat:0, sea:false};
-  const F = {ns:0, nsBase:0, nsTop:0, as:0, asBase:0, asTop:0, asTau:0, pan:0, ci:0, ciLow:0, line:0, cas:0, mam:0, mamZ:0, len:0, cap:0, rot:0};
-  const pat = P.wxPat; if (pat === 'none') return [c, F];
-  // distance ahead of the front / line / coast / ridge (km), measured from the camera side; the front line wanders
-  const wob = 22*Math.sin(a/170 + WX.ph[0]) + 10*Math.sin(a/61 + WX.ph[1]);
-  const s = WX.D + wob - (x*n[0] + z*n[1]);
-  if (pat === 'warm' || pat === 'occl'){
-    // warm air gliding up over the cold air ahead of the front along a ~1:200 frontal surface: first cirrus far ahead,
-    // thickening to cirrostratus, then altostratus whose base lowers toward the front, and nimbostratus within ~250 km
-    const so = pat === 'occl' ? s - 60 : s, hf = Math.max(so, 0)/170;
-    c.hiRH += st*75*sstep(1150, 650, so)*(1 - sstep(-60, -220, so)); F.ciLow = sstep(700, 150, so);
-    F.as = st*sstep(760, 430, so)*(1 - sstep(-50, -140, so));
-    F.asBase = clampN(hf + 0.4, 2.3, 6.2); F.asTop = Math.min(c.trop - 2.2, Math.max(F.asBase + 0.8, 3.8 + 3.6*sstep(720, 150, so)));
-    F.asTau = 5 + 30*sstep(520, 80, so);
-    F.ns = st*sstep(280, 120, so)*(1 - sstep(-40, -110, so)); F.nsBase = 0.5 + 0.9*sstep(0, 280, so); F.nsTop = F.asBase;
-    F.pan = st*sstep(170, 40, so)*(1 - sstep(-50, -110, so));
-    if (so > 0 && hf < c.zi){ c.zi = Math.max(hf, 0.25); c.dTi = Math.max(c.dTi, 2 + 4*st); }   // the frontal surface caps the cold air
-    if (pat === 'warm' && s < 0){ const w = st*sstep(0, -60, s); c.T0 += 3*w; c.Td0 += 4.5*w; c.midRH -= 30*w*sstep(-80, -260, s); c.hiRH -= 35*w*sstep(-120, -300, s); c.zi = Math.min(c.zi, 1.1); }
-    if (pat === 'occl'){
-      // the occlusion: the cold front has caught up and lifts the warm air off the ground; showers and embedded
-      // cumulonimbus along it, then the cold air behind
-      const occ = st*Math.exp(-(((s - 15)/45)**2)); c.G += 1.6*occ; c.lift += 0.6*occ; c.dTi -= 4*occ; c.heat += 1.2*occ;
-      if (s < -40){ const w = st*sstep(-40, -160, s); c.T0 -= 4*w; c.Td0 -= 8*w; c.G += 1.0*w; c.midRH -= 35*w; c.hiRH -= 45*w; c.dTi = Math.min(c.dTi, 1 + 3*(1 - w)); F.as *= 1 - w; F.ns *= 1 - w; F.pan *= 1 - w; } }
-  } else if (pat === 'cold'){
-    // warm, moist and increasingly unstable air ahead; a line of convection at the front; on an ana-front a band of
-    // nimbostratus and altostratus sloping up behind it (~1:80) with a sharp rear edge where dry air descends; then
-    // clear, dry, unstable cold air with cumulus and showers
-    const ana = P.wxAna;
-    if (s > 0){ const w = st*sstep(500, 60, s); c.T0 += 2.5*w; c.Td0 += 3.5*w; c.G += 0.9*w; c.midRH += 42*st*sstep(260, 40, s); c.hiRH += st*55*sstep(380, 50, s)*(1 - 0.45*ana);
-      F.cas = st*sstep(280, 120, s)*(1 - sstep(60, 10, s))*(1 - 0.5*ana); }
-    const line = st*Math.exp(-(((s - 6)/(14 + 10*ana))**2)); F.line = line;
-    c.lift += 0.8*line; c.dTi -= 5*line; c.heat += 2.2*line; c.G += 1.2*line; c.midRH += 30*line;
-    const rear = 50 + 170*ana, b = -s;
-    if (b > -10){ const band = st*ana*(1 - sstep(rear - 35, rear, b))*sstep(-10, 5, b);
-      F.as = band; F.asBase = clampN(1.3 + b/70, 2.2, 6); F.asTop = Math.min(c.trop - 1.5, 7); F.asTau = 8 + 20*(1 - sstep(0, rear, b));
-      F.ns = st*ana*(1 - sstep(rear*0.35, rear*0.5, b))*sstep(-8, 4, b); F.nsBase = 0.7; F.nsTop = F.asBase; F.pan = 0.7*F.ns;
-      c.hiRH += 60*st*(1 - sstep(rear, rear + 40, b))*(0.4 + 0.6*ana); }
-    if (b > rear*0.6){ const w = st*sstep(rear*0.6, rear + 80, b); c.T0 -= 6*w; c.Td0 -= 9*w; c.G += 1.6*w; c.zi = c.zi + 0.4*w; c.dTi = c.dTi*(1 - w) + 0.6*w; c.midRH = c.midRH*(1 - w) + 62*w; c.hiRH -= 55*w; }
-  } else if (pat === 'high'){
-    // sinking air in a high: it warms and dries, pressing the boundary layer down under a strong inversion — clear,
-    // or a grey stratocumulus deck if the air below is moist ("anticyclonic gloom")
-    const r = Math.hypot(x - WX.c[0], z - WX.c[1]), sub = st*Math.exp(-(r*r)/(2*650*650));
-    c.zi *= 1 - 0.55*sub; c.dTi += 6*sub; c.G -= 1.2*sub; c.midRH -= 50*sub; c.hiRH -= 55*sub;
-  } else if (pat === 'squall'){
-    // a line of cumulonimbus with its anvil blown ahead, a trailing region of altostratus and
-    // nimbostratus rain behind, warm moist inflow ahead
-    const line = st*Math.exp(-(((s - 4)/12)**2)); F.line = line;
-    if (s > -30){ const w = st*sstep(260, 20, s); c.T0 += 2*w; c.Td0 += 4*w; c.G += 1.3*w; }
-    c.lift += line; c.dTi -= 6*line; c.heat += 3*line; c.G += 1.5*line; c.midRH += 30*line;
-    const fwd = st*sstep(190, 25, s)*sstep(-25, 0, s); c.hiRH += 80*fwd; F.ciLow = 0; F.anvil = fwd;
-    const b = -s; F.as = st*sstep(-5, 15, b)*(1 - sstep(140, 200, b)); F.asBase = 3.6 + b/200; F.asTop = Math.min(c.trop - 2.5, 7.5); F.asTau = 18;
-    F.ns = st*sstep(-5, 10, b)*(1 - sstep(60, 110, b)); F.nsBase = 1.3; F.nsTop = F.asBase; F.pan = 0.8*F.ns;
-    if (b > 20){ const w = st*sstep(20, 120, b); c.dTi += 3*w; c.heat -= 1.5*w; c.T0 -= 3*w; }   // rain-cooled outflow: stable
-  } else if (pat === 'sea'){
-    // sea (beyond the coast) cool and stable; the sea breeze pushes inland by day as the land heats, its front a line of
-    // converging air where cumulus grow taller; behind it, over the land near the coast, the cool marine air keeps clear
-    const day = sstep(5, 40, P.sunEl), pen = 8 + 32*day, land = s > 0;
-    c.sea = !land;
-    if (!land){ c.zi = 0.45; c.dTi = Math.max(c.dTi, 4); c.Td0 += 1.5; c.heat = -0.4; }
-    else if (s < pen - 6){ const w = day*sstep(pen - 6, pen - 14, s); c.zi = c.zi*(1 - w) + 0.5*w; c.dTi += 3*w; c.Td0 += 1.2*w; c.heatK = 1 - 0.85*w; }
-    const g = day*Math.exp(-(((s - pen)/7)**2)); c.lift += 0.8*g; c.heat += 1.8*g*st; c.dTi -= 2.5*g*st; c.G += 0.8*g*st;
-  } else if (pat === 'wave'){
-    // air forced over a ridge: cloud capping the ridge on the windward side (the foehn wall), dry sinking air just
-    // beyond it (the foehn gap), and downwind a train of standing waves ~λ apart whose crests carry lenticular clouds
-    // and, low down, ragged rotor clouds
-    F.cap = st*Math.exp(-(((s + 6)/9)**2));
-    if (s < 0){ c.Td0 += 2*st*sstep(-60, -5, s); c.lift += 0.3*st*sstep(-40, -4, s); }
-    else { const w = st*Math.exp(-s/45); c.Td0 -= 7*w; c.T0 += 2.5*w; c.midRH -= 25*w*sstep(0, 0.5*P.wxLam, s); }
-    F.len = s > 0.3*P.wxLam ? st*Math.exp(-s/(7*P.wxLam)) : 0;
-    F.rot = s > 0.3*P.wxLam ? st*Math.exp(-s/(2.5*P.wxLam)) : 0;
-  }
-  return [c, F]; }
-
-// diagnose every layer of one column. Out: low (main), low2 (second), mid, high
-function wxDiag(P, c, F, sunF){ wxPrep(c);
-  // 1. high: ice-supersaturated air near the tropopause (and the frontal shield)
-  const hiC = clampN(Math.pow(Math.max((c.hiRH - 80)/42, 0), 1.25), 0, 1);
-  const H = {cov:hiC, bot:0, top:0, tau:0.1 + 1.6*hiC*hiC};
-  const hc = c.trop - 1.3 - 1.4*F.ciLow; const hth = 0.6 + 1.4*hiC; H.bot = hc - hth/2; H.top = Math.min(hc + hth/2, c.trop + 0.3);
-  if (F.anvil > 0){ H.cov = Math.max(H.cov, F.anvil); H.tau = Math.max(H.tau, 1 + 4*F.anvil); H.top = c.trop + 0.2; H.bot = Math.min(H.bot, c.trop - 1.8); }
-  // 2. mid: a moist layer around midZ (cloud fraction from relative humidity, as in climate models), or the frontal deck
-  const rh = clampN(c.midRH/100, 0, 1), mC = Math.pow(clampN((rh - 0.66)/0.34, 0, 1), 2);
-  const Tm = wxTe(c, c.midZ), inst = c.G - wxGm(Tm, wxP(c.midZ));   // > 0: conditionally unstable at that level
-  const M = {cov:mC, base:c.midZ, Db:0.25 + 0.55*mC, type:0.88 - 0.25*sstep(0.85, 1, mC)*sstep(0.1, 0.6, c.lift), tau:2 + 5*mC,
-    cas:Math.max(F.cas, sstep(0.2, 1.6, inst)*sstep(0.05, 0.3, mC)), mam:F.mam, len:F.len};
-  if (F.as > M.cov*0.7){ const w = sstep(0, 0.35, F.as); M.cov = Math.max(M.cov, sstep(0, 0.6, F.as)); M.base = M.base*(1 - w) + F.asBase*w;
-    M.Db = M.Db*(1 - w) + Math.max(F.asTop - F.asBase, 0.6)*w; M.type = M.type*(1 - w) + 0.05*w; M.tau = M.tau*(1 - w) + F.asTau*w; M.cas *= 1 - w; }
-  if (F.mam > 0.05){ M.cov = Math.max(M.cov, sstep(0, 0.5, F.mam)); M.base = F.mamZ; M.Db = 0.8; M.type = 0.12; M.tau = 10; }
-  if (F.len > 0.02){ M.base = P.wxMidZ; M.Db = 0.35; M.tau = 6; }   // (how many lenses: the shader, from len)
-  // 3. shading: sunshine reaching the ground through the decks above (diffusion: 1/(1 + 0.105 τ)); heating drives convection
-  const tUp = H.cov*H.tau + M.cov*M.tau + (F.ns > 0 ? 80*F.ns : 0), shade = 1/(1 + 0.105*tUp);
-  const heatK = c.heatK ?? 1;
-  c.heat += c.sea ? 0 : (sunF > 0 ? P.wxHeat*1.6*sunF*shade*heatK : -0.6*P.wxHeat);
-  const L = wxLow(wxPrep(c));
-  // an overlying deck cuts the longwave cooling at the stratocumulus tops that keeps the deck turbulent and thick
-  if (L.pr.capped && L.cov > 0) L.cov *= 1 - 0.35*Math.min(M.cov*M.tau/10, 1)*M.cov;
-  L.dens = 1; L.scud = 0;
-  // frontal nimbostratus: one thick, dark deck from near the ground up into the altostratus
-  if (F.ns > 0.02){ const w = sstep(0, 0.4, F.ns);
-    L.cov = L.cov*(1 - w) + w*Math.max(L.cov, sstep(0, 0.6, F.ns)); L.base = L.base*(1 - w) + F.nsBase*w; L.top = L.top*(1 - w) + Math.max(F.nsTop, F.nsBase + 1.2)*w;
-    L.type = L.type*(1 - w) + 0.07*w; L.dens = 1 + 0.5*w; L.scud = 0.6*w; }
-  // ridge cap (foehn wall)
-  if (F.cap > 0.05){ const w = sstep(0, 0.5, F.cap); L.cov = Math.max(L.cov, 0.9*w); L.base = L.base*(1 - w) + 0.9*w; L.top = Math.max(L.top, 2.4); L.type = L.type*(1 - w) + 0.2*w; }
-  // 4. second low layer: ragged pannus in the rain under thick frontal cloud (seeded from above, the sub-cloud air
-  //    saturates); rotor clouds under lee-wave crests; or flat cumulus below a stratocumulus deck when sunshine stirs the
-  //    lower boundary layer separately (decoupling)
-  const L2 = {cov:0, base:0.4, top:0.7, type:0.05, scud:0, dens:1};
-  if (F.pan > 0.02){ L2.cov = 0.25 + 0.4*F.pan; L2.base = 0.28 + 0.12*(1 - F.pan); L2.top = L2.base + 0.3; L2.type = 0.04; L2.scud = 0.7; }
-  else if (F.rot > 0.02){ L2.cov = 0.5*F.rot; L2.base = 1.0; L2.top = 1.8; L2.type = 0.5; }
-  else if (L.pr.capped && L.cov > 0.6 && c.zi > 1.2 && c.heat > 1 && !c.sea){ L2.cov = 0.25*sstep(1, 2.5, c.heat); L2.base = Math.max(L.pr.lcl - 0.35, 0.3); L2.top = L2.base + 0.5; L2.type = 0.6; }
-  return {L, L2, M, H, c}; }
-
-
-// ---- the weather map: every layer's local state on a 128² grid over ±400 km (finer near the camera), two RGBA slices per
-//      layer: low (Δcover bias, base, top, type) (extinction, scud); mid (cover, base, depth, type) (τ, castellanus,
-//      mammatus, lenticular); high (cover, bottom, top, τ)
-const WX = {key:'', n:[0, 1], D:300, ph:[0, 0], c:[0, 0], res:null, buf:new Float32Array(WX_N*WX_N*8*4), noise:null, nseed:-1, qr:null};
-const T_SYN = (()=>{ const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, t); gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA16F, WX_N, WX_N, 8);
+  const f = (x, y) => ((v(x, y)*0.6 + v(x*2.3 + 17.1, y*2.3 + 4.7)*0.3 + v(x*5.1 + 3.3, y*5.1 + 9.2)*0.1)*2 - 1)*1.6;
+  const f0 = f(0, 0); return (x, y) => f(x, y) - f0; }   // zero at the camera: the settings are what is seen overhead
+const VAR = {key:'', res:null, buf:new Float32Array(VAR_N*VAR_N*8*4), qr:null};
+const T_SYN = (()=>{ const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, t); gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA16F, VAR_N, VAR_N, 8);
   texParams(gl.TEXTURE_2D_ARRAY, gl.LINEAR, gl.CLAMP_TO_EDGE); return t; })();
 // grid cell → km (the inverse of the shaders' synUV)
-const wxKm = i => { const xp = 2*(i + 0.5)/WX_N - 1, a = Math.abs(xp); return Math.sign(xp)*a*WX_R*WX_K/(WX_R + WX_K - a*WX_R); };
-function wxKey(){ return [P.wxPat, P.wxT, P.wxTd, P.wxZi, P.wxInv, P.wxLapse, P.wxMidRH, P.wxMidZ, P.wxHiRH, P.wxTrop, P.wxStr, P.wxAna, P.wxLam, P.wxHeat, P.wxDir, P.wxDist,
-  P.seed, Math.round(P.sunEl*4)/4, P.cdm, P.cbasevar, WX.qr ? WX.qr.length : 0].join('|'); }
-function wxSunF(){ return Math.max(Math.sin(P.sunEl*D2R), 0)*smooth(-1, 6, P.sunEl); }
-function wxSetup(){ const b = P.wxDir*D2R; WX.n = [Math.sin(b), Math.cos(b)]; WX.D = P.wxDist; WX.c = [WX.n[0]*P.wxDist, WX.n[1]*P.wxDist];
-  const hs = Math.imul(P.seed + 7, 2654435761) >>> 0; WX.ph = [(hs & 1023)/1024*6.2832, ((hs >>> 10) & 1023)/1024*6.2832];
-  if (WX.nseed !== P.seed){ const s = P.seed*7; WX.noise = {t:wxNoise(s + 1), d:wxNoise(s + 2), z:wxNoise(s + 3), m:wxNoise(s + 4), h:wxNoise(s + 5)}; WX.nseed = P.seed; } }
-// the diagnosis at one point (km), for read-outs
-function wxAt(x, z){ wxSetup(); const [c, F] = wxColumn(P, x, z, WX.noise); return wxDiag(P, c, F, wxSunF()); }
-function buildSyn(){
-  const key = wxKey(); if (key === WX.key && WX.res) return WX.res; WX.key = key; wxSetup();
-  const buf = WX.buf, NN = WX_N*WX_N, Q = WX.qr, sunF = wxSunF();
-  // a local cover c becomes an offset of the coverage threshold: the weather map's value that a fraction c of the map exceeds,
-  // relative to the median (the layer's bias is calibrated for 50 % cover)
-  const q50 = Q ? Q[Q.length >> 1] : 0.5, dq = c => c < 0.004 ? -2 : (Q ? q50 - Q[Math.min(Q.length - 1, Math.max(0, Math.floor((1 - Math.min(c, 1))*(Q.length - 1))))] : (c - 0.5)*0.6);
-  const st = {any:[false, false, false, false], bot:[1e9, 1e9, 1e9, 1e9], top:[0, 0, 0, 0], rep:[0, 1, 2, 3].map(() => ({w:0, n:0, cov:0, base:0, top:0, type:0, ext:0, Db:0, tau:0}))};
-  const lcov = new Float32Array(NN);
+const varKm = i => { const xp = 2*(i + 0.5)/VAR_N - 1, a = Math.abs(xp); return Math.sign(xp)*a*VAR_R*VAR_K/(VAR_R + VAR_K - a*VAR_R); };
+const logit = c => Math.log(c/(1 - c)), sigm = x => 1/(1 + Math.exp(-x));
+function buildVar(){
+  const key = [P.seed, P.cov, P.ctype, P.cbase, P.cthick, P.cdm, P.cbasevar, P.cscud, P.l2On, P.l2Cov, P.l2Type, P.l2Base, P.l2Thick, P.l2Dm, P.midCov, P.midH, P.midThick, P.midTau, P.midType, P.midForm,
+    P.ciCov, P.ciH, P.ciThick, P.ciTau, Math.round(P.sunEl), VAR.qr ? VAR.qr.length : 0].join('|');
+  if (key === VAR.key && VAR.res) return VAR.res; VAR.key = key;
+  const s = P.seed*7, nM = varNoise(s + 1), nM2 = varNoise(s + 2), nL = varNoise(s + 3), nB = varNoise(s + 4), nD = varNoise(s + 5), nL2 = varNoise(s + 6),
+    nMid = varNoise(s + 7), nMidH = varNoise(s + 8), nHi = varNoise(s + 9), nHiH = varNoise(s + 10);
+  const buf = VAR.buf, NN = VAR_N*VAR_N, Q = VAR.qr, day = sstep(2, 25, P.sunEl);
+  // coverage → offset of the low clouds' coverage threshold: the weather-map value a fraction c of the map exceeds, relative to
+  // the calibrated cover (Q: sorted values of the map as the low clouds read it)
+  const q = c => Q ? Q[Math.min(Q.length - 1, Math.max(0, Math.floor((1 - Math.min(c, 1))*(Q.length - 1))))] : 0.5 - (c - 0.5)*0.3;
+  const dq = (c, c0) => c < 0.004 ? -2 : q(clamp(c0, 0.005, 0.995)) - q(c);
+  const lc = c => logit(clamp(c, 0.004, 0.996));
+  const st = {any:[false, false, false, false], bot:[1e9, 1e9, 1e9, 1e9], top:[0, 0, 0, 0]};
   const put = (k, o, a, b, c, d) => { const i = k*NN*4 + o; buf[i] = a; buf[i + 1] = b; buf[i + 2] = c; buf[i + 3] = d; };
-  const acc = (k, inner, cov, f) => { const r = st.rep[k]; if (inner){ r.n++; r.cov += cov; } const w = cov*(inner ? 1 : 0.02); if (w > 0){ r.w += w; f(r, w); } };
-  for (let j=0; j<WX_N; j++){ const z = wxKm(j);
-    for (let i=0; i<WX_N; i++){ const x = wxKm(i), o = (j*WX_N + i)*4, inner = Math.abs(x) < 60 && Math.abs(z) < 60;
-      const [c, F] = wxColumn(P, x, z, WX.noise); const r = wxDiag(P, c, F, sunF);
-      const L = r.L, Lt = Math.max(L.top, L.base + 0.15), ext = typeExt(L.type)*P.cdm*L.dens;
-      put(0, o, dq(L.cov), L.base, Lt, L.type); put(1, o, ext, L.scud, 0, 0); lcov[o >> 2] = L.cov;
-      if (L.cov > 0.01){ st.any[0] = true; st.bot[0] = Math.min(st.bot[0], L.base - P.cbasevar*Math.min(0.6, 0.35*(Lt - L.base) + 0.12) - (L.scud > 0 ? 0.1 + 0.45*L.scud : 0) - 0.03); st.top[0] = Math.max(st.top[0], Lt); }
-      acc(0, inner, L.cov, (q, w) => { q.base += L.base*w; q.top += Lt*w; q.type += L.type*w; q.ext += ext*w; });
-      const L2 = r.L2, ext2 = typeExt(L2.type)*P.cdm;
-      put(2, o, dq(L2.cov), L2.base, L2.top, L2.type); put(3, o, ext2, L2.scud, 0, 0);
-      if (L2.cov > 0.01){ st.any[1] = true; st.bot[1] = Math.min(st.bot[1], L2.base - 0.35*Math.min(0.6, 0.35*(L2.top - L2.base) + 0.12) - (L2.scud > 0 ? 0.1 + 0.45*L2.scud : 0) - 0.03); st.top[1] = Math.max(st.top[1], L2.top); }
-      acc(1, inner, L2.cov, (q, w) => { q.base += L2.base*w; q.top += L2.top*w; q.type += L2.type*w; q.ext += ext2*w; });
-      const M = r.M; put(4, o, M.cov, M.base, M.Db, M.type); put(5, o, M.tau, M.cas, M.mam, M.len);
-      if (M.cov > 0.01 || M.len > 0.02){ st.any[2] = true; st.bot[2] = Math.min(st.bot[2], M.base - M.Db*(0.12 + 1.25*M.mam) - 0.02); st.top[2] = Math.max(st.top[2], M.base + M.Db*Math.max(1.25 + 2.35*M.cas, M.len > 0.02 ? 3.3 : 0) + 0.02); }
-      acc(2, inner, M.cov, (q, w) => { q.base += M.base*w; q.Db += M.Db*w; q.type += M.type*w; q.tau += M.tau*w; });
-      const H = r.H; put(6, o, H.cov, H.bot, H.top, H.tau); put(7, o, 0, 0, 0, 0);
-      if (H.cov > 0.01){ st.any[3] = true; st.bot[3] = Math.min(st.bot[3], H.bot - 0.02); st.top[3] = Math.max(st.top[3], H.top + 0.02); }
-      acc(3, inner, H.cov, (q, w) => { q.base += H.bot*w; q.top += H.top*w; q.tau += H.tau*w; }); } }
-  // cumulonimbus spread their anvils at the tropopause and the upper wind carries the ice downstream for a hundred km or
-  // more (cirrus spissatus cumulonimbogenitus): fill the high layer downwind of every storm
-  { const ub = (P.wxPat === 'none' ? P.ciRot + 90 : P.wxDir)*D2R, ux = -Math.sin(ub), uz = -Math.cos(ub);   // blowing from that bearing
-    const src0 = new Float32Array(NN); let anyCb = false;
-    for (let k=0; k<NN; k++){ const a = Math.min(1, 2*lcov[k])*sstep(0.9, 0.97, buf[k*4 + 3]); src0[k] = a; if (a > 0) anyCb = true; }
-    if (anyCb){ const idx = km => { const u = 0.5 + 0.5*km*(WX_R + WX_K)/(WX_R*(Math.abs(km) + WX_K)); return Math.min(WX_N - 1, Math.max(0, Math.floor(u*WX_N))); };
-      for (let j=0; j<WX_N; j++){ const z = wxKm(j); for (let i=0; i<WX_N; i++){ const x = wxKm(i); let a = 0;
-        for (const [d, wgt] of [[0, 1], [12, 0.95], [28, 0.85], [50, 0.7], [80, 0.5], [120, 0.3]]){ const s = src0[idx(z - uz*d)*WX_N + idx(x - ux*d)]; if (s*wgt > a) a = s*wgt; }
-        if (a > 0.02){ const o = 6*NN*4 + (j*WX_N + i)*4, tr = P.wxTrop + 0.6*WX.noise.t(x/90, z/90);
-          buf[o] = Math.max(buf[o], 0.95*a); buf[o + 1] = Math.min(buf[o] > 0.05 && buf[o + 1] > 0 ? buf[o + 1] : 99, tr - 1.6); buf[o + 2] = Math.max(buf[o + 2], tr + 0.2); buf[o + 3] = Math.max(buf[o + 3], 0.8 + 3*a);
-          st.any[3] = true; st.bot[3] = Math.min(st.bot[3], buf[o + 1] - 0.02); st.top[3] = Math.max(st.top[3], buf[o + 2] + 0.02); } } } } }
+  const conv = sstep(0.45, 0.8, P.ctype), conv2 = sstep(0.45, 0.8, P.l2Type), mf = P.midForm|0;
+  const midTop = mf === 2 ? 3.6 : mf === 3 ? 3.4 : 1.25, midBot = mf === 5 ? 1.75 : 0.4;
+  // sunshine reaching the ground through the decks above drives convection: thick parts of a mid or high deck hold the
+  // cumulus back beneath them (relative to the camera, where the settings apply)
+  const shade = (mc, hc) => 1/(1 + 0.105*(mc*P.midTau + hc*P.ciTau));
+  const shade0 = shade(P.midCov, P.ciCov);
+  for (let j=0; j<VAR_N; j++){ const z = varKm(j);
+    for (let i=0; i<VAR_N; i++){ const x = varKm(i), o = (j*VAR_N + i)*4;
+      // the air's moisture over ~100-400 km: more of every layer where it is moist, less where it is dry
+      const M = 0.75*nM(x/260, z/260) + 0.35*nM2(x/110, z/110);
+      // mid and high first (they shade the low clouds)
+      const mc = P.midCov > 0.001 ? (P.midCov >= 0.995 ? sigm(5.3 + 1.2*M + 0.5*nMid(x/150, z/150)) : sigm(lc(P.midCov) + 1.5*M + 0.8*nMid(x/150, z/150))) : 0;
+      const mb = Math.max(P.midH + 0.35*nMidH(x/200, z/200), 1.8), mD = P.midThick*Math.exp(0.25*M), mTau = P.midTau*Math.exp(0.35*M + 0.15*nMid(x/90, z/90));
+      put(4, o, mc, mb, mD, P.midType); put(5, o, mTau, 0, 0, 0);
+      if (mc > 0.01){ st.any[2] = true; st.bot[2] = Math.min(st.bot[2], mb - midBot*mD - 0.02); st.top[2] = Math.max(st.top[2], mb + midTop*mD + 0.02); }
+      const hc = P.ciCov > 0.001 ? (P.ciCov >= 0.995 ? sigm(5.3 + M + 0.6*nHi(x/180, z/180)) : sigm(lc(P.ciCov) + 1.2*M + 0.9*nHi(x/180, z/180))) : 0;
+      const hz = P.ciH + 0.5*nHiH(x/220, z/220), hD = P.ciThick*Math.exp(0.2*M), hTau = P.ciTau*Math.exp(0.4*M);
+      put(6, o, hc, hz - hD/2, hz + hD/2, hTau); put(7, o, 0, 0, 0, 0);
+      if (hc > 0.01){ st.any[3] = true; st.bot[3] = Math.min(st.bot[3], hz - hD/2 - 0.02); st.top[3] = Math.max(st.top[3], hz + hD/2 + 0.02); }
+      // low: cover with the moisture, base lower where moister (smaller dew-point spread), convective clouds deeper there
+      const sh = conv > 0 ? 1 + conv*day*(shade(mc, hc)/shade0 - 1) : 1;
+      let c = P.cov > 0.001 ? sigm((P.cov >= 0.995 ? 5.3 : lc(P.cov)) + 1.3*M + 0.6*nL(x/120, z/120)) : 0; c = Math.min(c*sh, 1);
+      const b = Math.max(P.cbase*(1 - 0.16*M + 0.1*nB(x/140, z/140)), 0.12);
+      const dd = conv*(0.35*M + 0.2*nD(x/90, z/90)), h = Math.max(P.cthick*Math.exp(dd), 0.15);
+      const t = clamp(P.ctype + 0.03*conv*(M + nD(x/90, z/90)), 0, 1);   // deeper cumulus read as congestus
+      put(0, o, dq(c, P.cov), b, b + h, t); put(1, o, typeExt(t)*P.cdm*Math.exp(0.1*nB(x/70, z/70)), P.cscud, 0, 0);
+      if (c > 0.01){ st.any[0] = true; st.bot[0] = Math.min(st.bot[0], b - P.cbasevar*Math.min(0.6, 0.35*h + 0.12) - (P.cscud > 0 ? 0.1 + 0.45*P.cscud : 0) - 0.03); st.top[0] = Math.max(st.top[0], b + h); }
+      // second low layer: the same air, its own pattern
+      if (P.l2On && P.l2Cov > 0.001){ const c2 = sigm((P.l2Cov >= 0.995 ? 5.3 : lc(P.l2Cov)) + 1.1*M + 0.7*nL2(x/120, z/120))*(conv2 > 0 ? 1 + conv2*day*(shade(mc, hc)/shade0 - 1) : 1);
+        const b2 = Math.max(P.l2Base*(1 - 0.12*M + 0.08*nL2(x/160, z/160)), 0.12), h2 = Math.max(P.l2Thick*Math.exp(conv2*0.3*M), 0.12);
+        put(2, o, dq(c2, P.l2Cov), b2, b2 + h2, P.l2Type); put(3, o, typeExt(P.l2Type)*P.l2Dm, 0, 0, 0);
+        if (c2 > 0.01){ st.any[1] = true; st.bot[1] = Math.min(st.bot[1], b2 - 0.35*Math.min(0.6, 0.35*h2 + 0.12) - 0.03); st.top[1] = Math.max(st.top[1], b2 + h2); } }
+      else { put(2, o, -2, 0, 0, 0); put(3, o, 0, 0, 0, 0); } } }
   for (let k=0; k<4; k++) st.bot[k] = Math.max(st.bot[k], 0.02);
-  st.rep.forEach(q => { const w = Math.max(q.w, 1e-9); for (const k of ['base', 'top', 'type', 'ext', 'Db', 'tau']) q[k] /= w; q.cov = q.n ? q.cov/q.n : 0; });
-  unbind(6, gl.TEXTURE_2D_ARRAY); gl.bindTexture(gl.TEXTURE_2D_ARRAY, T_SYN); gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, WX_N, WX_N, 8, gl.RGBA, gl.FLOAT, buf); bindTex(6, gl.TEXTURE_2D_ARRAY, T_SYN);
-  st.cam = wxAt(0, 0);
-  { const o = 6*NN*4 + ((WX_N >> 1)*WX_N + (WX_N >> 1))*4, H = st.cam.H; if (buf[o] > H.cov + 0.02){ H.cov = buf[o]; H.bot = buf[o + 1]; H.top = buf[o + 2]; H.tau = buf[o + 3]; H.anvil = true; } }   // anvil cirrus overhead
-  WX.res = st; return st; }
+  unbind(6, gl.TEXTURE_2D_ARRAY); gl.bindTexture(gl.TEXTURE_2D_ARRAY, T_SYN); gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, VAR_N, VAR_N, 8, gl.RGBA, gl.FLOAT, buf); bindTex(6, gl.TEXTURE_2D_ARRAY, T_SYN);
+  VAR.res = st; return st; }
 // the weather map's coverage channel as the low clouds read it (stochastically tiled, mip level 2), sorted: its quantiles
-function wxQuantiles(buf, N){ const s = stochSampler(buf, N, 0, G.uHW, 11), a = new Float32Array(N*N); for (let k=0; k<N*N; k++) a[k] = s((k % N + 0.5)/N, (Math.floor(k/N) + 0.5)/N); a.sort(); WX.qr = a; WX.key = ''; }
+function varQuantiles(buf, N){ const s = stochSampler(buf, N, 0, G.uHW, 11), a = new Float32Array(N*N); for (let k=0; k<N*N; k++) a[k] = s((k % N + 0.5)/N, (Math.floor(k/N) + 0.5)/N); a.sort(); VAR.qr = a; VAR.key = ''; }
 // painted cloud mask: equirectangular in world azimuth/elevation, r/g/b = low/mid/high layers, −1 remove … +1 add
 const MW = 512, MH = 256; const MASK = new Float32Array(MW*MH*4); const T_MASK = tex2D(MW, MH, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
 gl.bindTexture(gl.TEXTURE_2D, T_MASK); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MW, MH, gl.RGBA, gl.FLOAT, MASK);
@@ -2229,7 +2019,6 @@ const DEFAULTS = {
   cov:0.3, cclump:0.3, cbillow:0.6, cvar:0.5, cairy:0.3, cbasevar:0.4, cscud:0.2, ctype:0.72, cbase:1.2, cthick:1.8, cdm:1, cscale:0.65, cerode:0.6, cdrop:18, seed:7, windX:0, windZ:0, evolve:0,
   midCov:0, midH:4.2, midTau:4, midType:0.7, midScale:1, midForm:0, midThick:0.4, ciThick:1.2, pileus:0, mammatus:0,
   l2On:false, l2Cov:0.5, l2Type:0.38, l2Base:2.4, l2Thick:0.6, l2Scale:0.8, l2Dm:1,
-  wxOn:false, wxPat:'none', wxDist:300, wxDir:270, wxStr:0.8, wxAna:0.6, wxLam:12, wxSpeed:30, wxT:22, wxTd:12.5, wxZi:2.3, wxInv:3, wxLapse:6.5, wxMidRH:45, wxMidZ:4.5, wxHiRH:70, wxTrop:11.5, wxHeat:1,
   ciCov:0.12, ciH:9.0, ciTau:0.35, ciRot:30, ciForm:0, ciHalo:0,
   surface:'grey', albedo:0.18, groundMode:'lit', groundVar:0.35,
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
@@ -2300,18 +2089,13 @@ function computePhysics(){
   const key = [aodE, HM, alphaE, fogS, fogH, P.aerosol, P.ozone, P.surface, P.albedo, RH, P.siteAlt||0].map(v=>typeof v==='number'? v.toPrecision(4) : v).join('|');
   if (key !== atmKey){ atmKey = key; dirtyLUT = true; }
   const sunOn = P.sunEl > -14 ? 1 : 0, moonOn = (P.moonEl > -2 && P.sunEl < 2) ? 1 : 0;
-  // weather system: the layers come from its map; their scene-wide stand-ins (used for calibration, the mean lighting and
-  // fallbacks) are the cover-weighted local values around the camera
-  const WXR = P.wxOn ? buildSyn() : null, r0 = WXR ? WXR.rep[0] : null;
-  const LP = WXR ? {cov:r0.cov, cbase:r0.base || 1.2, cthick:Math.max((r0.top || 2.5) - (r0.base || 1.2), 0.2), ctype:r0.w > 0 ? r0.type : 0.6} : P;
-  const cloudOn = WXR ? (WXR.any[0] ? 1 : 0) : (P.cov > 0.001 || MASKINFO.add[0]) ? 1 : 0;
+  const cloudOn = (P.cov > 0.001 || MASKINFO.add[0]) ? 1 : 0, LP = P;
   Object.assign(G, {
     uBR:f32(a.BR), uBMs:f32(a.BMs), uBMa:f32(a.BMa), uBO:f32(a.BO), uHR:8.0, uHM:HM, uFogS:fogS, uFogH:fogH, uMieG:ae.g, uAlb:f32(a.Alb),
     uFogPh:[dropF.gHG, dropF.gD, dropF.a, dropF.wD], uCPh:[dropC.gHG, dropC.gD, dropC.a, dropC.wD],
     uSunDir:sd, uMoonDir:md, uSunE:f32(a.SunE), uMoonE:f32(a.MoonE), uSunOn:sunOn, uMoonOn:moonOn,
     uCBase:LP.cbase, uCTop:LP.cbase+LP.cthick, uCovBias: G.uCovBias ?? 0, uClump:0.4 + 1.2*P.cclump, uBillow:P.cbillow, uCVar:P.cvar, uAiry:P.cairy, uBaseVar:P.cbasevar, uScud:P.cscud,
     uWOff:[0, 0], uPileus:P.pileus || 0, uMamma:P.mammatus || 0, uSynOn:0, uSynL:0,
-    uWave:[WX.n[0], WX.n[1], P.wxDist, P.wxLam], uWave2:[WX.ph[0], WX.ph[1], P.wxOn && P.wxPat === 'wave' ? 1 : 0, 0],
     uCBot:LP.cbase - P.cbasevar*Math.min(0.6, 0.35*LP.cthick + 0.12) - (P.cscud > 0 ? 0.1 + 0.45*P.cscud : 0) - 0.02, uCType:LP.ctype, uCDens:typeExt(LP.ctype)*P.cdm, uSkyKeyDir:G.uSkyKeyDir||[0,1,0], uSkyKeyF:G.uSkyKeyF||0, uCScale:P.cscale, uCErode:P.cerode, uWind:[P.windX, P.windZ], uOrgOff:orgOff(), uCloudOn:cloudOn, uEvolve:P.evolve,
     uShadowExt:SH_EXTS[0], uShadowRes:SH_RES, uSelf:0, uShExt:SH_EXTS[0], uCamH:P.camH, uAzOff:P.azOff*D2R,
     uSunK:f32(a.SunK), uSunAlpha:f32(a.SunA), uSunRad:sunRad, uSunSquash:sunSquash(P.sunEl), uMoonK:f32(a.MoonK), uMoonRad:moonRad*P.moonScale, uMoonTexOn:MOONTEX, uMoonLight:ml, uPole:pole,
@@ -2324,9 +2108,7 @@ function computePhysics(){
     uCMFx:f32(CMFX), uCMFy:f32(CMFY), uCMFz:f32(CMFZ), uSunDisk:P.includeSun?1:0, uZero:0,
   });
   // the cloud layers: each one a volume with its own pass, shadow map and settings
-  G.LU = WXR ? buildLayersWx(WXR) : buildLayers(cloudOn);
-  // (the stand-in layer itself, for calibration; the bounds that enclose the whole map, for rendering)
-  if (WXR){ G.calLow = {uCBot:G.uCBot, uCTop:G.uCTop}; if (G.LU[0]){ G.uCBot = G.LU[0].bot; G.uCTop = G.LU[0].top; } }
+  G.LU = buildLayers(cloudOn, buildVar());
   const lay = new Float32Array(16), layX = new Float32Array(16);
   G.LU.forEach((lu, k) => { if (!lu) return; lay.set([lu.bot, lu.top, lu.cover, lu.kind], 4*k); layX[4*k] = SH_EXTS[k]; });
   G.uLay = lay; G.uLayX = layX;
@@ -2342,7 +2124,7 @@ function computePhysics(){
 }
 // low (stratus … cumulonimbus), a second low layer, mid (altostratus / altocumulus and their special forms) and high
 // (cirrus, cirrostratus, cirrocumulus). Per-layer uniforms override the shared ones for that layer's passes.
-function buildLayers(cloudOn){
+function buildLayers(cloudOn, V){
   const L = [null, null, null, null];
   if (cloudOn) L[0] = {kind:0, bot:G.uCBot, top:G.uCTop, cover:Math.max(P.cov, 0.001), u:{uSelf:0, uShExt:SH_EXTS[0], uCloudOn:1}};
   if (P.l2On && P.l2Cov > 0.001){ const t = P.l2Type, base = P.l2Base, thick = P.l2Thick, bv = 0.35, bot = base - bv*Math.min(0.6, 0.35*thick + 0.12) - 0.02;
@@ -2356,23 +2138,11 @@ function buildLayers(cloudOn){
   if (P.ciCov > 0.001 || MASKINFO.add[2]){ const th = P.ciThick || 1.2, bot = P.ciH - th/2, top = P.ciH + th/2;
     L[3] = {kind:2, bot, top, cover:Math.max(P.ciCov, 0.001), u:{uSelf:3, uShExt:SH_EXTS[3], uCloudOn:1, uCBot:bot, uCTop:top, uCBase:bot,
       uCScale:0.625, uCDens:P.ciTau/(0.42*th), uWOff:[0, 0], uStepMul:0.35}}; }
-  return L; }
-// the layers when the weather system is on: each reads its local state from the weather map (uSynOn); the bounds enclose it
-function buildLayersWx(R){ const L = [null, null, null, null], rp = R.rep;
-  if (R.any[0]){ const r = rp[0], D = (r.top - r.base) || 1.5;
-    L[0] = {kind:0, bot:R.bot[0], top:R.top[0], cover:Math.max(r.cov, 0.001), u:{uSelf:0, uShExt:SH_EXTS[0], uCloudOn:1, uSynOn:1, uSynL:0, uCBot:R.bot[0], uCTop:R.top[0],
-      uCScale:P.cscale*clamp(0.7 + 0.16*D, 0.85, 2.8)}}; }
-  if (R.any[1]){ const r = rp[1], t = r.w > 0 ? r.type : 0.3;
-    L[1] = {kind:0, bot:R.bot[1], top:R.top[1], cover:Math.max(r.cov, 0.001), u:{uSelf:1, uShExt:SH_EXTS[1], uCloudOn:1, uSynOn:1, uSynL:2, uWOff:[17.3, 29.1], uPileus:0, uMamma:0,
-      uCBase:r.base || 0.5, uCTop:R.top[1], uCBot:R.bot[1], uCType:t, uCDens:typeExt(t)*P.cdm, uCScale:0.8, uCErode:0.45, uClump:0.4 + 1.2*0.35,
-      uBillow:0.35 + 0.5*clamp((t - 0.1)/0.6, 0, 1), uCVar:0.5, uAiry:0.3, uBaseVar:0.35, uScud:0, uCovBias:G.uCovBias2 ?? 0},
-      cal:{uCTop:Math.max(r.top || 1, (r.base || 0.5) + 0.2), uCBot:(r.base || 0.5) - 0.12}}; }
-  if (R.any[2]){ const r = rp[2];
-    L[2] = {kind:1, bot:R.bot[2], top:R.top[2], cover:Math.max(r.cov, 0.001), u:{uSelf:2, uShExt:SH_EXTS[2], uCloudOn:1, uSynOn:1, uSynL:4, uCBot:R.bot[2], uCTop:R.top[2],
-      uCBase:r.base || 4, uCScale:0.5*P.midScale, uCDens:(r.tau || 4)/(0.8*Math.max(r.Db || 0.4, 0.1)), uCErode:0.5, uWOff:[0, 0], uStepMul:0.45, uMidForm:0}}; }
-  if (R.any[3]){ const r = rp[3];
-    L[3] = {kind:2, bot:R.bot[3], top:R.top[3], cover:Math.max(r.cov, 0.001), u:{uSelf:3, uShExt:SH_EXTS[3], uCloudOn:1, uSynOn:1, uSynL:6, uCBot:R.bot[3], uCTop:R.top[3],
-      uCBase:R.bot[3], uCScale:0.625, uCDens:(r.tau || 0.4)/(0.42*Math.max((r.top - r.base) || 1, 0.3)), uWOff:[0, 0], uStepMul:0.35, uCiForm:P.ciForm === 4 ? 0 : P.ciForm}}; }
+  // the variation map: each layer reads its local state from it; the pass bounds widen to enclose it everywhere, and the
+  // calibration still measures the layer as set (cal: its own bounds)
+  // (a layer that is only painted in, with no cover of its own, is left as painted)
+  if (V) L.forEach((lu, k) => { if (!lu || !V.any[k] || [P.cov, P.l2Cov, P.midCov, P.ciCov][k] <= 0.001) return; const bot = Math.min(lu.bot, V.bot[k]), top = Math.max(lu.top, V.top[k]);
+    lu.cal = {uCBot:lu.u.uCBot ?? lu.bot, uCTop:lu.u.uCTop ?? lu.top}; lu.bot = bot; lu.top = top; Object.assign(lu.u, {uSynOn:1, uSynL:2*k, uCBot:bot, uCTop:top}); });
   return L; }
 function moonDiskMean(md, ml, pole){
   const zM = V.mul(md,-1); const yM = V.norm(V.sub(pole, V.mul(zM, V.dot(pole,zM)))); const xM = V.cross(yM, md);
@@ -2428,7 +2198,7 @@ function gaussianize2D(tex, n){ const buf = new Float32Array(n*n*4); gl.bindFram
 function buildNoise(){ unbind(2, gl.TEXTURE_3D); unbind(3, gl.TEXTURE_3D); genNoise3D(T_SHAPE, 128, 0, 1); genNoise3D(T_DETAIL, 128, 1, 2);
   G.uHS = gaussianize3D(T_SHAPE, 128); G.uHD = gaussianize3D(T_DETAIL, 128); bindAll(); dirtyNoise = false; }
 function buildWeather(){ unbind(4, gl.TEXTURE_2D); unbind(8, gl.TEXTURE_2D); genNoise2D(T_WEATHER, 512, 2, P.seed*3+11); genNoise2D(T_CIRRUS, 1024, 3, P.seed*5+23);
-  G.uHW = gaussianize2D(T_WEATHER, 512); G.uHC = gaussianize2D(T_CIRRUS, 1024); findStormCore(); G.uOrgOff = orgOff(); bindAll(); dirtyCirrus = false; covKey = ''; if (typeof WX !== 'undefined') WX.key = ''; }
+  G.uHW = gaussianize2D(T_WEATHER, 512); G.uHC = gaussianize2D(T_CIRRUS, 1024); findStormCore(); G.uOrgOff = orgOff(); bindAll(); dirtyCirrus = false; covKey = ''; if (typeof VAR !== 'undefined') VAR.key = ''; }
 // CPU copy of the shaders' stochastic tiling of the weather map (same hash, triangles, blend and inverse map), for the code
 // that looks for clear sky over the camera or for a storm complex: it has to see the same, non-repeating cloud field the
 // renderer draws
@@ -2455,7 +2225,7 @@ function findStormCore(){ try {
   const N = 128, buf = new Float32Array(N*N*4); gl.bindFramebuffer(gl.FRAMEBUFFER, F_TMP); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, T_WEATHER, 2);
   gl.readPixels(0, 0, N, N, gl.RGBA, gl.FLOAT, buf); const org = stochSampler(buf, N, 3, G.uHW, 11);
   let best = -1, bi = 0; for (let k=0;k<N*N;k++){ const v = org((k % N + 0.5)/N, (Math.floor(k/N) + 0.5)/N); if (v > best){ best = v; bi = k; } }
-  wxQuantiles(buf, N);
+  varQuantiles(buf, N);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
   let h = (P.seed*2654435761 >>> 0); const rnd = () => { h = (h ^ (h >>> 15))*2246822519 >>> 0; h = (h ^ (h >>> 13))*3266489917 >>> 0; h ^= h >>> 16; return (h >>> 0)/4294967296; };
   ORG = {uv:[(bi % N + 0.5)/N, (Math.floor(bi/N) + 0.5)/N], r:rnd(), az:rnd()*2*Math.PI};
@@ -2471,8 +2241,8 @@ function calibrateCoverage(){ calibrateCoverage0(); calibrateCoverage2(); }
 // the second low layer's cover, calibrated the same way with its own settings and coverage-map offset
 let covKey2 = '';
 function calibrateCoverage2(){ const lu = (G.LU || [])[1]; if (!lu) return;
-  const tgt = P.wxOn ? 0.5 : P.l2Cov;
-  const key = [tgt, P.wxOn ? [lu.u.uCType, lu.u.uCBase, lu.u.uCTop].map(v => v.toFixed(3)).join(',') : '', P.l2Type, P.l2Base, P.l2Thick, P.l2Scale, P.l2Dm, P.seed].join('|'); if (key === covKey2){ lu.u.uCovBias = G.uCovBias2; return; } covKey2 = key;
+  const tgt = P.l2Cov;
+  const key = [tgt, P.l2Type, P.l2Base, P.l2Thick, P.l2Scale, P.l2Dm, P.seed].join('|'); if (key === covKey2){ lu.u.uCovBias = G.uCovBias2; return; } covKey2 = key;
   if (tgt >= 0.995){ G.uCovBias2 = 1.4; lu.u.uCovBias = 1.4; return; }
   const N = 160, buf = new Float32Array(N*N*4); let lo = -0.9, hi = 1.3;
   for (let it=0; it<9; it++){ const mid = (lo + hi)/2;
@@ -2482,8 +2252,8 @@ function calibrateCoverage2(){ const lu = (G.LU || [])[1]; if (!lu) return;
     if (c/(N*N) < tgt) lo = mid; else hi = mid; }
   G.uCovBias2 = (lo + hi)/2; lu.u.uCovBias = G.uCovBias2; }
 function calibrateCoverage0(){
-  const wx = P.wxOn, lu0 = (G.LU || [])[0], tgt = wx ? 0.5 : P.cov;
-  const key = [P.cdm, wx ? 'wx' : P.cov, P.cclump, P.cbillow, P.cvar, P.cairy, P.cbasevar, P.cscud, wx ? [G.uCType, G.uCBase, G.uCTop, lu0 ? lu0.u.uCScale : 0].map(v => (+v).toFixed(3)).join(',') : P.ctype, P.cscale, P.cerode, P.cthick, P.cbase, P.seed, MASKINFO.add[0]].join('|'); if (key === covKey) return; covKey = key;
+  const tgt = P.cov;
+  const key = [P.cdm, P.cov, P.cclump, P.cbillow, P.cvar, P.cairy, P.cbasevar, P.cscud, P.ctype, P.cscale, P.cerode, P.cthick, P.cbase, P.seed, MASKINFO.add[0]].join('|'); if (key === covKey) return; covKey = key;
   // (a clear sky can still be painted into)
   // a scene file carries the calibration it was made with: every machine then renders it with the same cloud cover
   // (the measurement itself runs on the GPU, so two GPUs can land a hair apart)
@@ -2491,7 +2261,7 @@ function calibrateCoverage0(){
   if (tgt <= 0.001){ G.uCovBias = MASKINFO.add[0] ? -0.25 : -1; return; } if (tgt >= 0.995){ G.uCovBias = 1.4; return; }
   const N = 160, buf = new Float32Array(N*N*4); let lo = -0.9, hi = 1.3;
   for (let it=0; it<9; it++){ const mid = (lo + hi)/2;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, F_COVER); setU(P_COVER, {...G, ...(wx && lu0 ? {uCScale:lu0.u.uCScale, ...G.calLow} : {}), uCovBias:mid, uMaskOn:0, uN:N, uSynOn:0});
+    gl.bindFramebuffer(gl.FRAMEBUFFER, F_COVER); setU(P_COVER, {...G, uCovBias:mid, uMaskOn:0, uN:N, uSynOn:0});
     for (let y=0; y<N; y+=40){ gl.viewport(0, y, N, 40); draw(); gl.flush(); }
     gl.readPixels(0,0,N,N,gl.RGBA,gl.FLOAT,buf); let c = 0; for (let k=0;k<N*N;k++) if (buf[k*4] > 0.5) c++;
     if (c/(N*N) < tgt) lo = mid; else hi = mid; }
@@ -3396,7 +3166,7 @@ function applyScene(o){
   for (const k of Object.keys(o.settings)) if (k in DEFAULTS || k in P) P[k] = o.settings[k];
   if (!('treeOn' in o.settings)) P.treeOn = false;
   // scenes from before the cloud layers became volumes: no second low layer, no special forms, default thicknesses
-  for (const [k, v] of [['l2On', false], ['midForm', 0], ['midThick', 0.4], ['ciThick', 1.2], ['pileus', 0], ['mammatus', 0], ['wxOn', false]]) if (!(k in o.settings)) P[k] = v;
+  for (const [k, v] of [['l2On', false], ['midForm', 0], ['midThick', 0.4], ['ciThick', 1.2], ['pileus', 0], ['mammatus', 0]]) if (!(k in o.settings)) P[k] = v;
   // scenes from before the mountains became distant hills: snow line (km) → snow amount, and sizes into the new ranges
   if (o.settings.mtnSnow > 1.001 || o.settings.mtnHeight > 1.5){ const H = o.settings.mtnHeight || 1, sl = o.settings.mtnSnow;
     P.mtnSnow = sl == null || sl >= 6.4 ? 0 : +clamp((1.02 - sl/H)/0.8, 0, 1).toFixed(2); P.mtnTree = 9; }
@@ -3997,80 +3767,6 @@ const SEAS = [
 ].map(s=>s.split(' ').map(p=>p.split(',').map(Number)));
 // city, lat, lon, standard UTC offset (no daylight saving)
 const CITIES = [["Los Angeles",34.05,-118.24,-8],["San Francisco",37.77,-122.42,-8],["Seattle",47.61,-122.33,-8],["Vancouver",49.28,-123.12,-8],["Denver",39.74,-104.99,-7],["Phoenix",33.45,-112.07,-7],["Banff",51.18,-115.57,-7],["Chicago",41.88,-87.63,-6],["Mexico City",19.43,-99.13,-6],["New York",40.71,-74.01,-5],["Toronto",43.65,-79.38,-5],["Miami",25.76,-80.19,-5],["Anchorage",61.22,-149.9,-9],["Honolulu",21.31,-157.86,-10],["Reykjavík",64.15,-21.94,0],["London",51.51,-0.13,0],["Lisbon",38.72,-9.14,0],["Paris",48.86,2.35,1],["Madrid",40.42,-3.70,1],["Rome",41.9,12.5,1],["Berlin",52.52,13.4,1],["Oslo",59.91,10.75,1],["Tromsø",69.65,18.96,1],["Longyearbyen",78.22,15.65,1],["Lagos",6.52,3.38,1],["Tamanrasset (Sahara)",22.79,5.52,1],["Cape Town",-33.92,18.42,2],["Cairo",30.04,31.24,2],["Athens",37.98,23.73,2],["Istanbul",41.01,28.98,3],["Moscow",55.76,37.62,3],["Nairobi",-1.29,36.82,3],["Dubai",25.2,55.27,4],["Mumbai",19.08,72.88,5.5],["Delhi",28.61,77.21,5.5],["Kathmandu",27.72,85.32,5.75],["Bangkok",13.76,100.5,7],["Singapore",1.35,103.82,8],["Hong Kong",22.32,114.17,8],["Beijing",39.9,116.4,8],["Shanghai",31.23,121.47,8],["Perth",-31.95,115.86,8],["Seoul",37.57,126.98,9],["Tokyo",35.68,139.69,9],["Uluru",-25.34,131.04,9.5],["Sydney",-33.87,151.21,10],["Melbourne",-37.81,144.96,10],["Auckland",-36.85,174.76,12],["Queenstown NZ",-45.03,168.66,12],["Santiago",-33.45,-70.67,-4],["Atacama (San Pedro)",-22.91,-68.2,-4],["Buenos Aires",-34.6,-58.38,-3],["El Chaltén (Patagonia)",-49.33,-72.89,-3],["Rio de Janeiro",-22.91,-43.17,-3],["Lima",-12.05,-77.04,-5],["Bogotá",4.71,-74.07,-5],["Mt Everest",27.99,86.93,5.75],["McMurdo (Antarctica)",-77.85,166.67,12]];
-// weather diagram: plan view of the situation (±300 km, north up, the camera in the middle) and the sounding overhead
-function wxCloudName(L){ const t = L.type, D = L.top - L.base;
-  return t < 0.15 ? (D > 1.5 ? 'nimbostratus' : 'stratus') : t < 0.45 ? 'stratocumulus' : t < 0.66 ? 'cumulus humilis' : t < 0.72 ? 'cumulus mediocris' : t < 0.88 ? 'cumulus congestus' : 'cumulonimbus'; }
-function wxMidName(M){ return M.len > 0.3 ? 'altocumulus lenticularis' : M.mam > 0.3 ? 'mammatus' : M.cas > 0.3 ? 'altocumulus castellanus' : M.type < 0.3 ? 'altostratus' : 'altocumulus'; }
-function drawWx(){
-  const cv = $('#wxPlot'); if (!cv || cv.offsetParent === null || !P.wxOn || !WX.res) return; const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = cv.clientWidth, h = w/2; if (!w) return; cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr); const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
-  c.fillStyle = '#0b121b'; c.fillRect(0, 0, w, h);
-  // --- plan view
-  const S = h, R = 300, NN = WX_N*WX_N, buf = WX.buf, off = drawWx.off || (drawWx.off = document.createElement('canvas')), n = 96; off.width = n; off.height = n;
-  const oc = off.getContext('2d'), id = oc.createImageData(n, n), tex = km => { const u = 0.5 + 0.5*km*(WX_R + WX_K)/(WX_R*(Math.abs(km) + WX_K)); return Math.min(WX_N - 1, Math.max(0, Math.floor(u*WX_N))); };
-  const Q = WX.qr, q50 = Q ? Q[Q.length >> 1] : 0.5;
-  const covOf = d => { if (d < -1.5) return 0; if (!Q) return clamp(0.5 + d/0.6, 0, 1); const t = q50 - d; let a = 0, b = Q.length - 1; while (b - a > 1){ const m = (a + b) >> 1; if (Q[m] < t) a = m; else b = m; } return 1 - a/(Q.length - 1); };
-  for (let j=0; j<n; j++){ const z = R - (j + 0.5)/n*2*R; for (let i=0; i<n; i++){ const x = -R + (i + 0.5)/n*2*R, o = (tex(z)*WX_N + tex(x))*4;
-    let r = 18, g = 30, b = 48;
-    const hc = buf[6*NN*4 + o]; r += (190 - r)*hc*0.45; g += (215 - g)*hc*0.45; b += (240 - b)*hc*0.45;
-    const mc = buf[4*NN*4 + o]; r += (150 - r)*mc*0.7; g += (162 - g)*mc*0.7; b += (182 - b)*mc*0.7;
-    const lc = covOf(buf[o]), lt = buf[o + 3], D = buf[o + 2] - buf[o + 1];
-    const col = lt >= 0.88 ? [255, 214, 170] : lt < 0.15 && D > 1.5 ? [118, 124, 134] : [236, 238, 240]; const k = Math.min(lc*1.1, 1);
-    r += (col[0] - r)*k; g += (col[1] - g)*k; b += (col[2] - b)*k;
-    const q = (j*n + i)*4; id.data[q] = r; id.data[q + 1] = g; id.data[q + 2] = b; id.data[q + 3] = 255; } }
-  oc.putImageData(id, 0, 0); c.imageSmoothingEnabled = true; c.drawImage(off, 0, 0, S, S);
-  const X = x => (x + R)/(2*R)*S, Y = z => (R - z)/(2*R)*S;
-  c.save(); c.beginPath(); c.rect(0, 0, S, S); c.clip();
-  // the situation's line: front (warm red half-discs, cold blue triangles, occluded both), storm line, coast, ridge; a high's centre
-  const pat = P.wxPat, nv = WX.n, tv = [nv[1], -nv[0]];
-  if (pat === 'high'){ c.fillStyle = 'rgba(120,170,255,0.9)'; c.font = '600 14px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('H', X(WX.c[0]), Y(WX.c[1])); }
-  else if (pat !== 'none'){ const pts = []; for (let a=-700; a<=700; a+=10){ const wob = 22*Math.sin(a/170 + WX.ph[0]) + 10*Math.sin(a/61 + WX.ph[1]), d = WX.D + wob; pts.push([tv[0]*a + nv[0]*d, tv[1]*a + nv[1]*d]); }
-    const col = pat === 'warm' ? '#ff6b6b' : pat === 'cold' ? '#5aa9ff' : pat === 'occl' ? '#c58cff' : pat === 'squall' ? '#ffb454' : pat === 'sea' ? '#7fd1ff' : '#c9a27a';
-    c.strokeStyle = col; c.lineWidth = 2; c.setLineDash(pat === 'squall' ? [5, 4] : []); c.beginPath(); pts.forEach(([x, z], i) => i ? c.lineTo(X(x), Y(z)) : c.moveTo(X(x), Y(z))); c.stroke(); c.setLineDash([]);
-    c.fillStyle = col;
-    for (let k=5; k<pts.length - 5; k+=7){ const [x, z] = pts[k], [x2, z2] = pts[k + 1], ex = X(x2) - X(x), ey = Y(z2) - Y(z), L = Math.hypot(ex, ey) || 1, ux = ex/L, uy = ey/L;
-      // symbols on the side the front moves toward (the camera's side: −n)
-      const sx = -nv[0], sy = nv[1], sgn = Math.sign(ux*sy - uy*sx) || 1, px = -uy*sgn, py = ux*sgn, cx = X(x), cy = Y(z);
-      const kind = pat === 'occl' ? (k % 14 < 7 ? 'warm' : 'cold') : pat;
-      if (kind === 'warm'){ c.beginPath(); c.arc(cx + ux*4, cy + uy*4, 4, Math.atan2(uy, ux), Math.atan2(uy, ux) + Math.PI, sgn < 0); c.fill(); }
-      else if (kind === 'cold'){ c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + ux*8, cy + uy*8); c.lineTo(cx + ux*4 + px*7, cy + uy*4 + py*7); c.closePath(); c.fill(); }
-      else if (kind === 'wave'){ c.fillRect(cx - 1, cy - 1, 2, 2); } }
-    if (pat === 'sea'){ c.fillStyle = 'rgba(70,140,220,0.18)'; c.beginPath(); pts.forEach(([x, z], i) => i ? c.lineTo(X(x), Y(z)) : c.moveTo(X(x), Y(z))); const far = [pts[pts.length - 1], pts[0]].map(([x, z]) => [x + nv[0]*900, z + nv[1]*900]); far.forEach(([x, z]) => c.lineTo(X(x), Y(z))); c.closePath(); c.fill(); } }
-  // the camera, the distance at which low clouds (1.5 km) sink to the horizon, north
-  c.strokeStyle = 'rgba(255,255,255,0.25)'; c.setLineDash([2, 3]); c.beginPath(); c.arc(X(0), Y(0), 138/(2*R)*S, 0, 2*Math.PI); c.stroke(); c.setLineDash([]);
-  c.fillStyle = '#fff'; c.beginPath(); c.arc(X(0), Y(0), 3, 0, 2*Math.PI); c.fill();
-  c.restore();
-  c.fillStyle = 'rgba(230,238,248,0.75)'; c.font = '10px system-ui'; c.textAlign = 'left'; c.textBaseline = 'top'; c.fillText('N ↑  ±300 km', 5, 4);
-  // --- sounding (skewed temperature axis, height up to 14 km) at the camera
-  const cam = WX.res.cam, cc = cam.c, x0 = S + 8, W = w - x0 - 6, zTop = 14, Yz = z => h - 14 - z/zTop*(h - 22), sk = 4.5, Tlo = -50, Thi = 40;
-  const Xt = (T, z) => x0 + (T + sk*z - Tlo)/(Thi - Tlo)*W;
-  c.save(); c.beginPath(); c.rect(x0, 4, W, h - 8); c.clip();
-  c.strokeStyle = 'rgba(160,190,220,0.12)'; c.lineWidth = 1; c.beginPath(); for (let T=-80; T<=40; T+=10){ c.moveTo(Xt(T, 0), Yz(0)); c.lineTo(Xt(T, zTop), Yz(zTop)); } c.stroke();
-  // cloud layers overhead (grey bands)
-  const band = (b, t, a, label, lab) => { if (a <= 0.02) return; c.fillStyle = `rgba(220,228,238,${0.12 + 0.3*a})`; c.fillRect(x0, Yz(t), W, Yz(b) - Yz(t)); c.fillStyle = 'rgba(235,240,248,0.85)'; c.font = '9px system-ui'; c.textAlign = 'right'; c.textBaseline = 'bottom'; c.fillText(label, x0 + W - 3, (lab ?? Yz(b)) - 1); };
-  band(cam.H.bot, cam.H.top, cam.H.cov, `Ci ${Math.round(cam.H.cov*100)}%`);
-  band(cam.M.base - 0.1*cam.M.Db, cam.M.base + cam.M.Db, cam.M.cov, `${cam.M.type < 0.3 ? 'As' : 'Ac'} ${Math.round(cam.M.cov*100)}%`);
-  band(cam.L.base, cam.L.top, cam.L.cov, `${({'nimbostratus':'Ns','stratus':'St','stratocumulus':'Sc','cumulonimbus':'Cb','cumulus congestus':'Cu con'})[wxCloudName(cam.L)] || 'Cu'} ${Math.round(cam.L.cov*100)}%`);
-  band(cam.L2.base, cam.L2.top, cam.L2.cov, 'low');
-  // environment temperature (red), dew point (green), the rising parcel (white, dashed)
-  const Td = z => { if (z < cc.zi) return cc.Td0 - 1.8*z; const T = wxTe(cc, z), rh = z < 8 ? cc.midRH/100 : 0.75*cc.hiRH/100, e = Math.max(rh, 0.01)*wxEs(T), l = Math.log(e/6.112); return 243.5*l/(17.67 - l); };
-  const line = (f, col, dash) => { c.strokeStyle = col; c.lineWidth = 1.5; c.setLineDash(dash || []); c.beginPath(); for (let z=0; z<=zTop; z+=0.1){ const T = f(z), px = Xt(T, z), py = Yz(z); z ? c.lineTo(px, py) : c.moveTo(px, py); } c.stroke(); c.setLineDash([]); };
-  line(z => wxTe(cc, z), '#ff6b6b'); line(Td, '#4fd18b');
-  const pth = cam.L.pr.path; if (pth.length > 1){ c.strokeStyle = 'rgba(255,255,255,0.85)'; c.lineWidth = 1.2; c.setLineDash([3, 3]); c.beginPath(); pth.forEach(([z, T], i) => i ? c.lineTo(Xt(T, z), Yz(z)) : c.moveTo(Xt(T, z), Yz(z))); c.stroke(); c.setLineDash([]); }
-  // levels: condensation, 0 °C, tropopause
-  let z0 = 0; for (let z=0; z<14; z+=0.05) if (wxTe(cc, z) <= 0){ z0 = z; break; }
-  const lev = (z, col, label) => { c.strokeStyle = col; c.lineWidth = 1; c.setLineDash([2, 3]); c.beginPath(); c.moveTo(x0, Yz(z)); c.lineTo(x0 + W, Yz(z)); c.stroke(); c.setLineDash([]); c.fillStyle = col; c.font = '9px system-ui'; c.textAlign = 'left'; c.textBaseline = 'bottom'; c.fillText(label, x0 + 2, Yz(z) - 1); };
-  lev(cam.L.pr.lcl, 'rgba(255,255,255,0.55)', 'base'); if (z0 > 0) lev(z0, 'rgba(120,180,255,0.8)', '0 °C'); lev(cc.trop, 'rgba(200,170,255,0.7)', 'tropopause');
-  c.restore();
-  c.fillStyle = 'rgba(230,238,248,0.75)'; c.font = '10px system-ui'; c.textAlign = 'left'; c.textBaseline = 'top'; c.fillText('Overhead: T, dew point, rising air', x0 + 2, 4); }
-function wxInfoHTML(){ if (!WX.res) return ''; const cam = WX.res.cam, cc = cam.c, L = cam.L, M = cam.M, H = cam.H, out = [];
-  if (L.cov > 0.02) out.push(`<b>${wxCloudName(L)}</b> ${Math.round(L.cov*100)}%, base ${L.base.toFixed(2)} km, tops ${L.top.toFixed(1)} km`);
-  if (cam.L2.cov > 0.02) out.push(`low ragged cloud ${Math.round(cam.L2.cov*100)}% at ${cam.L2.base.toFixed(2)} km`);
-  if (M.cov > 0.02) out.push(`<b>${wxMidName(M)}</b> ${Math.round(M.cov*100)}% at ${M.base.toFixed(1)} km`);
-  if (H.cov > 0.02) out.push(`<b>${H.anvil ? 'anvil cirrus' : H.cov > 0.85 ? 'cirrostratus' : 'cirrus'}</b> ${Math.round(H.cov*100)}% at ${H.bot.toFixed(1)}–${H.top.toFixed(1)} km`);
-  let z0 = 0; for (let z=0; z<14; z+=0.05) if (wxTe(cc, z) <= 0){ z0 = z; break; }
-  const s = WX.D, eta = P.wxSpeed > 0 && s > 0 && /warm|cold|occl|squall/.test(P.wxPat) ? ` · arrives in about ${Math.round(s/P.wxSpeed)} h` : '';
-  return `Overhead: ${out.length ? out.join(' · ') : 'clear'}.<br>Condensation level ${L.pr.lcl.toFixed(2)} km · freezing level ${z0 ? z0.toFixed(1) + ' km' : 'at the ground'} · CAPE ≈ ${Math.round(L.pr.cape/10)*10} J/kg${eta}.`; }
 function drawMap(){
   const cv = $('#worldMap'); if (!cv || cv.offsetParent === null) return; const dpr = Math.min(window.devicePixelRatio||1, 2);
   const w = cv.clientWidth, h = w/2; if (!w) return; cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr); const c = cv.getContext('2d'); c.setTransform(dpr,0,0,dpr,0,0);
@@ -4353,15 +4049,8 @@ function wildWeather(kind){
   if (Math.random() < 0.3 && kind !== 'storm' && kind !== 'overcast'){ P.l2On = true; Object.assign(P, {l2Cov:+rnd(0.15,0.8).toFixed(2), l2Type:+rnd(0.05,0.75).toFixed(2), l2Base:+rnd(0.5,4).toFixed(2), l2Thick:+rnd(0.3,1.5).toFixed(2), l2Scale:+rnd(0.5,1.5).toFixed(2), l2Dm:+rnd(0.6,1.4).toFixed(2)}); }
   if (Math.random() < 0.08){ P.fogVis = +rnd(0.4,6).toFixed(1); P.fogH = +rnd(0.05,0.4).toFixed(2); }
   P.seed = Math.floor(Math.random()*997); P.windX = +rnd(-20,20).toFixed(1); P.windZ = +rnd(-20,20).toFixed(1); P.ciRot = Math.round(rnd(0,180)); P.evolve = +rnd(0,20).toFixed(2); }
-// with the weather system on, a new situation and air mass instead of new layer settings
-function randomizeWxSystem(){ const r = Math.random, pats = ['none', 'warm', 'cold', 'occl', 'high', 'squall', 'sea', 'wave'];
-  P.wxPat = pats[Math.floor(r()*pats.length)]; P.wxDir = Math.round(r()*359); P.wxStr = +(0.5 + 0.5*r()).toFixed(2); P.wxAna = +r().toFixed(2); P.wxLam = +(8 + 12*r()).toFixed(1);
-  P.wxDist = Math.round(({warm:100 + 900*r(), cold:-300 + 500*r(), occl:-50 + 400*r(), high:50 + 400*r(), squall:20 + 150*r(), sea:5 + 40*r(), wave:10 + 40*r()})[P.wxPat] || 300);
-  const T = 6 + 24*r(); P.wxT = +T.toFixed(1); P.wxTd = +(T - 2 - 12*r()*r()).toFixed(1); P.wxZi = +(0.8 + 2*r()).toFixed(2); P.wxInv = +(0.5 + 7*r()).toFixed(1);
-  P.wxLapse = +(5.8 + 1.6*r()).toFixed(2); P.wxMidRH = Math.round(20 + 70*r()); P.wxMidZ = +(3.5 + 2.5*r()).toFixed(1); P.wxHiRH = Math.round(40 + 75*r()); P.wxTrop = +(10 + 3*r()).toFixed(1);
-  P.seed = (P.seed*7919 + 13) % 997; dirtyCirrus = true; afterBulk(); }
 function randomizeWeather(){
-  dropMask(); if (P.wxOn){ randomizeWxSystem(); return; } const v = clamp(Number(P.variety) || 0, 0, 1); const X = wxContext(); const kind = pickKind(v, X);
+  dropMask(); const v = clamp(Number(P.variety) || 0, 0, 1); const X = wxContext(); const kind = pickKind(v, X);
   const before = snapWx(); wildWeather(kind);
   if (v < 0.999){ const W = snapWx(); Object.assign(P, before); realWeather(kind, X); const R = snapWx();
     // blend: numbers part-way from the realistic value toward the wild one, choices picked one way or the other
@@ -4415,8 +4104,7 @@ function tlBase(){ return {date:P.date, windX:P.windX, windZ:P.windZ, evolve:P.e
 function tlApply(i, base){ const [a,b] = tlTimes(); const n = Math.max(2, P.tlFrames); const m = a + (b-a)*i/(n-1); const hrs = (m - a)/60;
   const day = Math.floor(m/1440); P.date = addDays(base.date, day); P.time = hhmm(m - day*1440);
   const dir = P.tlWindDir*D2R;   // clouds drift toward this compass direction
-  P.windX = +(base.windX - Math.sin(dir)*P.tlWind*hrs).toFixed(3); P.windZ = +(base.windZ - Math.cos(dir)*P.tlWind*hrs).toFixed(3); P.evolve = +(base.evolve + P.tlEvolve*hrs).toFixed(4); P.mode = 'location';
-  if (base.wxOn && base.wxPat !== 'none' && base.wxPat !== 'high' && base.wxPat !== 'sea' && base.wxPat !== 'wave') P.wxDist = +(base.wxDist - base.wxSpeed*hrs).toFixed(2); }
+  P.windX = +(base.windX - Math.sin(dir)*P.tlWind*hrs).toFixed(3); P.windZ = +(base.windZ - Math.cos(dir)*P.tlWind*hrs).toFixed(3); P.evolve = +(base.evolve + P.tlEvolve*hrs).toFixed(4); P.mode = 'location'; }
 function togglePlay(){
   if (TL.rendering) return;
   if (TL.playing){ TL.playing = false; $('#tlPlay').textContent = 'Play preview'; setStatus('Timelapse stopped'); lastChange = 0; dirtyScene = true; return; }
@@ -4497,39 +4185,12 @@ const SECTIONS = [
     {k:'camH', label:'Camera altitude', min:0.0015, max:15, log:true, fmt:v=>v<1?`${(v*1000).toFixed(v<0.01?1:0)} m`:`${v.toFixed(2)} km`},
     {type:'info', id:'atmInfo'},
   ]},
-  {title:'Weather · air mass & fronts', items:[
-    {k:'wxOn', label:'Form the clouds from the weather', type:'check', after:()=>{ covKey = ''; covKey2 = ''; }},
-    {type:'note', html:'Instead of setting each cloud layer by hand, describe the air: its temperature and humidity with height (the sounding) and the weather situation (a front, a high, a sea breeze, a mountain range). Every layer then forms where real clouds would: cumulus bases at the condensation level, tops where rising air stops being buoyant, stratocumulus under an inversion, altostratus and cirrus in the moist air gliding up a front, lenticulars in lee waves. The layers shade and feed each other, and the pattern changes across the sky.', show:()=>!P.wxOn},
-    {k:'wxPat', label:'Situation', type:'select', opts:WX_PATTERNS, show:()=>P.wxOn},
-    {k:'wxDist', label:()=>({warm:'Distance to the warm front', cold:'Distance to the cold front', occl:'Distance to the occlusion', high:'Distance to the centre of the high', squall:'Distance to the storm line', sea:'Distance to the coast', wave:'Distance to the ridge'})[P.wxPat] || 'Distance',
-      min:-400, max:1200, step:5, fmt:v=>v < 0 && /warm|cold|occl|squall/.test(P.wxPat) ? `passed ${-v} km ago` : `${v} km`, show:()=>P.wxOn && P.wxPat !== 'none'},
-    {k:'wxDir', label:()=>({warm:'Approaching from', cold:'Approaching from', occl:'Approaching from', squall:'Approaching from', high:'Centre lies toward', sea:'Sea lies toward', wave:'Ridge lies toward (wind from there)'})[P.wxPat] || 'Direction',
-      min:0, max:359, step:1, fmt:v=>`${v}° ${['N','NE','E','SE','S','SW','W','NW'][Math.round(v/45)%8]}`, show:()=>P.wxOn && P.wxPat !== 'none'},
-    {k:'wxStr', label:'Strength', min:0.1, max:1, step:0.01, fmt:v=>v < 0.4 ? 'weak' : v < 0.75 ? 'moderate' : 'strong', show:()=>P.wxOn && P.wxPat !== 'none'},
-    {k:'wxAna', label:'Frontal cloud band', min:0, max:1, step:0.01, fmt:v=>v < 0.3 ? 'kata · cloud ahead, clears fast' : v < 0.7 ? 'mixed' : 'ana · rain band behind', show:()=>P.wxOn && P.wxPat === 'cold'},
-    {k:'wxLam', label:'Lee-wave wavelength', min:5, max:30, step:0.5, fmt:v=>`${v} km`, show:()=>P.wxOn && P.wxPat === 'wave'},
-    {k:'wxSpeed', label:'Moves toward you at (timelapse)', min:0, max:80, step:1, fmt:v=>`${v} km/h`, show:()=>P.wxOn && /warm|cold|occl|squall/.test(P.wxPat), noScene:false},
-    {type:'wxplot', show:()=>P.wxOn},
-    {type:'info', id:'wxInfo', show:()=>P.wxOn},
-    {type:'note', html:'<b>Air mass</b> · the sounding the situation starts from (it varies a little across the sky, and the situation changes it further).', show:()=>P.wxOn},
-    {k:'wxT', label:'Surface temperature', min:-20, max:40, step:0.5, fmt:v=>`${v.toFixed(1)} °C`, show:()=>P.wxOn},
-    {k:'wxTd', label:'Surface dew point', min:-30, max:28, step:0.5, fmt:v=>`${v.toFixed(1)} °C · RH ${Math.round(100*wxEs(Math.min(v, P.wxT))/wxEs(P.wxT))}%`, show:()=>P.wxOn},
-    {k:'wxZi', label:'Top of the mixed layer (inversion)', min:0.2, max:4, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>P.wxOn},
-    {k:'wxInv', label:'Inversion strength', min:0, max:12, step:0.1, fmt:v=>v < 0.3 ? 'none' : `${v.toFixed(1)} K`, show:()=>P.wxOn},
-    {k:'wxLapse', label:'Lapse rate above it', min:4, max:9, step:0.05, fmt:v=>`${v.toFixed(2)} K/km${v > 7 ? ' · unstable' : v < 5.5 ? ' · stable' : ''}`, show:()=>P.wxOn},
-    {k:'wxMidRH', label:'Humidity at mid levels', min:0, max:100, step:1, fmt:v=>`${v}%`, show:()=>P.wxOn},
-    {k:'wxMidZ', label:'Moist mid-level layer at', min:2.5, max:7, step:0.1, fmt:v=>`${v.toFixed(1)} km`, show:()=>P.wxOn},
-    {k:'wxHiRH', label:'Humidity near the tropopause (over ice)', min:20, max:140, step:1, fmt:v=>`${v}%`, show:()=>P.wxOn},
-    {k:'wxTrop', label:'Tropopause', min:8, max:17, step:0.1, fmt:v=>`${v.toFixed(1)} km`, show:()=>P.wxOn},
-    {k:'wxHeat', label:'Sunshine heating the ground', min:0, max:2, step:0.01, fmt:v=>v < 0.05 ? 'none (sea, snow)' : `×${v.toFixed(2)}`, show:()=>P.wxOn},
-  ]},
   {title:'Low clouds', items:[
-    {type:'note', html:'Coverage, type, base and depth come from the weather system. The look (cell size, billows, edges) is still set here.', show:()=>P.wxOn},
-    {k:'cov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*8)}/8 oktas`, show:()=>!P.wxOn},
+    {k:'cov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*8)}/8 oktas`},
     {k:'cclump', label:'Clustering', min:0, max:1, step:0.01, fmt:v=>v<0.25?'even':v<0.6?'patchy':'clumped'},
-    {k:'ctype', label:'Cloud type', min:0, max:1, step:0.01, fmt:cloudTypeName, show:()=>!P.wxOn},
-    {k:'cbase', label:'Cloud base', min:0.2, max:7, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>!P.wxOn},
-    {k:'cthick', label:'Layer thickness', min:0.2, max:10, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>!P.wxOn},
+    {k:'ctype', label:'Cloud type', min:0, max:1, step:0.01, fmt:cloudTypeName},
+    {k:'cbase', label:'Cloud base', min:0.2, max:7, step:0.05, fmt:v=>`${v.toFixed(2)} km`},
+    {k:'cthick', label:'Layer thickness', min:0.2, max:10, step:0.05, fmt:v=>`${v.toFixed(2)} km`},
     {k:'cdm', label:'Water content (density)', min:0.25, max:4, log:true, fmt:v=>`×${v.toFixed(2)} · ${Math.round(typeExt(P.ctype)*v)} km⁻¹`},
     {k:'cdrop', label:'Droplet diameter', min:5, max:40, step:0.5, fmt:v=>`${v} µm`},
     {k:'cscale', label:'Cell size', min:0.4, max:3, step:0.01, fmt:v=>`×${v.toFixed(2)}`},
@@ -4539,40 +4200,37 @@ const SECTIONS = [
     {k:'cairy', label:'Airy, translucent regions', min:0, max:1, step:0.01, fmt:v=>v.toFixed(2)},
     {k:'cbasevar', label:'Cloud-base variation', min:0, max:1, step:0.01, fmt:v=>v<0.02?'flat':v.toFixed(2)},
     {k:'cscud', label:'Scud below the base', min:0, max:1, step:0.01, fmt:v=>v<0.02?'none':v.toFixed(2)},
-    {k:'pileus', label:'Pileus · caps over growing towers', min:0, max:1, step:0.01, fmt:v=>v<0.02?'none':v.toFixed(2), show:()=>P.wxOn || P.ctype > 0.6},
-    {k:'mammatus', label:'Mammatus · pouches under the anvil', min:0, max:1, step:0.01, fmt:v=>v<0.02?'none':v.toFixed(2), show:()=>P.wxOn || P.ctype > 0.88},
+    {k:'pileus', label:'Pileus · caps over growing towers', min:0, max:1, step:0.01, fmt:v=>v<0.02?'none':v.toFixed(2), show:()=>P.ctype > 0.6},
+    {k:'mammatus', label:'Mammatus · pouches under the anvil', min:0, max:1, step:0.01, fmt:v=>v<0.02?'none':v.toFixed(2), show:()=>P.ctype > 0.88},
     {k:'evolve', label:'Shape evolution', min:0, max:30, step:0.05, fmt:v=>v.toFixed(2)},
     {k:'windX', label:'Drift east–west', min:-30, max:30, step:0.1, fmt:v=>`${v.toFixed(1)} km`},
     {k:'windZ', label:'Drift north–south', min:-30, max:30, step:0.1, fmt:v=>`${v.toFixed(1)} km`},
     {type:'buttons', btns:[['New cloud field', ()=>{ dropMask(); P.seed = (P.seed*7919+13)%997; dirtyCirrus = true; changed(false); }], ['Randomize weather', ()=>randomizeWeather()]]},
   ]},
   {title:'Second low layer', items:[
-    {type:'note', html:'Set by the weather system: ragged low cloud in the rain under frontal cloud, rotor clouds under lee waves, cumulus below a stratocumulus deck.', show:()=>P.wxOn},
-    {k:'l2On', label:'Add a second low layer', type:'check', show:()=>!P.wxOn},
+    {k:'l2On', label:'Add a second low layer', type:'check'},
     {type:'note', html:'A separate layer of low cloud with its own pattern: cumulus under a stratocumulus deck, a stratus layer below cumulus, or two decks at different heights. Each layer shades and lights the others.', show:()=>P.l2On},
-    {k:'l2Cov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*8)}/8 oktas`, show:()=>P.l2On && !P.wxOn},
-    {k:'l2Type', label:'Cloud type', min:0, max:0.8, step:0.01, fmt:cloudTypeName, show:()=>P.l2On && !P.wxOn},
-    {k:'l2Base', label:'Cloud base', min:0.2, max:6, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>P.l2On && !P.wxOn},
-    {k:'l2Thick', label:'Layer thickness', min:0.2, max:3, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>P.l2On && !P.wxOn},
-    {k:'l2Dm', label:'Water content (density)', min:0.25, max:4, log:true, fmt:v=>`×${v.toFixed(2)}`, show:()=>P.l2On && !P.wxOn},
-    {k:'l2Scale', label:'Cell size', min:0.4, max:3, step:0.01, fmt:v=>`×${v.toFixed(2)}`, show:()=>P.l2On && !P.wxOn},
+    {k:'l2Cov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*8)}/8 oktas`, show:()=>P.l2On},
+    {k:'l2Type', label:'Cloud type', min:0, max:0.8, step:0.01, fmt:cloudTypeName, show:()=>P.l2On},
+    {k:'l2Base', label:'Cloud base', min:0.2, max:6, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>P.l2On},
+    {k:'l2Thick', label:'Layer thickness', min:0.2, max:3, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>P.l2On},
+    {k:'l2Dm', label:'Water content (density)', min:0.25, max:4, log:true, fmt:v=>`×${v.toFixed(2)}`, show:()=>P.l2On},
+    {k:'l2Scale', label:'Cell size', min:0.4, max:3, step:0.01, fmt:v=>`×${v.toFixed(2)}`, show:()=>P.l2On},
   ]},
   {title:'Mid clouds · altostratus, altocumulus', items:[
-    {type:'note', html:'Coverage, height, depth, form and optical depth come from the weather system.', show:()=>P.wxOn},
-    {k:'midCov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`, show:()=>!P.wxOn},
-    {k:'midType', label:'Texture', min:0, max:1, step:0.01, fmt:midTypeName, show:()=>!P.wxOn},
-    {k:'midForm', label:'Form', type:'select', opts:[[0,'Natural'],[1,'Undulatus · rows'],[2,'Castellanus · turrets'],[3,'Lenticularis · lenses'],[4,'Floccus · ragged tufts'],[5,'Mammatus · pouches']], num:true, show:()=>!P.wxOn},
-    {k:'midH', label:'Base altitude', min:2, max:7, step:0.1, fmt:v=>`${v.toFixed(1)} km`, show:()=>!P.wxOn},
-    {k:'midThick', label:'Cloud thickness', min:0.1, max:2.5, step:0.01, fmt:v=>`${Math.round(v*1000)} m`, show:()=>!P.wxOn},
-    {k:'midTau', label:'Optical depth', min:0.2, max:30, log:true, fmt:v=>v.toFixed(1), show:()=>!P.wxOn},
+    {k:'midCov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`},
+    {k:'midType', label:'Texture', min:0, max:1, step:0.01, fmt:midTypeName},
+    {k:'midForm', label:'Form', type:'select', opts:[[0,'Natural'],[1,'Undulatus · rows'],[2,'Castellanus · turrets'],[3,'Lenticularis · lenses'],[4,'Floccus · ragged tufts'],[5,'Mammatus · pouches']], num:true},
+    {k:'midH', label:'Base altitude', min:2, max:7, step:0.1, fmt:v=>`${v.toFixed(1)} km`},
+    {k:'midThick', label:'Cloud thickness', min:0.1, max:2.5, step:0.01, fmt:v=>`${Math.round(v*1000)} m`},
+    {k:'midTau', label:'Optical depth', min:0.2, max:30, log:true, fmt:v=>v.toFixed(1)},
     {k:'midScale', label:'Cell size', min:0.4, max:3, step:0.01, fmt:v=>`×${v.toFixed(2)}`},
   ]},
   {title:'High clouds · cirrus, cirrostratus, cirrocumulus', items:[
-    {type:'note', html:'Coverage, height, depth and optical depth come from the weather system.', show:()=>P.wxOn},
-    {k:'ciCov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`, show:()=>!P.wxOn},
-    {k:'ciH', label:'Altitude', min:5, max:13, step:0.1, fmt:v=>`${v.toFixed(1)} km`, show:()=>!P.wxOn},
-    {k:'ciThick', label:'Layer depth', min:0.3, max:3, step:0.05, fmt:v=>`${v.toFixed(2)} km`, show:()=>!P.wxOn},
-    {k:'ciTau', label:'Optical depth', min:0.02, max:3, log:true, fmt:v=>v.toFixed(2), show:()=>!P.wxOn},
+    {k:'ciCov', label:'Coverage', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`},
+    {k:'ciH', label:'Altitude', min:5, max:13, step:0.1, fmt:v=>`${v.toFixed(1)} km`},
+    {k:'ciThick', label:'Layer depth', min:0.3, max:3, step:0.05, fmt:v=>`${v.toFixed(2)} km`},
+    {k:'ciTau', label:'Optical depth', min:0.02, max:3, log:true, fmt:v=>v.toFixed(2)},
     {k:'ciForm', label:'Form', type:'select', opts:[[0,'Natural mix'],[1,'Fibratus · filaments'],[2,'Uncinus · mares\' tails'],[3,'Spissatus · dense patches'],[4,'Cirrostratus · veil'],[5,'Cirrocumulus · ripples']], num:true},
     {k:'ciRot', label:'Upper wind direction', min:0, max:180, step:1, fmt:v=>`${v}°`},
     {k:'ciHalo', label:'Ice-crystal halos (22°, 46°)', min:0, max:1, step:0.01, fmt:v=>v<0.005?'off':v.toFixed(2)},
@@ -4725,7 +4383,6 @@ function buildPanel(){
       else if (it.type==='buttons'){ row.classList.add('full'); row.innerHTML='<div class="btns"></div>'; const b=row.firstChild; it.btns.forEach(([l,fn,off])=>{ const e=document.createElement('button'); e.className='btn'; e.textContent=l; if (off){ e.disabled = true; e.title = off; } else e.onclick=fn; b.appendChild(e); }); }
       else if (it.type==='info'){ row.classList.add('full'); row.innerHTML = `<div class="note" id="${it.id}"></div>`; }
       else if (it.type==='note'){ row.classList.add('full'); row.innerHTML = `<div class="note">${it.html}</div>`; }
-      else if (it.type==='wxplot'){ row.classList.add('full'); row.innerHTML = `<canvas class="wxplot" id="wxPlot" role="img" aria-label="Weather map around the camera and the sounding overhead"></canvas>`; }
       else if (it.type==='map'){ row.classList.add('full'); row.innerHTML = `<div style="display:grid;gap:6px"><canvas class="map" id="worldMap" role="img" aria-label="World map. Click to choose the observer's location."></canvas><div class="note" id="mapInfo"></div></div>`;
         const cv = row.querySelector('canvas'); let down = false; cv.addEventListener('pointerdown', e=>{ down = true; cv.setPointerCapture(e.pointerId); mapPick(e); }); cv.addEventListener('pointermove', e=>{ if (down) mapPick(e); }); cv.addEventListener('pointerup', ()=>{ down = false; }); }
       else if (it.type==='tl'){ row.classList.add('full'); row.innerHTML = `<div style="display:grid;gap:10px;padding-top:4px">
@@ -4752,7 +4409,6 @@ function syncResSeg(){ const g = document.getElementById('resSeg'); if (g) g.que
 function syncUI(){ syncResSeg(); if (typeof syncVariety === "function") syncVariety(); for (const k in ctrls){ const c=ctrls[k]; if (c.sync) c.sync(); if (c.it.show) c.row.hidden = !c.it.show(); } updateInfo(); drawMap(); renderSunTimes(); }
 function updateInfo(){
   updateClimInfo();
-  { const wi = $('#wxInfo'); if (wi && P.wxOn) wi.innerHTML = wxInfoHTML(); drawWx(); }
   { const hi = $('#hazeInfo'); if (hi) hi.innerHTML = 'Not active. The idea: export how much haze and light the air adds between the camera and anything in the shot, by direction and distance (10 m to 100 km), matching this sky, so comp can apply the same aerial perspective from a world-position pass. This would need to be built to work with the studio\'s own volume node.';
     const rn = $('#rigNote'); if (rn) rn.innerHTML = 'Not active. The HDRI is meant for the studio\'s own dome light, and the sun for its own light. What this could export later, and is easy to wire to those lights: the dome orientation, and the sun as a separate light with its exact direction, 0.53° size, colour and brightness (with and without clouds, for use with the cloud-shadow gobo).';
     renderChecks();
@@ -4796,10 +4452,7 @@ function changed(lut, noScene){ if (lut) dirtyLUT = true; if (!noScene){ compute
 /* ---------- presets ---------- */
 const BASEWX = {aerosol:'continental', aod:0.1, humidity:50, aerH:1.2, ozone:300, fogVis:50, fogH:0.15, cov:0, cclump:0.5, cbillow:0.5, cvar:0.5, cairy:0.3, cbasevar:0.4, cscud:0.15, ctype:0.68, cbase:1.3, cthick:1.7, cdm:1, cscale:1, cerode:0.6, cdrop:18,
   midCov:0, midH:4.2, midTau:4, midType:0.7, midScale:1, midForm:0, midThick:0.4, ciCov:0, ciH:9, ciTau:0.35, ciRot:30, ciForm:0, ciHalo:0, ciThick:1.2,
-  pileus:0, mammatus:0, l2On:false, l2Cov:0.5, l2Type:0.38, l2Base:2.4, l2Thick:0.6, l2Scale:0.8, l2Dm:1,
-  wxOn:false, wxPat:'none', wxDist:300, wxDir:270, wxStr:0.8, wxAna:0.6, wxLam:12, wxSpeed:30, wxT:22, wxTd:12.5, wxZi:2.3, wxInv:3, wxLapse:6.5, wxMidRH:45, wxMidZ:4.5, wxHiRH:70, wxTrop:11.5, wxHeat:1};
-// weather-system presets: the look settings shared by all of them
-const WXLOOK = {wxOn:true, cclump:0.4, cbillow:0.6, cvar:0.5, cairy:0.3, cbasevar:0.45, cscud:0.15, cerode:0.5, cscale:0.75, cdm:1, midScale:1, ciForm:0};
+  pileus:0, mammatus:0, l2On:false, l2Cov:0.5, l2Type:0.38, l2Base:2.4, l2Thick:0.6, l2Scale:0.8, l2Dm:1};
 const PRESETS = [
   ['Clear noon', {sunEl:62, sunAz:180, aod:0.06, humidity:40}],
   ['Fair-weather cumulus', {sunEl:46, sunAz:150, cov:0.3, ctype:0.72, cbase:1.2, cthick:1.8, cscale:0.65, cdm:0.7, cclump:0.25, cbillow:0.65, cvar:0.45, cairy:0.25, cbasevar:0.35, cscud:0.1, cerode:0.42, ciCov:0.12, clear:'sun'}],
@@ -4831,18 +4484,6 @@ const PRESETS = [
   ['Mammatus', {sunEl:8, sunAz:270, humidity:70, midCov:0.95, midType:0.15, midForm:5, midH:3.2, midThick:0.7, midTau:12, midScale:1.3}],
   ['Pileus', {sunEl:30, sunAz:230, aod:0.08, humidity:65, cov:0.38, ctype:0.9, cbase:1.2, cthick:9, cdm:1, cscale:1.8, cerode:0.4, cclump:0.8, cbillow:0.95, cvar:0.45, cairy:0.25, cbasevar:0.55, cscud:0.2, pileus:1, clear:true}],
   ['Cumulus under stratocumulus', {sunEl:35, sunAz:200, humidity:68, cov:0.25, ctype:0.68, cbase:0.9, cthick:1.2, cdm:0.8, cscale:0.6, cbillow:0.7, cerode:0.45, l2On:true, l2Cov:0.6, l2Type:0.36, l2Base:2.3, l2Thick:0.6, l2Scale:0.9, ciCov:0.25, clear:'sun'}],
-  ['Warm front · cirrus spreading in', {...WXLOOK, wxPat:'warm', wxDist:1000, wxDir:250, sunEl:30, sunAz:150, aod:0.08, humidity:55}],
-  ['Warm front · altostratus', {...WXLOOK, wxPat:'warm', wxDist:520, wxDir:250, sunEl:34, sunAz:170, aod:0.1, humidity:65}],
-  ['Warm front · rain', {...WXLOOK, wxPat:'warm', wxDist:150, wxDir:250, sunEl:35, sunAz:180, aod:0.2, humidity:90, wxTd:16, wxT:18}],
-  ['Cold front arriving', {...WXLOOK, wxPat:'cold', wxDist:45, wxDir:285, wxT:26, wxTd:17, wxInv:1.5, wxLapse:7, wxMidRH:45, wxHiRH:75, wxTrop:12, sunEl:32, sunAz:140, aod:0.15, humidity:70, cscale:0.9}],
-  ['Behind the cold front', {...WXLOOK, wxPat:'cold', wxDist:-260, wxDir:285, wxT:24, wxTd:14, wxInv:1.5, wxLapse:6.8, wxMidRH:55, sunEl:42, sunAz:200, aod:0.05, humidity:45}],
-  ['Occluded front', {...WXLOOK, wxPat:'occl', wxDist:130, wxDir:240, wxT:15, wxTd:10, sunEl:28, sunAz:190, aod:0.12, humidity:75}],
-  ['Stratocumulus under a high', {...WXLOOK, wxPat:'high', wxDist:80, wxDir:20, wxT:14, wxTd:10.5, wxZi:1.5, wxInv:8, wxMidRH:30, wxHiRH:40, sunEl:24, sunAz:200, aod:0.18, humidity:80, cscale:0.65}],
-  ['Fair weather under a high', {...WXLOOK, wxPat:'high', wxDist:220, wxDir:20, wxT:25, wxTd:12, wxZi:2.2, wxInv:4, wxMidRH:30, wxHiRH:55, sunEl:50, sunAz:170, aod:0.12, humidity:45, cscale:0.6}],
-  ['Afternoon thunderstorms', {...WXLOOK, clear:true, wxPat:'none', wxT:30, wxTd:19.5, wxZi:1.8, wxInv:0.6, wxLapse:7.2, wxMidRH:74, wxHiRH:80, wxTrop:12.5, sunEl:42, sunAz:230, aod:0.15, humidity:65, cclump:0.75, cbillow:0.9, cscale:0.9}],
-  ['Squall line approaching', {...WXLOOK, wxPat:'squall', wxDist:150, mammatus:0.6, wxDir:270, wxT:29, wxTd:20, wxInv:1, wxLapse:7.3, wxMidRH:70, wxHiRH:85, wxTrop:12.5, sunEl:28, sunAz:110, aod:0.15, humidity:72, cclump:0.75, cbillow:0.9, cscale:1}],
-  ['Sea-breeze cumulus', {...WXLOOK, wxPat:'sea', wxDist:18, wxDir:200, wxT:27, wxTd:16, wxZi:2.0, wxInv:2.2, wxMidRH:50, sunEl:52, sunAz:160, aod:0.12, humidity:60, cscale:0.65}],
-  ['Lee waves & lenticulars', {...WXLOOK, wxPat:'wave', wxDist:22, wxDir:270, wxLam:12, wxT:12, wxTd:-1, wxMidRH:72, wxMidZ:4.6, wxHiRH:60, sunEl:16, sunAz:235, aod:0.05, humidity:40}],
   ['Cumulus, altocumulus, cirrus', {sunEl:30, sunAz:220, humidity:60, cov:0.22, ctype:0.7, cbase:1.2, cthick:1.6, cscale:0.65, cdm:0.8, cbillow:0.65, cerode:0.45, midCov:0.5, midType:0.85, midH:4.5, midThick:0.35, midTau:3, ciCov:0.45, ciTau:0.4, clear:'sun'}],
 ];
 // presets open from a button as a grouped, wrapping menu (a single scrolling row could not always be scrolled to its end)
@@ -4852,8 +4493,6 @@ const PRESET_GROUPS = [
   ['Storms', ['Storm building', 'Thunderhead', 'Dark storm']],
   ['Cloud types', ['Stratus', 'Nimbostratus', 'Cumulus congestus', 'Altostratus', 'Cirrostratus', 'Cirrocumulus']],
   ['Special forms & layers', ['Altocumulus castellanus', 'Lenticular', 'Mammatus', 'Pileus', 'Cumulus under stratocumulus', 'Cumulus, altocumulus, cirrus']],
-  ['Weather systems', ['Warm front · cirrus spreading in', 'Warm front · altostratus', 'Warm front · rain', 'Cold front arriving', 'Behind the cold front', 'Occluded front', 'Squall line approaching']],
-  ['Air masses & local weather', ['Afternoon thunderstorms', 'Fair weather under a high', 'Stratocumulus under a high', 'Sea-breeze cumulus', 'Lee waves & lenticulars']],
   ['Low sun & night', ['Dawn', 'Golden hour', 'Sunset', 'Civil twilight', 'Moonlit night', 'Starry night']]];
 function setPresetName(t){ const el = $('#presetName'); if (el) el.textContent = t; }
 function presetMenu(open){ const nav = $('#presets'), btn = $('#presetBtn'); nav.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
