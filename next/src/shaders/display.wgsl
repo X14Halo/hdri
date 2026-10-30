@@ -7,6 +7,7 @@ struct Disp {
 }
 @group(0) @binding(0) var<uniform> D: Disp;
 @group(0) @binding(1) var<storage, read> accum: array<vec4f>;
+@group(0) @binding(2) var<storage, read> accPrev: array<vec4f>;   // the last finished image, shown where the new one has not reached
 
 struct VO { @builtin(position) pos: vec4f }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
@@ -31,7 +32,7 @@ fn turbo(x: f32) -> vec3f {
 fn texel(x: i32, y: i32) -> vec3f {
   let W = i32(D.pano.x); let H = i32(D.pano.y);
   let xx = ((x % W) + W) % W; let yy = clamp(y, 0, H - 1);
-  let a = accum[u32(yy*W + xx)]; return a.xyz/max(a.w, 1e-6);
+  var a = accum[u32(yy*W + xx)]; if (a.w <= 0.0) { a = accPrev[u32(yy*W + xx)]; } return a.xyz/max(a.w, 1e-6);
 }
 fn samplePano(uv: vec2f) -> vec3f {   // bilinear, wrapping in azimuth
   let p = uv*D.pano - 0.5; let i = floor(p); let f = p - i; let x = i32(i.x); let y = i32(i.y);

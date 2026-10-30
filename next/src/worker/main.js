@@ -101,20 +101,26 @@ async function init(m){
   requestAnimationFrame(tick);
 }
 
+// two accumulation buffers: a change renders into one while the display keeps the other (the last finished image) wherever the
+// new one has not reached yet, so the view never flashes black
 function allocPanorama(W, H){
   if (S.W === W && S.H === H && R.accum) return;
-  if (R.accum) R.accum.destroy();
-  S.W = W; S.H = H;
-  R.accum = device.createBuffer({size: W*H*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});
+  if (R.acc) R.acc.forEach(b => b.destroy());
+  S.W = W; S.H = H; S.cur = 0; S.sample = 0;
+  R.acc = [0, 1].map(() => device.createBuffer({size: W*H*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST}));
+  R.accum = R.acc[0];
+  R.bgDispAll = [0, 1].map(i => bg(R.pDisp, [[0, R.disp], [1, R.acc[i]], [2, R.acc[1 - i]]]));
+  S.clearBoth = true;
   makeSkyGroups();
-  R.bgDisp = bg(R.pDisp, [[0, R.disp], [1, R.accum]]);
   resetAccum();
 }
+function useBuffer(i){ S.cur = i; R.accum = R.acc[i]; R.bgSky = R.bgSkyAll && R.bgSkyAll[i]; R.bgDisp = R.bgDispAll[i]; }
 function makeSkyGroups(){ if (!R.dens) return;
   R.bgMeter = bg(R.pMeter, [[0, R.frame], [1, R.transV], [3, R.samp], [4, R.amb], [5, R.meter], [6, R.cu], [7, R.lightV]]);
-  if (!R.accum) return;
-  R.bgSky = R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, R.accum],
-    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp]])); }
+  if (!R.acc) return;
+  R.bgSkyAll = R.acc.map(acc => R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, acc],
+    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp]])));
+  useBuffer(S.cur || 0); }
 // the cloud volume and its light volume, sized by the quality setting
 function allocVolume(q){
   const nx = q >= 1 ? 256 : 128, nz = q >= 1 ? 160 : 80, lx = nx/2, lz = nz/2;
@@ -198,7 +204,7 @@ function lightClouds(enc){ const [, , lx, lz] = R.volRes;
 // crop window (fractions of the panorama) → pixel rectangle; the whole panorama when none
 function cropRect(){ const c = S.P && S.P.crop; if (!c) return [0, 0, S.W, S.H];
   return [Math.floor(c[0]*S.W), Math.floor(c[1]*S.H), Math.ceil(c[2]*S.W), Math.ceil(c[3]*S.H)]; }
-function resetAccum(){ S.cr = cropRect(); S.sample = 0; S.row = S.cr[1]; S.needClear = true; S.t0 = performance.now(); S.sampleT = S.t0; }
+function resetAccum(){ if (S.sample > 0 && R.acc) useBuffer(1 - S.cur); S.cr = cropRect(); S.sample = 0; S.row = S.cr[1]; S.needClear = true; S.t0 = performance.now(); S.sampleT = S.t0; }
 
 // new settings: recompute the physical state; rebuild the tables only when the air or the ground changed
 function applyParams(){
@@ -237,6 +243,7 @@ function tick(){
   if (S.paramsDirty) applyParams();
   if (!R.accum) return;
   const enc = device.createCommandEncoder(); let used = false;
+  if (S.clearBoth){ R.acc.forEach(b => enc.clearBuffer(b)); S.clearBoth = false; S.needClear = false; used = true; }
   if (S.needClear){ enc.clearBuffer(R.accum); S.needClear = false; used = true; }
   // render bands of rows within this frame's budget, but never queue up more than two frames of GPU work
   let submitted = 0;
