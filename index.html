@@ -1300,6 +1300,8 @@ float terrainShadow(vec3 p, vec3 L){
 /* ----- distant tree lines: belts of woodland and hedgerow on the flat ground, each at a distance that wanders with azimuth.
    A view ray keeps one azimuth, so each belt is a curtain at one distance with a crown-shaped top edge ----- */
 uniform vec4 uTr0; uniform vec4 uTr1;   // (on, tree height km, nearest km, farthest km) (coverage, shape 0 broadleaf..1 conifer, seed, —)
+uniform sampler2D uHz;   // painted horizon by azimuth: r town lights, g hills, b tree lines
+vec4 hzAt(float az){ return textureLod(uHz, vec2(fract(az/6.2831853), 0.5), 0.0); }
 // integer hash of the (rounded) inputs: fract(sin(big)) hashes differ between GPUs, which would move the trees
 float trHash(float a, float b){ uvec3 h = pcg3d(uvec3(uint(int(round(a*64.0)) + 1073741824), uint(int(round(b*64.0)) + 1073741824), 6151u)); return float(h.x)*(1.0/4294967296.0); }
 // top of belt k's canopy above the ground along unit horizontal direction cs; R = its distance (km)
@@ -1308,8 +1310,9 @@ float treeTop(int k, vec2 cs, float az, out float R, out float side, out float r
   R = mix(uTr0.z, uTr0.w, (fk + 0.5)/3.0)*exp(0.3*tnoise(cs*1.3 + sd));
   // woods, copses and hedgerows with open fields between them (features ~250 m and ~80 m long)
   float gp = 0.65*tnoise(cs*(R/0.25) + sd) + 0.35*tnoise(cs*(R/0.08) + sd*1.7);
-  float thr = mix(0.55, -0.75, uTr1.x) + 0.15*fk;
-  float e = smoothstep(thr, thr + 0.12, gp); if (e <= 0.0){ side = 0.0; rnd = 0.0; return -1.0; }
+  float hb = hzAt(az).b;   // painted in (+) or cleared (−)
+  float thr = mix(0.55, -0.75, uTr1.x) + 0.15*fk - 1.3*max(hb, 0.0);
+  float e = smoothstep(thr, thr + 0.12, gp)*clamp(1.0 + 1.6*hb, 0.0, 1.0); if (e <= 0.0){ side = 0.0; rnd = 0.0; return -1.0; }
   float hk = h*(0.8 + 0.4*(0.5 + 0.5*tnoise(cs*(R/0.06) + sd*2.3)))*(0.35 + 0.65*e);
   // clumps of trees (groups of crowns that rise and fall together) and the crowns themselves: a whole number of each around
   // the circle (no seam), every crown with its own size and place, neighbours overlapping into one canopy
@@ -1353,6 +1356,29 @@ uniform vec4 uCMFx[NG]; uniform vec4 uCMFy[NG]; uniform vec4 uCMFz[NG];
 uniform vec4 uMtRock[NG]; uniform vec4 uMtVeg[NG]; uniform vec4 uMtSnow[NG];
 ${TERR_GLSL}
 uniform int uOutMode; uniform int uOutG; uniform float uSegT;
+uniform vec4 uCity[24]; uniform int uCityN; uniform vec4 uCityE[NG];   // town light sources (x, z km, upward lumens), lamp spectrum per luminous unit
+// light from the towns reaching point p (on the Earth's sphere, so a town below p's horizon does not light it), as
+// illuminance (lux) weighted by the scattering phase toward the camera for air (x), haze (y) and fog (z); w: upward
+// illuminance on a level surface (for cloud bases)
+// each town is a disc of lights (radius in .w): close to it, under and over the town, light comes from the whole disc rather than
+// its centre: on the axis of a Lambertian disc E = Φ/(π(R² + h²)), so distances are softened by R² and the upward direction
+// toward the disc's area; far away it is the point source again
+vec4 cityLight(vec3 p, vec3 rd){ vec4 acc = vec4(0.0); const vec3 Cc = vec3(0.0, -Rg, 0.0); float h = length(p - Cc) - Rg;
+  float bR = uBR[2].w, bM = uBMs[2].w + uBMa[2].w; vec3 upP = normalize(p - Cc);
+  for (int j=0; j<24+uZero; j++){ if (j >= uCityN) break; vec4 c = uCity[j];
+    vec3 s = vec3(c.x, -(c.x*c.x + c.y*c.y)/(2.0*Rg), c.y); vec3 v = p - s; float d = length(v); vec3 u = v/max(d, 1e-4);
+    vec3 nS = normalize(s - Cc); float vz = dot(v, nS); if (vz <= -0.05*c.w) continue;   // below the town's horizon
+    float R2 = c.w*c.w, dE2 = d*d + R2, cp = sqrt(max(vz, 0.0)*max(vz, 0.0) + R2)/sqrt(dE2);
+    float psi = acos(min(cp, 1.0));
+    // Garstang: I(ψ) = Φ·[(1−F)·cosψ/π + F·ψ⁴/K], F = 0.15, K = ∫ψ⁴dΩ = 11.34
+    float I = c.z*(0.85*cp/PI + 0.15*psi*psi*psi*psi/11.335);
+    // optical depth along the path from the ground up to height h (mean density of an exponential layer)
+    float hh = max(h, 1e-3); float mR = uHR*(1.0 - exp(-hh/uHR))/hh, mM = uHM*(1.0 - exp(-hh/uHM))/hh, mF = uFogH*(1.0 - exp(-hh/uFogH))/hh;
+    float E = I*exp(-d*(bR*mR + bM*mM + uFogS*mF))/dE2*1e-6;
+    float cs = dot(rd, -u);
+    float upF = sqrt(max(dot(v, upP), 0.0)*max(dot(v, upP), 0.0) + R2)/sqrt(dE2);   // light arriving from below, at a surface facing down
+    acc += E*vec4(phaseR(cs), phaseCS(cs, uMieG), phaseFog(cs), upF); }
+  return acc; }
 // light layers: which contributions this pass keeps — (sky, clouds lit by sun/moon, clouds lit by sky/ground, ground)
 // and (sun disc, moon disc, night sky); all 1 for the beauty, so the layers add up exactly to it
 uniform vec4 uLw0; uniform vec4 uLw1; uniform float uDisks; uniform float uSunDisk; uniform float uSkyOnly; uniform int uAtmN;
@@ -1458,6 +1484,7 @@ void main(){
           shS *= 0.25; shM *= 0.25; msS = meanS; msM = meanM; }
         // under the higher layers the air loses the direct beam but is still lit by what those decks diffuse downward
         // (without this, the air beneath thicker parts of an altostratus deck went dark, showing as dark patches low in the sky)
+        vec4 cl4 = uCityN > 0 ? cityLight(p, rd) : vec4(0.0);
         float dsS = 0.0, dsM = 0.0;
         if (upper){ if (uSunOn>0.5){ float t1 = layersT(p,h,Ls,0,0,foot); shS *= t1; dsS = sheetDiff(t1, muS); } if (uMoonOn>0.5){ float t2 = layersT(p,h,Lm,1,0,foot); shM *= t2; dsM = sheetDiff(t2, muM); } }
         for (int g=0; g<NG+uZero; g++){
@@ -1468,6 +1495,7 @@ void main(){
           if (msS < 1.0) S += sT*(1.0-msS)*(uEdiff[g] + uAlb[g]*uEground[g])*(0.25/PI);
           if (dsS > 0.0) S += sT*uSunE[g]*transmittance(g,r,muS)*dsS*(0.5/PI);   // diffuse from above: F/(2π) for one hemisphere
           if (dsM > 0.0) S += sT*uMoonE[g]*transmittance(g,r,muM)*dsM*(0.5/PI);
+          if (uCityN > 0) S += uCityE[g]*(sR*cl4.x + sM*cl4.y + dF*cl4.z);   // town light scattered by air, haze and fog
           vec4 att = exp(-ext*dt); L[g] += uLw0.x*w*T[g]*(S - S*att)/max(ext, vec4(1e-9)); T[g] *= att; }
       }
     }
@@ -1493,10 +1521,12 @@ void main(){
       bool ice = uLay[k].w > 1.5;
       float thS = acos(clamp(cS,-1.0,1.0));
       float baseS = 0.62*phaseHG(cS,0.86) + 0.38*phaseHG(cS,0.25);
+      float cityUp = uCityN > 0 ? cityLight(p, rd).w : 0.0;   // town light on the cloud base
       for (int g=0; g<NG+uZero; g++){
         vec4 sheetD = uSunE[g]*transmittance(g,r,muS)*dfS + uMoonE[g]*transmittance(g,r,muM)*dfM;
         vec4 upw = uAlb[g]*uEground[g];
         if (covB > 0.0){ vec4 Etop = (uSunOn > 0.5 ? uSunE[g]*transmittance(g, Rg + topB, muTop)*muTop*tsTop : vec4(0.0)) + ambE(g, topB); upw = mix(upw, 0.68*Etop, covB); }
+        upw += uCityE[g]*cityUp*(1.0 - 0.6*covB);
         vec4 Lc = (uLw0.y*(c0.x*uSunE[g]*transmittance(g,r,muS)*tsS + c0.y*uMoonE[g]*transmittance(g,r,muM)*tsM + c0.z*sheetD*(0.75/PI)) + uLw0.z*c0.z*ambE(g,h)*skyK*(0.75/PI))*uCEnh[g] + uLw0.z*c1.y*upw*(0.75/PI);
         // ice: the 22° and 46° halo arcs, coloured by refraction (red inside), added to the singly scattered sunlight
         if (ice && uCiHalo > 0.0 && uSunOn > 0.5){ vec4 ph; for (int c=0;c<4+uZero;c++) ph[c] = 0.9*haloLobe(thS,uHalo22[g][c],0.03) + 0.1*haloLobe(thS,uHalo46[g][c],0.04);
@@ -1564,7 +1594,21 @@ void main(){
       for (int g=0; g<NG+uZero; g++){ vec4 Ed = uEdiff[g];
         if (uSunOn>0.5) Ed += uSunE[g]*transmittance(g,Rg,muS)*max(muS,0.0)*shS;
         if (uMoonOn>0.5) Ed += uMoonE[g]*transmittance(g,Rg,muM)*max(muM,0.0)*shM;
-        bg[g] = uLw0.w*clamp(uAlb[g]*gv, 0.0, 1.0)*Ed/PI; } }
+        bg[g] = uLw0.w*clamp(uAlb[g]*gv, 0.0, 1.0)*Ed/PI; }
+      // town light sent back down by the cloud deck above (a lit ceiling of luminance L gives πL on the ground): under a low
+      // overcast near towns the land itself is faintly lit, orange
+      if (uCityN > 0){ int lo = -1; for (int j=0; j<4+uZero; j++) if (uLay[j].z > 0.02 && (lo < 0 || uLay[j].x < uLay[lo].x)) lo = j;
+        if (lo >= 0){ float Ec = 0.7*clamp(uLay[lo].z, 0.0, 1.0)*cityLight(vec3(pg.x, uLay[lo].x, pg.z), vec3(0.0, -1.0, 0.0)).w;
+          for (int g=0; g<NG+uZero; g++) bg[g] += uLw0.w*clamp(uAlb[g]*gv, 0.0, 1.0)*uCityE[g]*Ec/PI; } }
+      // towns on the ground: streets and buildings lit to roughly their upward light per area, sprinkled with brighter lamps
+      if (uCityN > 0){ float Lt = 0.0;
+        for (int j=0; j<24+uZero; j++){ if (j >= uCityN) break; vec4 c = uCity[j]; float rt = c.w;
+          vec2 dv = pg.xz - c.xy; float dd = length(dv); if (dd > rt*1.6) continue;
+          float core = 1.0 - smoothstep(0.2*rt, 1.5*rt, dd + 0.4*rt*(vnoise(vec3(pg.xz*1.3, 7.0)) - 0.5));
+          vec3 hz = hash3u(uvec3(uvec2(ivec2(floor(pg.xz/0.12)) + 65536), 4801u));
+          float lamps = step(0.55, hz.x)*(0.5 + 8.0*hz.y*hz.y*hz.y);
+          Lt += c.z/(PI*rt*rt*1e6)/PI*core*(0.35 + lamps); }
+        for (int g=0; g<NG+uZero; g++) bg[g] += uLw0.w*uCityE[g]*Lt; } }
   } else {
     float vr = 1.0/sqrt(max(1.0 - pow(Rg/(Rg+95.0),2.0)*(1.0-mu*mu), 1e-4));
     for (int g=0; g<NG+uZero; g++) bg[g] = uLw1.z*uAirglow[g]*vr;
@@ -1639,7 +1683,7 @@ uniform sampler2D uA; uniform sampler2D uB; uniform float uN; uniform int uOff; 
 void main(){ ivec2 p = ivec2(gl_FragCoord.xy) - ivec2(0, uOff); vec4 n = texelFetch(uB,p,0); vec4 a = texelFetch(uA,p,0); o = uN < 0.5 ? n : a + (n-a)/(uN+1.0); }`;
 
 const FS_DISPLAY = HDR + `
-uniform sampler2D uImg; uniform sampler2D uMask; uniform float uMaskShow; uniform vec4 uRect; uniform int uView; uniform float uExpo; uniform vec2 uCanvas; uniform float uYaw; uniform float uPitch; uniform float uFov; uniform float uAzOff; uniform float uFlipY;
+uniform sampler2D uImg; uniform sampler2D uMask; uniform sampler2D uHz; uniform float uMaskShow; uniform vec4 uRect; uniform int uView; uniform float uExpo; uniform vec2 uCanvas; uniform float uYaw; uniform float uPitch; uniform float uFov; uniform float uAzOff; uniform float uFlipY;
 uniform sampler2D uImgA; uniform float uWipe;
 uniform float uStarDraw; uniform float uStarMag; uniform vec3 uEqX; uniform vec3 uEqY; uniform vec3 uEqZ; uniform vec3 uStarXYZ[16]; uniform vec3 uMoonDir; uniform float uMoonRad;
 // stars, drawn at the screen's own resolution: a point of light covers about one screen pixel whatever the preview's
@@ -1687,11 +1731,18 @@ void main(){
     xyz += img.a*starsAt(rd, pa); }
   vec2 muv = vec2(fract(uv.x + uAzOff/(2.0*PI)), uv.y); vec3 mk = uMaskShow > 0.5 && uView != 3 ? textureLod(uMask, muv, 0.0).rgb : vec3(0.0);
   float madd = max(max(mk.r, mk.g), max(mk.b, 0.0)), mrem = max(max(-mk.r, -mk.g), max(-mk.b, 0.0));
+  // the painted horizon, as two thin strips just below it (leaving the skyline itself clear): town lights amber on top,
+  // hills and tree lines under them, green where added and red where cleared
+  float hzEl = (0.5 - uv.y)*180.0, hzLit = 0.0;
+  if (uMaskShow > 0.5 && uView != 3 && hzEl > -3.0 && hzEl < 0.0){ vec4 hq = textureLod(uHz, vec2(fract(muv.x - 0.5), 0.5), 0.0);
+    float sL = smoothstep(-1.5, -1.2, hzEl)*(1.0 - smoothstep(-0.5, -0.2, hzEl)), sH = smoothstep(-2.9, -2.6, hzEl)*(1.0 - smoothstep(-1.8, -1.5, hzEl));
+    hzLit = hq.r*sL; madd = max(madd, max(max(hq.g, hq.b), 0.0)*sH); mrem = max(mrem, max(-min(hq.g, hq.b), 0.0)*sH); }
   if (uView == 2){ float l = (log(max(xyz.y,1e-7))/log(10.0) + 4.0)/13.0; o = vec4(turbo(clamp(l,0.0,1.0)),1.0); return; }
   const mat3 X2R = mat3(3.2404542,-0.9692660,0.0556434, -1.5371385,1.8760108,-0.2040259, -0.4985314,0.0415560,1.0572252);
   vec3 lin = max(X2R*xyz, vec3(0.0))*uExpo;
   vec3 col = agx(lin);
   if (madd + mrem > 0.0){ col = mix(col, vec3(0.35, 0.85, 0.55), 0.32*madd); col = mix(col, vec3(0.95, 0.35, 0.3), 0.32*mrem); }
+  if (hzLit > 0.0) col = mix(col, vec3(1.0, 0.72, 0.3), 0.6*hzLit);
   if (uWipe >= 0.0 && abs(fc.x - uWipe*uCanvas.x) < 1.0) col = mix(col, vec3(1.0), 0.85);
   // dither before the screen's 8 bits: broad, smooth gradients (an overcast or anvil underside, twilight) otherwise show
   // visible steps (banding)
@@ -1807,7 +1858,7 @@ if (!gl) fail('This browser does not provide WebGL2. Try a current version of Ch
 if (!gl.getExtension('EXT_color_buffer_float')) fail('Your GPU or browser cannot render to floating-point targets (EXT_color_buffer_float), which HDR output requires.');
 const FLOAT_LINEAR = !!gl.getExtension('OES_texture_float_linear');
 const LUT_FMT = FLOAT_LINEAR ? gl.RGBA32F : gl.RGBA16F;
-const UNITS = {uTrans:0,uMS:1,uShape:2,uDetail:3,uWeather:4,uClouds:5,uSyn:6,uShadowA:7,uCirrus:8,uAmb:9,uStarTex:10,uImg:11,uImgA:12,uTerrain:20,uA:12,uB:13,uEnv:14,uPrev:15,uMask:16,uEnvCdf:17,uEnvPdf:18,uMoonTex:19,uShotP:21,uShotN:22,uShotA:23,uShotSM:24,uShotC:25,uMipSrc2:27,uMipSrc3:28,uMipSrcA:29};
+const UNITS = {uHz:26,uTrans:0,uMS:1,uShape:2,uDetail:3,uWeather:4,uClouds:5,uSyn:6,uShadowA:7,uCirrus:8,uAmb:9,uStarTex:10,uImg:11,uImgA:12,uTerrain:20,uA:12,uB:13,uEnv:14,uPrev:15,uMask:16,uEnvCdf:17,uEnvPdf:18,uMoonTex:19,uShotP:21,uShotN:22,uShotA:23,uShotSM:24,uShotC:25,uMipSrc2:27,uMipSrc3:28,uMipSrcA:29};
 const vao = gl.createVertexArray();
 function compile(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
 // shaders are compiled in the background where the browser supports it (KHR_parallel_shader_compile): a first compile on
@@ -1887,6 +1938,38 @@ function varNoise(seed){ const sd = Math.imul(seed, 2147483647) | 0;
 const VAR = {key:'', res:null, buf:new Float32Array(VAR_N*VAR_N*8*4), qr:null};
 const T_SYN = (()=>{ const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, t); gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA16F, VAR_N, VAR_N, 8);
   texParams(gl.TEXTURE_2D_ARRAY, gl.LINEAR, gl.CLAMP_TO_EDGE); return t; })();
+// painted horizon: per azimuth (720 bins), r = added town lights 0…1, g = hills −1…1, b = tree lines −1…1
+const HZ_N = 720, HZ = new Float32Array(HZ_N*4), HZINFO = {any:[false, false, false], ver:0, terrVer:0};
+const T_HZ = (()=>{ const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, HZ_N, 1);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, HZ_N, 1, gl.RGBA, gl.FLOAT, HZ); return t; })();
+function uploadHZ(){ bindTex(26, gl.TEXTURE_2D, T_HZ); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, HZ_N, 1, gl.RGBA, gl.FLOAT, HZ); HZINFO.ver++; }
+/* Artificial light: towns and cities beyond the horizon light the air and the undersides of clouds (skyglow). Each source
+   sends its upward light (Garstang's emission law: mostly upward, a fraction F near the horizontal from unshielded lamps)
+   through the air; the shaders integrate what the air scatters toward the camera, so the glow domes up over each town,
+   spreads in haze and fog, and lights cloud bases from below. Sodium lamps are orange, modern LEDs whiter. */
+const CITY_N = 24;
+function lampSpectrum(mix){ const G = (l, m, s) => Math.exp(-0.5*((l - m)/s)**2);
+  const hps = LAM.map(l => 0.35*G(l, 569, 7) + 1.0*G(l, 594, 13) + 0.65*G(l, 616, 10) + 0.12*G(l, 498, 5) + 0.08*G(l, 467, 6) + 0.05*G(l, 650, 25));
+  const led = LAM.map(l => 0.8*G(l, 452, 11) + 1.0*G(l, 580, 60));   // white LED, ≈4000 K (blue chip + phosphor)
+  const lum = s => s.reduce((a, v, i) => a + v*CMFY[i], 0); const a = lum(hps), b = lum(led);
+  const s = hps.map((v, i) => (1 - mix)*v/a + mix*led[i]/b); const y = lum(s); return s.map(v => v/y); }   // 1 luminous unit
+function citySources(){ const out = new Float32Array(CITY_N*4); if (!(P.lpAmt > 0.001)) return {src:out, n:0};
+  let h = Math.imul(P.lpSeed | 0, 2654435761) + 977 >>> 0; const rnd = () => { h = (h + 0x9e3779b9) >>> 0; let z = h; z = Math.imul(z ^ (z >>> 16), 0x85ebca6b); z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35); z ^= z >>> 16; return (z >>> 0)/4294967296; };
+  const gauss = () => Math.sqrt(-2*Math.log(Math.max(rnd(), 1e-9)))*Math.cos(2*Math.PI*rnd());
+  const bins = Array.from({length:CITY_N}, () => ({phi:0, ax:0, az:0, d:0}));
+  const add = (az, d, phi) => { const k = Math.floor(((az/(2*Math.PI)) % 1 + 1) % 1*CITY_N) % CITY_N, b = bins[k]; b.phi += phi; b.ax += Math.sin(az)*phi; b.az += Math.cos(az)*phi; b.d += d*phi; };
+  // towns scattered over the land: a few villages and small towns, sometimes a bigger one (≈150 lm of upward light per person)
+  const nT = Math.round(2 + 14*P.lpTowns);
+  for (let i=0; i<nT; i++){ const az = rnd()*2*Math.PI, d = clamp(P.lpDist*Math.exp(0.55*gauss()), 4, 120), pop = 3000*Math.exp(1.3*gauss() + 0.6); add(az, d, 150*pop); }
+  // painted: a town or city of ~60 000 people per fully painted 1° of horizon, at the town distance
+  for (let i=0; i<HZ_N; i++){ const v = HZ[i*4]; if (v > 0.002) add((i + 0.5)/HZ_N*2*Math.PI, P.lpDist, v*150*60000*(360/HZ_N)); }
+  let n = 0;
+  for (const b of bins){ if (b.phi <= 0) continue; const az = Math.atan2(b.ax, b.az), d = b.d/b.phi;
+    const rt = clamp(Math.sqrt(b.phi/1.18e6), 0.4, 14), dd = Math.max(d, 1.6*rt + 2);   // (the camera itself stands outside the towns)
+    out.set([Math.sin(az)*dd, Math.cos(az)*dd, b.phi*P.lpAmt, rt], 4*n); n++; }   // w: town radius, km (≈2500 people per km²)
+  return {src:out, n}; }
 // grid cell → km (the inverse of the shaders' synUV)
 const varKm = i => { const xp = 2*(i + 0.5)/VAR_N - 1, a = Math.abs(xp); return Math.sign(xp)*a*VAR_R*VAR_K/(VAR_R + VAR_K - a*VAR_R); };
 const logit = c => Math.log(c/(1 - c)), sigm = x => 1/(1 + Math.exp(-x));
@@ -1958,7 +2041,7 @@ function loadMoonMap(file){ const img = new Image(); img.onload = () => {
 const T_ECDF = tex2D(64, 64, gl.R32F), T_EPDF = tex2D(128, 32, gl.R32F); let envISReady = false;
 const F_TMP = gl.createFramebuffer();
 function bindAll(){ bindTex(20, gl.TEXTURE_2D, P.mtnOn && T_TERRAIN && terrKey ? T_TERRAIN : terrDummy()); bindTex(0, gl.TEXTURE_2D_ARRAY, T_TRANS); bindTex(1, gl.TEXTURE_2D_ARRAY, T_MS); bindTex(2, gl.TEXTURE_3D, T_SHAPE); bindTex(3, gl.TEXTURE_3D, T_DETAIL);
-  bindTex(4, gl.TEXTURE_2D, T_WEATHER); bindTex(6, gl.TEXTURE_2D_ARRAY, T_SYN); bindTex(7, gl.TEXTURE_2D_ARRAY, T_SHADOW); bindTex(8, gl.TEXTURE_2D, T_CIRRUS); bindTex(9, gl.TEXTURE_2D, T_AMB); bindTex(10, gl.TEXTURE_2D, T_STAR); bindTex(16, gl.TEXTURE_2D, T_MASK); bindTex(17, gl.TEXTURE_2D, T_ECDF); bindTex(18, gl.TEXTURE_2D, T_EPDF); bindTex(19, gl.TEXTURE_2D, T_MOON); }
+  bindTex(4, gl.TEXTURE_2D, T_WEATHER); bindTex(6, gl.TEXTURE_2D_ARRAY, T_SYN); bindTex(7, gl.TEXTURE_2D_ARRAY, T_SHADOW); bindTex(8, gl.TEXTURE_2D, T_CIRRUS); bindTex(9, gl.TEXTURE_2D, T_AMB); bindTex(10, gl.TEXTURE_2D, T_STAR); bindTex(16, gl.TEXTURE_2D, T_MASK); bindTex(17, gl.TEXTURE_2D, T_ECDF); bindTex(18, gl.TEXTURE_2D, T_EPDF); bindTex(19, gl.TEXTURE_2D, T_MOON); bindTex(26, gl.TEXTURE_2D, T_HZ); }
 function unbind(unit, target){ bindTex(unit, target, null); }
 
 // mipmaps built here with a fixed 2×2(×2) box filter instead of generateMipmap(), whose filter is left to the driver:
@@ -2056,7 +2139,7 @@ const DEFAULTS = {
   stars:true, starMag:7.5, mw:1.0, airglow:1.0,
   ldChrome:true, ldGrey:true, ldWhite:false, ldChart:true, ldSkin:false, ldStick:false, ldGround:true,
   tlStart:'19:00', tlEnd:'21:30', tlFrames:120, tlWind:20, tlWindDir:250, tlEvolve:0.6, tlFormat:'png', tlRes:1024, tlSpp:2, tlExpo:'auto',
-  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun', shotUnits:'cm', shotUp:'y', shotRot:0, shotDome:true, shotSun:true, shotClouds:false, shotCam:'shot', shotAlbedo:true, shotBg:true, shotSeq:'tst', shotId:'0010', shotPass:'lit',
+  variety:0, previewRes:1024, previewSpp:4, brushLayer:'low', brushSize:12, brushStrength:0.5, maskShow:false, outRes:4096, outSpp:4, quality:'high', units:'nits', format:'exr32', rigUSD:false, layersOn:false, mtnOn:false, mtnDist:8, mtnDepth:12, mtnHeight:0.25, mtnCover:0.55, mtnDir:0, mtnRidge:0.3, mtnRough:0.4, mtnSeed:3, mtnSnow:0, mtnTree:9, mtnVeg:0.8, mtnRock:'granite', lpAmt:1, lpDist:25, lpTowns:0.5, lpLamp:0.7, lpSeed:11, treeOn:false, treeH:0.016, treeNear:1.0, treeFar:4, treeCov:0.5, treeShape:0.25, treeSeed:5, ldcFace:'sun', wipeOn:false, wipePos:0.5, goboExt:2000, goboRes:2048, goboMode:'sun', shotUnits:'cm', shotUp:'y', shotRot:0, shotDome:true, shotSun:true, shotClouds:false, shotCam:'shot', shotAlbedo:true, shotBg:true, shotSeq:'tst', shotId:'0010', shotPass:'lit',
 };
 const P = structuredClone(DEFAULTS);
 const G = {};      // shared uniform values
@@ -2136,6 +2219,7 @@ function computePhysics(){
     uCiCov:P.ciCov, uCiH:P.ciH, uCiTau:P.ciTau, uCiRot:P.ciRot*D2R, uCiForm:P.ciForm||0, uCiHalo:P.ciHalo, uHalo22:f32(a.H22), uHalo46:f32(a.H46),
     uMid:[P.midCov, P.midH, P.midTau, P.midType], uMid2:[P.midScale, 0, P.evolve, P.groundVar], uMidForm:P.midForm || 0, uMid3:[P.midThick || 0.4, 0, 0, 0],
     ...terrUniforms(),
+    ...(() => { const cs = citySources(); return {uCity:cs.src, uCityN:P.sunEl < 8 ? cs.n : 0, uCityE:f32(lampSpectrum(P.lpLamp))}; })(),
     uMaskOn: MASKINFO.any ? 1 : 0, uMaskCamH:P.camH, uMaskOff:[P.windX - MASKINFO.wind[0], P.windZ - MASKINFO.wind[1]], uShear:[0.14, 0.05],
     uCMFx:f32(CMFX), uCMFy:f32(CMFY), uCMFz:f32(CMFZ), uSunDisk:P.includeSun?1:0, uZero:0,
   });
@@ -2996,7 +3080,7 @@ function display(){
   const ctx = shownCtx; if (!ctx){ gl.clearColor(0.027,0.035,0.047,1); gl.clear(gl.COLOR_BUFFER_BIT); return; }
   const src = view.mode===3 && LD ? LD.acc[LD.cur] : ctx.acc[ctx.cur];
   bindTex(11, gl.TEXTURE_2D, src); const wipe = P.wipeOn && T_A && view.mode !== 3; if (wipe) bindTex(12, gl.TEXTURE_2D, T_A);
-  setU(P_DISP, {uMaskShow: P.maskShow && MASKINFO.any ? 1 : 0, uRect:rect, uView:view.mode, uExpo:exposure(), uCanvas:[W,H], uYaw:view.yaw, uPitch:view.pitch, uFov:view.fov, uAzOff:P.azOff*D2R, uFlipY:0, ...starDispU(shownCtx === CTX_PREVIEW || (shownCtx && shownCtx.big))});
+  setU(P_DISP, {uMaskShow: P.maskShow && (MASKINFO.any || HZINFO.any.some(Boolean)) ? 1 : 0, uRect:rect, uView:view.mode, uExpo:exposure(), uCanvas:[W,H], uYaw:view.yaw, uPitch:view.pitch, uFov:view.fov, uAzOff:P.azOff*D2R, uFlipY:0, ...starDispU(shownCtx === CTX_PREVIEW || (shownCtx && shownCtx.big))});
   setU(P_DISP, {uWipe: wipe ? P.wipePos : -1});
   draw(); unbind(11, gl.TEXTURE_2D); if (wipe) unbind(12, gl.TEXTURE_2D); drawOverlay();
 }
@@ -3182,6 +3266,7 @@ function sceneObject(){
   const num = o => { const r = {}; for (const k in o) if (typeof o[k] === 'number' && isFinite(o[k])) r[k] = +o[k].toPrecision(6); return r; };
   return { app:'Spectral Sky', sceneVersion:SCENE_VERSION, saved:new Date().toISOString(), preset:$('#presetName')?.textContent || '',
     settings, view:{mode:view.mode, yaw:view.yaw, pitch:view.pitch, fov:view.fov, auto:view.auto, expoComp:view.expoComp, ld:view.ld},
+    horizon: HZINFO.any.some(Boolean) ? {n:HZ_N, encoding:'int8 ×127, base64, RGBA = town lights, hills, trees', data:b64FromBytes(new Uint8Array(Int8Array.from(HZ, v => Math.round(clamp(v, -1, 1)*127)).buffer))} : null,
     mask, moonMap: MOONTEX ? 'a custom moon photo map was loaded (not included)' : null,
     derived:{ ...num(S), covBias:G.uCovBias, covKey, covVer:COV_VER, skyKeyF:G.uSkyKeyF, cloudExt:G.uCDens, exposureK:autoK() },
     system:{ gpu:GPU_NAME, browser:navigator.userAgent, screen:`${screen.width}×${screen.height} @${devicePixelRatio}x` },
@@ -3198,7 +3283,7 @@ function applyScene(o){
   for (const k of Object.keys(o.settings)) if (k in DEFAULTS || k in P) P[k] = o.settings[k];
   if (!('treeOn' in o.settings)) P.treeOn = false;
   // scenes from before the cloud layers became volumes: no second low layer, no special forms, default thicknesses
-  for (const [k, v] of [['l2On', false], ['midForm', 0], ['midThick', 0.4], ['ciThick', 1.2], ['pileus', 0], ['mammatus', 0]]) if (!(k in o.settings)) P[k] = v;
+  for (const [k, v] of [['l2On', false], ['midForm', 0], ['midThick', 0.4], ['ciThick', 1.2], ['pileus', 0], ['mammatus', 0], ['lpAmt', 0]]) if (!(k in o.settings)) P[k] = v;
   // scenes from before the mountains became distant hills: snow line (km) → snow amount, and sizes into the new ranges
   if (o.settings.mtnSnow > 1.001 || o.settings.mtnHeight > 1.5){ const H = o.settings.mtnHeight || 1, sl = o.settings.mtnSnow;
     P.mtnSnow = sl == null || sl >= 6.4 ? 0 : +clamp((1.02 - sl/H)/0.8, 0, 1).toFixed(2); P.mtnTree = 9; }
@@ -3207,6 +3292,9 @@ function applyScene(o){
   MASK.fill(0); MASKINFO.any = false; MASKINFO.add = [false,false,false];
   if (o.mask && o.mask.data && o.mask.w === MW && o.mask.h === MH){ const q = new Int8Array(bytesFromB64(o.mask.data).buffer); for (let i=0;i<Math.min(q.length, MASK.length);i++) MASK[i] = q[i]/127;
     MASKINFO.any = true; MASKINFO.add = (o.mask.add || [false,false,false]).slice(0,3); MASKINFO.wind = (o.mask.wind || [P.windX, P.windZ]).slice(0,2); }
+  HZ.fill(0); HZINFO.any = [false, false, false];
+  if (o.horizon && o.horizon.n === HZ_N && o.horizon.data){ const q = new Int8Array(bytesFromB64(o.horizon.data).buffer); for (let i=0;i<Math.min(q.length, HZ.length);i++) HZ[i] = q[i]/127; for (let c=0;c<3;c++) for (let i=0;i<HZ_N;i++) if (HZ[i*4 + c]) HZINFO.any[c] = true; }
+  uploadHZ(); HZINFO.terrVer = HZINFO.ver;
   uploadMask(); dirtyCirrus = true; covKey = ''; COV_LOCK = o.derived && o.derived.covVer === COV_VER && typeof o.derived.covKey === 'string' && isFinite(o.derived.covBias) ? {key:o.derived.covKey, bias:o.derived.covBias} : null; afterBulk(); setPresetName(o.preset && o.preset !== 'Custom' ? o.preset : 'Loaded scene');
   if (o.view && typeof o.view.mode === 'number') setView(o.view.mode); syncUI();
   const si = $('#sceneInfo'); if (si) si.textContent = `Loaded a scene saved ${o.saved ? new Date(o.saved).toLocaleString() : ''}${o.moonMap ? ' (it used a custom moon map, which is not stored in the file)' : ''}.`; }
@@ -3608,13 +3696,13 @@ function terrDummy(){ if (!T_TERR0){ T_TERR0 = tex2D(1, 1, gl.RGBA16F, gl.LINEAR
 function terrRange(){ return [Math.max(1.5, P.mtnDist*0.55), P.mtnDist + P.mtnDepth]; }
 function buildTerrain(){
   if (!P.mtnOn){ bindTex(20, gl.TEXTURE_2D, T_TERRAIN && terrKey ? T_TERRAIN : terrDummy()); return; }
-  const key = [P.mtnDist, P.mtnDepth, P.mtnHeight, P.mtnCover, P.mtnDir, P.mtnRidge, P.mtnRough, P.mtnSeed].join('|');
+  const key = [P.mtnDist, P.mtnDepth, P.mtnHeight, P.mtnCover, P.mtnDir, P.mtnRidge, P.mtnRough, P.mtnSeed, HZINFO.terrVer].join('|');
   if (key === terrKey && T_TERRAIN){ bindTex(20, gl.TEXTURE_2D, T_TERRAIN); return; }
   BOOT.stage('building the mountains');
   if (!P_TERRGEN) P_TERRGEN = program(HDR + `
 uniform int uZero;
 ` + TERR_GLSL.replace(/uniform sampler2D uTerrain;[^\n]*\n/, 'uniform vec4 uMt0; uniform vec4 uMt2;\n') .split('float terrV(')[0] + `
-uniform vec4 uMtG; uniform vec4 uMtG2; uniform vec2 uTN; uniform float uRow0; out vec4 o;
+uniform vec4 uMtG; uniform vec4 uMtG2; uniform vec2 uTN; uniform float uRow0; uniform sampler2D uHz; out vec4 o;
 float tRidged(vec2 p, float gain){ float sum = 0.0, amp = 0.55, w = 1.0, fr = 1.0;
   for (int i=0;i<10+uZero;i++){ float n = 1.0 - abs(tnoise(p*fr)); n *= n; n *= w; sum += n*amp; w = clamp(n*1.8, 0.0, 1.0); fr *= 2.03; amp *= gain; } return sum; }
 float terrainHeight(vec2 xz){
@@ -3622,7 +3710,8 @@ float terrainHeight(vec2 xz){
   float dist = uMtG.x, depth = uMtG.y, H = uMtG.z, cover = uMtG.w, dir = uMtG2.x, ridge = uMtG2.y, rough = uMtG2.z;
   // which directions the range covers, with ragged ends
   float da = abs(mod(az - dir + PI, 2.0*PI) - PI) + 0.45*tFbm(xz/22.0 + 7.1, 0.5, 3);
-  float covM = cover >= 0.999 ? 1.0 : 1.0 - smoothstep(cover*PI - 0.22, cover*PI + 0.22, da);
+  float covM = cover >= 0.999 ? 1.0 : cover < 0.005 ? 0.0 : 1.0 - smoothstep(cover*PI - 0.22, cover*PI + 0.22, da);
+  covM = clamp(covM + textureLod(uHz, vec2(fract(az/6.2831853 + 0.03*tFbm(xz/22.0 + 2.9, 0.5, 2)), 0.5), 0.0).g, 0.0, 1.0);   // painted hills
   // foothills rising to the main range, which ends in a ragged far edge
   float rr = r + min(0.3*depth, 0.3*dist)*tFbm(xz/30.0 + 3.3, 0.5, 3);
   float prof = smoothstep(dist*0.75, dist*1.1, rr)*(1.0 - smoothstep(dist + depth*0.7, dist + depth*0.98, rr))*(0.45 + 0.55*smoothstep(dist, dist + depth*0.45, rr));
@@ -3639,7 +3728,7 @@ void main(){ vec2 f = vec2(gl_FragCoord.x, gl_FragCoord.y + uRow0)/uTN; float az
   o = vec4(terrainHeight(vec2(sin(az), cos(az))*r), 0.0, 0.0, 1.0); }`, 'terrain');
   if (!T_TERRAIN){ T_TERRAIN = tex2D(TERR_W, TERR_H, gl.RGBA16F, gl.LINEAR_MIPMAP_LINEAR, gl.CLAMP_TO_EDGE, true);
     gl.bindTexture(gl.TEXTURE_2D, T_TERRAIN); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); }
-  unbind(20, gl.TEXTURE_2D); const f = fboFor([T_TERRAIN]); gl.bindFramebuffer(gl.FRAMEBUFFER, f); const [rS, rE] = terrRange();
+  unbind(20, gl.TEXTURE_2D); bindTex(26, gl.TEXTURE_2D, T_HZ); const f = fboFor([T_TERRAIN]); gl.bindFramebuffer(gl.FRAMEBUFFER, f); const [rS, rE] = terrRange();
   for (let y=0; y<TERR_H; y+=64){ gl.viewport(0, y, TERR_W, 64);
     setU(P_TERRGEN, {uZero:0, uMt0:[rS, rE, 0, 1], uMt2:[0, 0, 0, P.mtnSeed], uMtG:[P.mtnDist, P.mtnDepth, P.mtnHeight, P.mtnCover], uMtG2:[P.mtnDir*D2R, P.mtnRidge, P.mtnRough, 0], uTN:[TERR_W, TERR_H], uRow0:0}); draw(); gl.flush(); }
   gl.deleteFramebuffer(f); genMips2D(T_TERRAIN); bindTex(20, gl.TEXTURE_2D, T_TERRAIN); terrKey = key; }
@@ -4267,13 +4356,21 @@ const SECTIONS = [
     {k:'ciRot', label:'Upper wind direction', min:0, max:180, step:1, fmt:v=>`${v}°`},
     {k:'ciHalo', label:'Ice-crystal halos (22°, 46°)', min:0, max:1, step:0.01, fmt:v=>v<0.005?'off':v.toFixed(2)},
   ]},
-  {title:'Paint clouds', items:[
-    {type:'buttons', btns:[['Paint clouds in', ()=>setTool('add')], ['Erase clouds', ()=>setTool('remove')], ['Clear painting', ()=>clearMask()]]},
-    {k:'brushLayer', label:'Brush affects', type:'select', opts:[['low','Low clouds'],['mid','Mid clouds'],['high','Cirrus'],['all','All layers']], noScene:true},
+  {title:'Paint clouds & horizon', items:[
+    {type:'buttons', btns:[['Paint in', ()=>setTool('add')], ['Erase', ()=>setTool('remove')], ['Clear cloud painting', ()=>clearMask()], ['Clear horizon painting', ()=>clearHZ()]]},
+    {k:'brushLayer', label:'Brush affects', type:'select', opts:[['low','Low clouds'],['mid','Mid clouds'],['high','Cirrus'],['all','All cloud layers'],['lights','Town lights on the horizon'],['hills','Hills on the horizon'],['trees','Tree lines on the horizon']], noScene:true},
     {k:'brushSize', label:'Brush size', min:2, max:45, step:0.5, fmt:v=>`${v.toFixed(1)}°`, noScene:true},
     {k:'brushStrength', label:'Brush strength', min:0.05, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`, noScene:true},
-    {k:'maskShow', label:'Show painted areas (green add, red erase)', type:'check', noScene:true},
+    {k:'maskShow', label:'Show painted areas', type:'check', noScene:true},
     {type:'info', id:'paintInfo'},
+  ]},
+  {title:'Town lights · night', items:[
+    {type:'note', html:'Towns and cities beyond the horizon light the air and the undersides of clouds at night (skyglow): domes of light over each town, brighter in haze, mist and fog, and a lit, tinted underside to a low cloud deck (it comes back down onto the land too). A few scattered towns are always there; paint more (or a city) onto the horizon with the brush set to <b>Town lights</b>. Far from towns, cloud stays dark against a clear night sky, as it does at truly dark sites. Painted areas show green (added), red (cleared) and amber (town lights). Only counted once the sun is below 8°.'},
+    {k:'lpAmt', label:'Brightness of the towns', min:0, max:5, step:0.05, fmt:v=>v < 0.01 ? 'none (wilderness)' : v < 0.5 ? 'dark countryside' : v < 1.5 ? 'rural' : v < 3 ? 'suburban' : 'near a city'},
+    {k:'lpTowns', label:'Scattered towns', min:0, max:1, step:0.01, fmt:v=>`${Math.round(2 + 14*v)} towns`, show:()=>P.lpAmt > 0.01},
+    {k:'lpDist', label:'Typical distance', min:4, max:80, log:true, fmt:v=>`${Math.round(v)} km`, show:()=>P.lpAmt > 0.01},
+    {k:'lpLamp', label:'Street lighting', min:0, max:1, step:0.01, fmt:v=>v < 0.25 ? 'sodium (orange)' : v < 0.75 ? 'mixed sodium and LED' : 'LED (white)', show:()=>P.lpAmt > 0.01},
+    {type:'buttons', btns:[['New towns', ()=>{ P.lpSeed = (P.lpSeed*7919 + 31) % 1021; changed(false); }]], show:()=>P.lpAmt > 0.01},
   ]},
   {title:'Distant hills', items:[
     {k:'mtnOn', label:'Hills on the horizon', type:'check'},
@@ -4281,8 +4378,8 @@ const SECTIONS = [
     {k:'mtnDist', label:'Distance', min:2, max:80, log:true, fmt:v=>`${v.toFixed(0)} km`, show:()=>P.mtnOn},
     {k:'mtnDepth', label:'Depth of the hills', min:4, max:40, log:true, fmt:v=>`${v.toFixed(0)} km`, show:()=>P.mtnOn},
     {k:'mtnHeight', label:'Highest hilltop', min:0.05, max:1.5, log:true, fmt:v=>`${Math.round(v*1000)} m`, show:()=>P.mtnOn},
-    {k:'mtnCover', label:'How much of the horizon', min:0.05, max:1, step:0.01, fmt:v=>v >= 0.999 ? 'all around' : `${Math.round(v*360)}°`, show:()=>P.mtnOn},
-    {k:'mtnDir', label:'Centred on', min:0, max:359, step:1, fmt:v=>`${v}° ${['N','NE','E','SE','S','SW','W','NW'][Math.round(v/45)%8]}`, show:()=>P.mtnOn && P.mtnCover < 0.999},
+    {k:'mtnCover', label:'How much of the horizon', min:0, max:1, step:0.01, fmt:v=>v >= 0.999 ? 'all around' : v < 0.005 ? 'only where painted' : `${Math.round(v*360)}°`, show:()=>P.mtnOn},
+    {k:'mtnDir', label:'Centred on', min:0, max:359, step:1, fmt:v=>`${v}° ${['N','NE','E','SE','S','SW','W','NW'][Math.round(v/45)%8]}`, show:()=>P.mtnOn && P.mtnCover < 0.999 && P.mtnCover >= 0.005},
     {k:'mtnRidge', label:'Shape: rolling → ridged', min:0, max:1, step:0.01, fmt:v=>v < 0.3 ? 'rolling' : v < 0.65 ? 'hilly' : 'ridged', show:()=>P.mtnOn},
     {k:'mtnRough', label:'Roughness', min:0, max:1, step:0.01, fmt:v=>v.toFixed(2), show:()=>P.mtnOn},
     {k:'mtnVeg', label:'Forest cover', min:0, max:1, step:0.01, fmt:v=>`${Math.round(v*100)}%`, show:()=>P.mtnOn},
@@ -4461,7 +4558,7 @@ function updateInfo(){
   const hl = $('#hillInfo'); if (hl){ const an = hillAngle(); hl.innerHTML = an > 0.02 ? `The highest tops rise about <b class="mono">${an.toFixed(an < 1 ? 2 : 1)}°</b> above the horizon. At this distance haze turns them bluish and soft; the Earth's curvature hides their lower slopes.` : '<span style="color:var(--warn)">At this distance the Earth\'s curvature hides these hills below the horizon. Bring them closer or make them higher.</span>'; }
   const tl = $('#treeInfo'); if (tl) tl.innerHTML = `Belts of woods and hedgerows on the flat ground between ${P.treeNear < 1 ? Math.round(Math.min(P.treeNear, P.treeFar)*1000)+' m' : Math.min(P.treeNear, P.treeFar).toFixed(1)+' km'} and ${Math.max(P.treeNear, P.treeFar).toFixed(1)} km away. The nearest rise about <b class="mono">${treeAngle().toFixed(2)}°</b> above the horizon.`;
   if (!SHOT.data) updateShotInfo();
-  const pi = $('#paintInfo'); if (pi) pi.textContent = 'Drag on the panorama or in Look around to add or clear cloud. Paint is tied to sky direction, so it stays put while the sun, wind or weather change, and it is kept across presets until you clear it.';
+  const pi = $('#paintInfo'); if (pi) pi.textContent = 'Drag on the panorama or in Look around to add or clear cloud. Paint is tied to sky direction, so it stays put while the sun, wind or weather change, and it is kept across presets until you clear it. With the brush on town lights, hills or tree lines, drag along the horizon (above or below it) to add them in those directions or clear them; the brush size sets how wide a stretch of horizon it covers.';
   const li = $('#ldInfo'); if (li) li.textContent = 'The set is path traced with this sky as the only light. Sun and moon are sampled directly, so shadow edges keep their true 0.5° penumbra.';
 }
 function updateReadouts(){
@@ -4551,7 +4648,20 @@ const LAYER_CH = {low:[0], mid:[1], high:[2], all:[0,1,2]};
 function uploadMask(){ bindTex(16, gl.TEXTURE_2D, T_MASK); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MW, MH, gl.RGBA, gl.FLOAT, MASK); }
 // heights (km) at which each layer's painting is looked up, and how fast that layer drifts with the wind
 function maskLayer(c){ return c === 0 ? [P.cbase + 0.06*P.cthick, 1] : c === 1 ? [P.midH, 0.8] : [P.ciH, 0.6]; }
+// horizon painting: town lights, hills and tree lines by compass direction (the brush's size is its width in azimuth)
+const HZ_CH = {lights:0, hills:1, trees:2};
+function stampHz(d, sign, c){ const az = Math.atan2(d[0], d[2]), r = P.brushSize*D2R, k = P.brushStrength*0.35;
+  for (let i=0; i<HZ_N; i++){ const a = (i + 0.5)/HZ_N*2*Math.PI; let da = Math.abs(((a - az) % (2*Math.PI) + 3*Math.PI) % (2*Math.PI) - Math.PI); if (da >= r) continue;
+    const fall = 0.5 + 0.5*Math.cos(Math.PI*da/r), q = i*4 + c, lo = c === 0 ? 0 : -1;
+    HZ[q] = clamp(HZ[q] + (sign > 0 ? (1 - HZ[q]) : (lo - HZ[q]))*k*fall, lo, 1); }
+  HZINFO.any[c] = true;
+  if (c === 0 && !P.maskShow){ P.maskShow = true; syncUI(); }   // town lights only show at night: show where they are painted
+  if (c === 1 && !P.mtnOn){ P.mtnOn = true; P.mtnCover = 0; P.mtnHeight = Math.max(P.mtnHeight, 0.6); syncUI(); }   // just the painted hills
+  if (c === 2 && !P.treeOn){ P.treeOn = true; P.treeCov = 0; syncUI(); }
+  uploadHZ(); }
+function clearHZ(){ HZ.fill(0); HZINFO.any = [false, false, false]; uploadHZ(); HZINFO.terrVer = HZINFO.ver; changed(false); }
 function stamp(d, sign){
+  if (P.brushLayer in HZ_CH){ stampHz(d, sign, HZ_CH[P.brushLayer]); return; }
   if (!MASKINFO.any) MASKINFO.wind = [P.windX, P.windZ];
   const chs = LAYER_CH[P.brushLayer] || [0];
   for (const c of chs){
@@ -4569,7 +4679,7 @@ function stampCh(d, sign, c){
   for (let j=j0;j<=j1;j++) for (let i=0;i<MW;i++){ const o = (j*MW+i)*3; const dt = MDIR[o]*d[0] + MDIR[o+1]*d[1] + MDIR[o+2]*d[2]; if (dt < cr) continue;
     const ang = Math.acos(Math.min(dt, 1)); const fall = 0.5 + 0.5*Math.cos(Math.PI*ang/r);
     const q = (j*MW+i)*4 + c; MASK[q] += (sign - MASK[q])*k*fall; } }
-function paintAt(e){ const d = dirAtPointer(e); if (!d || d[1] < -0.02) return; stamp(d, view.place==='add' ? 1 : -1); changed(false); }
+function paintAt(e){ const d = dirAtPointer(e); if (!d || (d[1] < -0.02 && !(P.brushLayer in HZ_CH))) return; stamp(d, view.place==='add' ? 1 : -1); changed(false); }
 function clearMask(){ MASK.fill(0); MASKINFO.any = false; MASKINFO.add = [false,false,false]; uploadMask(); changed(false); syncUI(); }
 // painted clouds belong to one particular sky: a new cloud field (randomize, preset, new seed) starts unpainted
 function dropMask(){ if (!MASKINFO.any) return; MASK.fill(0); MASKINFO.any = false; MASKINFO.add = [false,false,false]; uploadMask(); notify('Painted clouds cleared for the new sky'); }
@@ -4635,7 +4745,7 @@ viewEl.addEventListener('pointermove', e=>{ brushCursor(e); if (!drag) return;
   if (view.mode===4){ if (P.shotCam === 'orbit'){ SHOT.orbit.yaw = drag.oyaw - (e.clientX-drag.x)*0.006; SHOT.orbit.pitch = clamp(drag.opitch + (e.clientY-drag.y)*0.004, -0.2, 1.5); } return; }
   if (view.place==='sun' && view.mode===0){ placeAt(e); return; }
   if (view.mode===1){ const k = view.fov/canvas.clientHeight; view.yaw = drag.yaw - (e.clientX-drag.x)*k; view.pitch = clamp(drag.pitch + (e.clientY-drag.y)*k, -1.55, 1.55); } });
-viewEl.addEventListener('pointerup', e=>{ const d = drag; drag=null; if (painting){ painting = false; lastChange = performance.now(); return; }
+viewEl.addEventListener('pointerup', e=>{ const d = drag; drag=null; if (painting){ painting = false; lastChange = performance.now(); if (P.brushLayer === 'hills' && HZINFO.terrVer !== HZINFO.ver){ HZINFO.terrVer = HZINFO.ver; changed(false); } return; }
   // a click (no drag) places the sun or moon; dragging in Look around orbits the view
   if (d && !d.moved && view.mode < 2 && (view.place==='moon' || (view.place==='sun' && view.mode===1))) placeAt(e); });
 viewEl.addEventListener('pointerleave', ()=>{ $('#brush').hidden = true; });
