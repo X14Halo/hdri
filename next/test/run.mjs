@@ -29,5 +29,9 @@ for (const c of cases){ const i = c.indexOf('='); const nm = c.slice(0, i), o = 
   fs.writeFileSync(`${pre}${nm}_${r.W}x${r.H}.f32`, Buffer.from(r.d, 'base64'));
   const sh = await p.evaluate(async () => { const m = await window.__sky.shot(); if (!m || !m.rgba) return null; const u8 = m.rgba; let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return {w:m.w, h:m.h, d:btoa(s)}; });
   if (sh) fs.writeFileSync(`${pre}${nm}_view_${sh.w}x${sh.h}.rgba`, Buffer.from(sh.d, 'base64'));
+  if (process.env.PROBE){ for (const [l, alt] of JSON.parse(process.env.PROBE)){ const pr = await p.evaluate(async ([l, alt]) => { const m = await window.__sky.probe(l, alt);
+      const enc = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+      return {nx: m.nx, lx: m.lx, d: enc(m.dens), li: enc(new Uint8Array(m.light.buffer)), info: m.info}; }, [l, alt]);
+    fs.writeFileSync(`${pre}${nm}_probe_L${l}_${alt}_${pr.nx}.u8`, Buffer.from(pr.d, 'base64')); fs.writeFileSync(`${pre}${nm}_probeLight_L${l}_${alt}_${pr.lx}.f16`, Buffer.from(pr.li, 'base64')); console.log('probe', l, alt, JSON.stringify(pr.info)); } }
   console.log(nm, r.W, r.H, `${((Date.now() - t1)/1000).toFixed(1)} s`, `sample ${r.st.sample}`, `E ${r.st.meter && r.st.meter.E.toFixed(1)} lx`); }
 await b.close(); srv.close();

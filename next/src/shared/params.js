@@ -12,6 +12,16 @@ const DEFAULTS = {
   stars:true, starMag:6.5, mw:1, airglow:1, includeSun:true,
   // camera
   camH:0.002, azOff:0,
+  // wind (km/h at cloud level; clouds lean and line up with it)
+  windX:15, windZ:6,
+  // cumulus layer
+  cuOn:true, cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuErode:1, cuAmb:1, cuDrop:14,
+  // stratocumulus / stratus deck
+  scOn:false, scCover:0.6, scBase:0.9, scThick:0.5, scForm:0.35, scCell:1.4, scSeed:1, scDens:1,
+  // altocumulus / altostratus
+  acOn:false, acCover:0.45, acBase:4.0, acThick:0.35, acForm:0.8, acCell:0.6, acSeed:1, acDens:1,
+  // cirrus / cirrostratus / cirrocumulus
+  ciOn:false, ciCover:0.25, ciBase:9.0, ciThick:0.7, ciForm:0.5, ciCell:1.5, ciSeed:1, ciDens:1, ciShear:1, ciFall:1.2,
   // rendering
-  previewRes:1024, atmSteps:32,
+  previewRes:1024, atmSteps:32, volQ:1,
 };

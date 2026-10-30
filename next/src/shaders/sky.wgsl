@@ -6,6 +6,11 @@
 @group(0) @binding(4) var<storage, read> amb: array<vec4f>;
 @group(0) @binding(5) var<uniform> PS: Pass;
 @group(0) @binding(6) var<storage, read_write> accum: array<vec4f>;
+@group(0) @binding(7) var<uniform> CU: Cloud;
+@group(0) @binding(8) var densTex: texture_3d<f32>;
+@group(0) @binding(9) var lightTex: texture_3d<f32>;
+@group(0) @binding(10) var noiseTex: texture_3d<f32>;
+@group(0) @binding(11) var wrapSamp: sampler;
 
 const MARIA = /*@MARIA*/;
 const CRATERS = /*@CRATERS*/;
@@ -41,12 +46,12 @@ struct Stars { w: array<f32, 9>, t: array<u32, 9>, n: u32 }
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  let W = PS.W; let H = PS.H; let py = id.y + PS.rowOff;
-  if (id.x >= W || py >= H) { return; }
+  let W = PS.W; let H = PS.H; let py = id.y + PS.rowOff; let pxX = id.x + PS.colOff;
+  if (pxX >= PS.colEnd || py >= PS.rowEnd) { return; }
   let fW = f32(W); let fH = f32(H);
   let n = PS.frame;
   let jit = select(vec2f(fract(0.5 + f32(n)*0.7548776662) - 0.5, fract(0.5 + f32(n)*0.5698402910) - 0.5), vec2f(0.0), n == 0u);
-  let px = vec2f(f32(id.x), f32(py)) + 0.5 + jit;
+  let px = vec2f(f32(pxX), f32(py)) + 0.5 + jit;
   let rd = dirFromPixel(px, fW, fH);
   let camH = F.atm2.y; let ro = vec3f(0.0, camH, 0.0); let r0 = Rg + camH; let mu = rd.y;
   let gN = groundHit(r0, mu); let hitG = gN > 0.0 && F.opts.y < 0.5;
@@ -54,7 +59,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let Ls = F.sunDir.xyz; let Lm = F.moonDir.xyz; let cS = dot(rd, Ls); let cM = dot(rd, Lm);
   let pRs = phaseR(cS); let pMs = phaseCS(cS, F.atm2.x); let pFs = phaseFog(cS);
   let pRm = phaseR(cM); let pMm = phaseCS(cM, F.atm2.x); let pFm = phaseFog(cM);
-  let ign = fract(hash3(vec3u(id.x, py, 977u)).x + f32(n)*0.61803398875);
+  let ign = fract(hash3(vec3u(pxX, py, 977u)).x + f32(n)*0.61803398875);
   let jt = select(fract(0.5 + f32(n)*0.61803398875 + (ign - 0.5)*0.3), 0.5, n == 0u);
   let NS = u32(F.opts.x);
 
@@ -129,25 +134,114 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     }
   }
 
-  // ---- each spectral group: the air along the view ray (single scattering + the multiple-scattering table), then what is behind
-  var xyz = vec3f(0.0);
-  for (var g = 0u; g < 6u; g++) {
-    var L = vec4f(0.0); var T = vec4f(1.0);
-    for (var i = 0u; i < NS; i++) {
-      let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let t = ta + dt*jt;
-      let p = ro + rd*t; let r = length(p - C0); let h = r - Rg; let up = (p - C0)/r;
-      let dM = densM(h); let dF = densF(h);
-      let sR = F.BR[g]*densR(h); let sM = F.BMs[g]*dM; let ext = sR + sM + F.BMa[g]*dM + F.BO[g]*densO(h) + vec4f(dF); let sT = sR + sM + vec4f(dF);
-      var S = vec4f(0.0);
-      if (F.sunDir.w > 0.5) { let muS = dot(up, Ls); S += F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, r, muS) + sT*msLUT(g, h, muS)); }
-      if (F.moonDir.w > 0.5) { let muM = dot(up, Lm); S += F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, r, muM) + sT*msLUT(g, h, muM)); }
-      let att = exp(-ext*dt); L += T*(S - S*att)/max(ext, vec4f(1e-9)); T *= att;
+  // ---- the view ray: air in segments (spectral), and inside each segment the clouds (grey: water droplets scatter all
+  // wavelengths alike, so everything inside the clouds is one number per step; colour comes from the light reaching them)
+  var L: array<vec4f, 6>; var T: array<vec4f, 6>;
+  for (var g = 0u; g < 6u; g++) { L[g] = vec4f(0.0); T[g] = vec4f(1.0); }
+  var Tc = 1.0;                                   // transmittance through the clouds so far
+  let cloudOn = CU.band.z > 0.5;
+  let cs1 = phaseCloud(cS); let cm1 = phaseCloud(cM);
+  let iso = 1.0/(4.0*PI);
+  var cloudSteps = 0u;
+  let rj = fract(hash3(vec3u(pxX, py, 4211u)).x + f32(n)*0.7548776662);
+  for (var i = 0u; i < NS; i++) {
+    let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let tAir = ta + dt*jt;
+    // clouds in this segment
+    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var TcAir = Tc;
+    let qa = volPos(ro + rd*ta); let qb = volPos(ro + rd*tb);
+    let segLo = min(qa.y, qb.y); let segHi = max(qa.y, qb.y);
+    if (cloudOn && Tc > 0.003 && segHi > CU.band.x - 0.3 && segLo < CU.band.y + 0.1 && cloudSteps < 640u) {
+      var t = ta; var airDone = false;
+      let base = clamp(ta*0.005, 0.02, 1.0);
+      t += base*rj;
+      loop {
+        if (t >= tb || Tc < 0.003 || cloudSteps >= 640u) { break; }
+        if (!airDone && t >= tAir) { TcAir = Tc; airDone = true; }
+        let p = ro + rd*t; let q = volPos(p);
+        let ds = clamp(t*0.005, 0.02, 1.0);
+        // empty air near the clouds: step by the distance to the nearest cloud surface
+        let dh = distHint(q);
+        if (dh > 1e8) { t += max(ds*4.0, 0.2); continue; }
+        if (dh < -0.06) { t += max(ds, 0.7*(-dh) - 0.03); cloudSteps++; continue; }
+        let sig = densFull(q);
+        cloudSteps++;
+        if (sig > 0.0) {
+          // optical depth to the sun: the first ~0.36 km marched through the detailed cloud (the shadows of its own billows),
+          // the rest from the light volume beyond that point
+          var lt = lightAt(q);
+          if (F.sunDir.w > 0.5 && t < 60.0) {
+            var tl = 0.0; let d0 = 0.36;
+            for (var j = 0; j < 4; j++) { let sl = d0*(f32(j) + 0.5 + 0.0*rj)/4.0; tl += densFull(volPos(p + Ls*sl))*d0/4.0; }
+            lt.x = tl + lightAt(volPos(p + Ls*d0)).x;
+          }
+          let a1 = CU.ms.x; let b1 = CU.ms.y; let c1 = CU.ms.z;
+          var sunF = 0.0; var moonF = 0.0; var ak = 1.0; var bk = 1.0; var ck = 1.0;
+          for (var o = 0; o < 3; o++) {
+            sunF += ak*mix(iso, cs1, ck)*exp(-bk*lt.x); moonF += ak*mix(iso, cm1, ck)*exp(-bk*lt.y);
+            ak *= a1; bk *= b1; ck *= c1;
+          }
+          let dI = Tc*(1.0 - exp(-sig*ds));
+          Fs += dI*sunF; Fm += dI*moonF;
+          Fa += dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.z);   // skylight from above, diffusely through the cloud above
+          // sunlight the cloud above has turned into diffuse light (two-stream: total transmission minus the direct beam)
+          let m0 = max(Ls.y, 0.0);
+          if (m0 > 0.0 && lt.z > 0.0) { let mm = min(m0, 1.0); let td = exp(-lt.z/max(m0, 0.05));
+            Fd += dI*CU.ms.w/(2.0*PI)*max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*td)/(1.0 + 0.105*lt.z) - td, 0.0); }
+          Fg += dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.w);   // light from the ground below
+          Tc *= exp(-sig*ds);
+        }
+        t += ds;
+      }
+      if (!airDone) { TcAir = Tc; }
     }
+    // the light sources for this segment (spectral), at its middle
+    let tm = 0.5*(ta + tb); let pm = ro + rd*tm; let rm = length(pm - C0); let hm = rm - Rg; let upm = (pm - C0)/rm;
+    let muSm = dot(upm, Ls); let muMm = dot(upm, Lm);
+    // the air at a jittered point of the segment, shadowed by the clouds toward the sun (crepuscular rays)
+    let p = ro + rd*tAir; let r = length(p - C0); let h = r - Rg; let up = (p - C0)/r;
+    let muS = dot(up, Ls); let muM = dot(up, Lm);
+    var shS = 1.0; var shM = 1.0; var shA = 1.0;
+    if (cloudOn) { let la = lightAt(volPos(p)); shS = exp(-la.x); shM = exp(-la.y); shA = 1.0/(1.0 + 0.18*la.z); }
+    let dM = densM(h); let dF = densF(h); let dR = densR(h); let dO = densO(h);
+    var gq = vec4f(0.0); var groundUp = false;
+    if (Fg > 0.0) { let lg = lightAt(vec3f(volPos(pm).x, 0.0, volPos(pm).z)); gq = vec4f(exp(-lg.x), exp(-lg.y), 1.0/(1.0 + 0.18*lg.z), 0.0); groundUp = true; }
+    for (var g = 0u; g < 6u; g++) {
+      let sR = F.BR[g]*dR; let sM = F.BMs[g]*dM; let ext = sR + sM + F.BMa[g]*dM + F.BO[g]*dO + vec4f(dF); let sT = sR + sM + vec4f(dF);
+      var S = vec4f(0.0);
+      if (F.sunDir.w > 0.5) { S += F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, r, muS)*shS + sT*msLUT(g, h, muS)*shA); }
+      if (F.moonDir.w > 0.5) { S += F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, r, muM)*shM + sT*msLUT(g, h, muM)*shA); }
+      let att = exp(-ext*dt);
+      L[g] += T[g]*TcAir*(S - S*att)/max(ext, vec4f(1e-9));
+      if (Fs + Fm + Fa + Fg + Fd > 0.0) {
+        var Ec = vec4f(0.0);
+        if (F.sunDir.w > 0.5) { let Te = F.SunE[g]*transmittance(g, rm, muSm); Ec += Te*(Fs + max(Ls.y, 0.0)*Fd); }
+        if (F.moonDir.w > 0.5) { Ec += F.MoonE[g]*transmittance(g, rm, muMm)*Fm; }
+        Ec += ambE(g, hm)*Fa;
+        if (groundUp) {
+          var Eg = ambE(g, 0.0)*gq.z;
+          if (F.sunDir.w > 0.5) { Eg += F.SunE[g]*transmittance(g, Rg, Ls.y)*max(Ls.y, 0.0)*gq.x; }
+          if (F.moonDir.w > 0.5) { Eg += F.MoonE[g]*transmittance(g, Rg, Lm.y)*max(Lm.y, 0.0)*gq.y; }
+          Ec += F.Alb[g]*Eg*Fg;
+        }
+        L[g] += T[g]*sqrt(att)*Ec;
+      }
+      T[g] *= att;
+    }
+    if (Tc < 0.003) { break; }
+  }
+  // what lies behind, through the air and the clouds
+  var xyz = vec3f(0.0);
+  var gs = vec4f(1.0, 1.0, 1.0, 0.0);   // ground point: cloud shadow (sun, moon), diffuse transmission, two-stream extra
+  if (hitG && cloudOn) { let pg = ro + rd*gN; let lg = lightAt(volPos(pg)); gs = vec4f(exp(-lg.x), exp(-lg.y), 1.0/(1.0 + 0.105*lg.z), lg.z); }
+  for (var g = 0u; g < 6u; g++) {
     var bg = vec4f(0.0);
     if (hitG) {
-      var Ed = ambE(g, 0.0);
-      if (F.sunDir.w > 0.5) { Ed += F.SunE[g]*transmittance(g, Rg, ground.x)*max(ground.x, 0.0); }
-      if (F.moonDir.w > 0.5) { Ed += F.MoonE[g]*transmittance(g, Rg, ground.y)*max(ground.y, 0.0); }
+      var Ed = ambE(g, 0.0)*gs.z;
+      if (F.sunDir.w > 0.5) { let m0 = max(ground.x, 0.0); let Es = F.SunE[g]*transmittance(g, Rg, ground.x)*m0;
+        // two-stream: what the clouds take out of the beam mostly reaches the ground as diffuse light
+        var tt = gs.x; if (gs.w > 0.0 && m0 > 0.0) { let mm = min(m0, 1.0); tt = max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*gs.x)/(1.0 + 0.105*gs.w), gs.x); }
+        Ed += Es*tt; }
+      if (F.moonDir.w > 0.5) { Ed += F.MoonE[g]*transmittance(g, Rg, ground.y)*max(ground.y, 0.0)*gs.y; }
       bg = F.Alb[g]*Ed/PI;
     } else if (gN <= 0.0) {
       bg = F.Air[g]*vr;
@@ -156,9 +250,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       bg += mwL*starSpec(u32(F.galY.w), g);
       for (var k = 0u; k < st.n; k++) { bg += st.w[k]*starSpec(st.t[k], g); }
     }
-    L += T*bg;
-    xyz += vec3f(dot(L, F.CMFx[g]), dot(L, F.CMFy[g]), dot(L, F.CMFz[g]));
+    let Lg = L[g] + T[g]*Tc*bg;
+    xyz += vec3f(dot(Lg, F.CMFx[g]), dot(Lg, F.CMFy[g]), dot(Lg, F.CMFz[g]));
   }
-  let idx = py*W + id.x;
+  let idx = py*W + pxX;
   accum[idx] += vec4f(select(vec3f(0.0), xyz, all(xyz == xyz)), 1.0);
 }

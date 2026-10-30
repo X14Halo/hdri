@@ -31,7 +31,7 @@ struct Frame {
   opts: vec4f,     // x atmosphere steps, y sky only (no ground), z sun disc on, w unused
 }
 
-struct Pass { rowOff: u32, frame: u32, W: u32, H: u32 }
+struct Pass { rowOff: u32, frame: u32, W: u32, H: u32, colOff: u32, colEnd: u32, rowEnd: u32, pad: u32 }   // (a crop window renders part of the panorama)
 
 fn pcg3d(v0: vec3u) -> vec3u {
   var v = v0*1664525u + 1013904223u;

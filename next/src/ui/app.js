@@ -46,9 +46,59 @@ const SECTIONS = [
     {k:'mw', label:'Milky Way', min:0, max:2, step:0.05, fmt:v => v.toFixed(2)},
     {k:'airglow', label:'Airglow', min:0, max:3, step:0.05, fmt:v => v.toFixed(2)},
   ]},
-  {title:'Clouds', items:[
-    {type:'note', html:'The new cloud engine is being built: every cloud type as its own layer you can switch off or adjust, all of them in one 3D volume lit the same way. They arrive in the next phase.'},
+  {title:'Cumulus', layer:'cuOn', items:[
+    {k:'cuOn', label:'Cumulus layer', type:'check'},
+    {k:'cuCover', label:'Cloud cover', min:0, max:0.9, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.cuOn},
+    {k:'cuDev', label:'Development', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'fair weather' : v < 0.45 ? 'moderate (mediocris)' : v < 0.75 ? 'towering (congestus)' : 'deep convection', show:() => P.cuOn},
+    {k:'cuBase', label:'Cloud base', min:0.3, max:3.5, step:0.05, fmt:v => `${Math.round(v*1000)} m`, show:() => P.cuOn},
+    {k:'cuSize', label:'Cloud size', min:0.4, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
+    {k:'cuOrg', label:'Grouping', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'evenly scattered' : v < 0.6 ? 'loosely grouped' : 'clustered, with clear gaps', show:() => P.cuOn},
+    {k:'cuStreets', label:'Cloud streets (lined up with the wind)', min:0, max:1, step:0.01, fmt:v => v < 0.05 ? 'none' : `${Math.round(v*100)}%`, show:() => P.cuOn},
+    {k:'cuShear', label:'Wind shear (tops lean downwind)', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
+    {k:'cuErode', label:'Edge detail', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
+    {k:'cuDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
+    {type:'buttons', btns:[['New clouds', () => { P.cuSeed = (P.cuSeed*7919 + 31) % 100003; changed(); }]], show:() => P.cuOn},
   ]},
+  {title:'Coming next', hidden:() => !!P.experimental, items:[
+    {type:'note', html:'Stratocumulus and stratus, altocumulus and altostratus, and cirrus, cirrostratus and cirrocumulus: each its own layer with its own controls, built into the same cloud volume and lit the same way. They are being built now.'},
+  ]},
+  {title:'Wind', items:[
+    {k:'windX', label:'From west (+) / east (−)', min:-60, max:60, step:1, fmt:v => `${Math.round(v)} km/h`},
+    {k:'windZ', label:'From south (+) / north (−)', min:-60, max:60, step:1, fmt:v => `${Math.round(v)} km/h`},
+  ]},
+  {title:'Stratocumulus · stratus', hidden:() => !P.experimental, items:[
+    {k:'scOn', label:'Low cloud deck', type:'check'},
+    {k:'scCover', label:'Cloud cover', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.scOn},
+    {k:'scForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.15 ? 'stratus (featureless)' : v < 0.55 ? 'stratocumulus (closed cells)' : 'stratocumulus (open cells, broken)', show:() => P.scOn},
+    {k:'scBase', label:'Base', min:0.1, max:2.5, step:0.05, fmt:v => `${Math.round(v*1000)} m`, show:() => P.scOn},
+    {k:'scThick', label:'Thickness', min:0.1, max:1.5, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.scOn},
+    {k:'scCell', label:'Cell size', min:0.4, max:5, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.scOn},
+    {k:'scDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.scOn},
+    {type:'buttons', btns:[['New pattern', () => { P.scSeed = (P.scSeed*7919 + 31) % 100003; changed(); }]], show:() => P.scOn},
+  ]},
+  {title:'Altocumulus · altostratus', hidden:() => !P.experimental, items:[
+    {k:'acOn', label:'Mid-level layer', type:'check'},
+    {k:'acCover', label:'Cloud cover', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.acOn},
+    {k:'acForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'altostratus (grey veil)' : v < 0.6 ? 'altostratus breaking into cloudlets' : 'altocumulus (cloudlets in rows)', show:() => P.acOn},
+    {k:'acBase', label:'Base', min:2, max:7, step:0.05, fmt:v => `${v.toFixed(2)} km`, show:() => P.acOn},
+    {k:'acThick', label:'Thickness', min:0.1, max:2.5, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.acOn},
+    {k:'acCell', label:'Cloudlet size', min:0.2, max:2, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.acOn},
+    {k:'acDens', label:'Density', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.acOn},
+    {type:'buttons', btns:[['New pattern', () => { P.acSeed = (P.acSeed*7919 + 31) % 100003; changed(); }]], show:() => P.acOn},
+  ]},
+  {title:'Cirrus · cirrostratus · cirrocumulus', hidden:() => !P.experimental, items:[
+    {k:'ciOn', label:'High ice-cloud layer', type:'check'},
+    {k:'ciCover', label:'Cloud cover', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.ciOn},
+    {k:'ciForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'cirrostratus (veil)' : v < 0.65 ? 'cirrus (fibres and fall streaks)' : 'cirrocumulus (ripples)', show:() => P.ciOn},
+    {k:'ciBase', label:'Height', min:6, max:13, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
+    {k:'ciThick', label:'Thickness', min:0.2, max:2.5, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.ciOn},
+    {k:'ciFall', label:'Fall streak length', min:0, max:3, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
+    {k:'ciShear', label:'Wind shear (streak curve)', min:0, max:3, step:0.01, fmt:v => v.toFixed(2), show:() => P.ciOn},
+    {k:'ciCell', label:'Pattern scale', min:0.4, max:5, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
+    {k:'ciDens', label:'Optical thickness', min:0.2, max:4, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.ciOn},
+    {type:'buttons', btns:[['New pattern', () => { P.ciSeed = (P.ciSeed*7919 + 31) % 100003; changed(); }]], show:() => P.ciOn},
+  ]},
+
 ];
 
 /* ---------- panel ---------- */
@@ -58,9 +108,11 @@ function sliderVal(it, x){ return it.log ? it.min*Math.pow(it.max/it.min, x) : x
 function buildPanel(){
   const panel = $('#panel'); panel.innerHTML = '';
   for (const sec of SECTIONS){
-    const el = document.createElement('section'); el.className = 'sec'; el.innerHTML = `<h2>${sec.title}</h2>`; const rows = document.createElement('div'); rows.className = 'rows'; el.appendChild(rows);
+    const el = document.createElement('section'); el.className = 'sec'; if (sec.hidden && sec.hidden()) el.hidden = true; el.innerHTML = `<h2>${sec.title}</h2>`; const rows = document.createElement('div'); rows.className = 'rows'; el.appendChild(rows);
     for (const it of sec.items){
       const row = document.createElement('div'); row.className = 'row'; rows.appendChild(row);
+      if (it.type === 'buttons'){ row.classList.add('full'); row.innerHTML = `<div class="btns">${it.btns.map((b, i) => `<button class="btn" data-i="${i}">${b[0]}</button>`).join('')}</div>`;
+        row.querySelectorAll('button').forEach(bt => bt.onclick = () => it.btns[+bt.dataset.i][1]()); CTRL.push({it, row}); continue; }
       if (it.type === 'note'){ row.classList.add('full'); row.innerHTML = `<div class="note">${it.html}</div>`; CTRL.push({it, row}); continue; }
       const id = 'c_' + it.k;
       if (it.type === 'select'){ row.innerHTML = `<label for="${id}">${it.label}</label><select id="${id}">${it.opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`;
@@ -135,8 +187,9 @@ function start(){
     else if (m.type === 'stage') $('#ldStep').textContent = m.text[0].toUpperCase() + m.text.slice(1) + '…';
     else if (m.type === 'ready'){ ready = true; $('#loader').classList.add('gone'); resize(); sendParams(); window.__sky.adapter = m.adapter; }
     else if (m.type === 'status'){ lastStatus = m; readouts(m);
-      setStatus(m.done ? `${m.W}×${m.H} · ${m.sample} samples · ${(m.total/1000).toFixed(1)} s` : `${m.W}×${m.H} · sample ${m.sample + 1}/${m.target} · ${Math.round(m.row/m.H*100)}%`); }
+      setStatus(m.done ? `${m.W}×${m.H} · ${m.sample} samples · ${(m.total/1000).toFixed(1)} s` : `${m.W}×${m.H} · sample ${m.sample + 1}/${m.target} · ${Math.round(m.row/(m.rows || m.H)*100)}%`); }
     else if (m.type === 'error'){ console.error(m.message); setStatus('Error'); $('#loader').classList.remove('gone'); $('#ldTitle').textContent = 'Something went wrong'; $('#ldStep').textContent = m.message.slice(0, 400); window.__sky.error = m.message; }
+    else if (m.type === 'probe'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
     else if (m.type === 'shot'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
     else if (m.type === 'pixels'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); } };
   worker.onerror = e => { console.error('worker', e.message); $('#ldStep').textContent = 'Worker error: ' + e.message; window.__sky.error = e.message; };
@@ -150,6 +203,7 @@ window.__sky = {
   status: () => lastStatus, ready: () => ready,
   readback: () => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'readback', id}); }),
   setView(o){ Object.assign(view, o); sendView(); },
+  probe: (l, alt) => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'probe', id, l, alt}); }),
   shot: () => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'shot', id}); }),
 };
 start();

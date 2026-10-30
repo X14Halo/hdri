@@ -2,7 +2,7 @@
 // usage: node next/build.mjs
 import fs from 'fs'; import path from 'path'; import { fileURLToPath } from 'url';
 const root = path.dirname(fileURLToPath(import.meta.url)), src = p => fs.readFileSync(path.join(root, 'src', p), 'utf8');
-const shared = ['shared/core.js', 'shared/params.js', 'shared/physics.js'].map(src).join('\n');
+const shared = ['shared/core.js', 'shared/params.js', 'shared/physics.js', 'shared/clouds.js'].map(src).join('\n');
 const shaders = Object.fromEntries(fs.readdirSync(path.join(root, 'src/shaders')).filter(f => f.endsWith('.wgsl')).map(f => [f.replace('.wgsl', ''), src('shaders/' + f)]));
 const workerSrc = `${shared}\nconst WGSL = ${JSON.stringify(shaders)};\n${src('worker/main.js')}`;
 const main = `${shared}\nconst WORKER_SRC = ${JSON.stringify(workerSrc)};\n${src('ui/app.js')}`.replace(/<\/script/gi, '<\\/script');
