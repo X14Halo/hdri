@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spectral Sky Next</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%226%22 fill=%22%23f0c27f%22/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#0a0d11; --panel:#10141a; --raise:#161b23; --line:#222a35; --line2:#2c3644;
+  --fg:#dde3ea; --muted:#8893a1; --faint:#5c6774;
+  --accent:#9ec5ff; --accent-ink:#0b1626; --sun:#f0c27f; --moon:#bcc7d8; --warn:#e8a35a; --bad:#e8766a;
+  --ui:"Instrument Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font:13px/1.45 var(--ui);overflow:hidden}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+button,select,input{font:inherit;color:inherit}
+#app{height:100%;display:grid;grid-template-columns:minmax(0,1fr) 372px}
+#stage{min-width:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;border-right:1px solid var(--line)}
+/* the tool strip sits over the top of the image on large screens and in its own row above it on small ones */
+#stage>*{grid-column:1} #stage>.bar{grid-row:1} #stage>.view{grid-row:2/4} #stage>.tools{grid-row:2} #stage>.readouts{grid-row:4}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:10px 16px;border-bottom:1px solid var(--line);min-width:0}
+@media (max-width:1250px){.brand .tag{display:none}}
+.brand{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.brand b{font-weight:600;font-size:15px;letter-spacing:.01em}
+.brand .tag{font:11px var(--mono);color:var(--muted);letter-spacing:.04em}
+.mark{width:12px;height:12px;border-radius:50%;align-self:center;background:radial-gradient(circle at 50% 50%,#fff 0 18%,var(--sun) 30%,rgba(240,194,127,0) 70%),linear-gradient(#5f8fd6,#c7dcf5);}
+.pre-wrap{position:relative;flex:none}
+.pre-btn{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;max-width:300px}
+.pre-btn .pre-lbl{color:var(--muted)}
+.pre-btn b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pre-btn .caret{color:var(--muted);font-size:10px;transition:transform .15s}
+.pre-btn[aria-expanded="true"] .caret{transform:rotate(180deg)}
+.presets{position:absolute;top:calc(100% + 8px);left:0;z-index:40;width:min(540px,calc(100vw - 32px));max-height:min(70vh,560px);overflow:auto;
+  background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:6px 14px 14px;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.pre-grp h4{margin:10px 0 7px;font:600 10.5px var(--ui);letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.pre-chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{flex:none;border:1px solid var(--line2);background:transparent;border-radius:999px;padding:4px 11px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.chip:hover{color:var(--fg);border-color:var(--faint)}
+.chip.on{color:var(--accent-ink);background:var(--accent);border-color:var(--accent)}
+.view{position:relative;min-height:0;background:#07090c;overflow:hidden;touch-action:none}
+#gl{position:absolute;inset:0;width:100%;height:100%;display:block}
+.overlay{position:absolute;inset:0;pointer-events:none}
+.compass{position:absolute;font:10px var(--mono);color:rgba(230,236,244,.7);transform:translateX(-50%);letter-spacing:.06em}
+.hline{position:absolute;height:0;border-top:1px dashed rgba(230,236,244,.18)}
+.tools{position:relative;z-index:15;align-self:start;justify-self:start;margin:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:calc(100% - 24px);min-width:0}
+.seg{display:inline-flex;background:rgba(16,20,26,.86);border:1px solid var(--line2);border-radius:8px;padding:2px;backdrop-filter:blur(6px)}
+.seg button{border:0;background:transparent;padding:4px 10px;border-radius:6px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.seg button.on{background:var(--raise);color:var(--fg);box-shadow:inset 0 0 0 1px var(--line2)}
+.seg button:hover{color:var(--fg)}
+.expo{display:inline-flex;align-items:center;gap:8px;background:rgba(16,20,26,.86);border:1px solid var(--line2);border-radius:8px;padding:4px 10px;backdrop-filter:blur(6px)}
+.expo input[type=range]{width:110px}
+.expo .v{font:11px var(--mono);color:var(--muted);min-width:66px}
+.status{position:absolute;right:12px;bottom:10px;font:11px var(--mono);color:var(--muted);background:rgba(10,13,17,.8);padding:3px 8px;border-radius:6px}
+.brush{position:absolute;border:1.5px solid #5fd08c;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.45),inset 0 0 0 1px rgba(0,0,0,.25)}
+.brush.rem{border-color:#f0675c}
+.hint{position:absolute;left:12px;bottom:10px;font:11px var(--mono);color:var(--muted);background:rgba(10,13,17,.8);padding:3px 8px;border-radius:6px}
+.map{width:100%;aspect-ratio:2/1;border-radius:6px;display:block;cursor:crosshair;background:#0f1a26;touch-action:none;max-width:100%}
+.tgrid{display:flex;flex-wrap:wrap;gap:6px}
+.tchip{border:1px solid var(--line2);background:var(--raise);border-radius:6px;padding:4px 8px;cursor:pointer;font:11px var(--mono);font-variant-numeric:tabular-nums;color:var(--fg);text-align:left;display:grid;gap:1px}
+.tchip span{font:10px var(--ui);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tchip:hover{border-color:var(--faint)}
+.btn.rand{flex:none;padding:5px 12px;border-radius:999px}
+.variety{flex:none;display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
+.variety input[type=range]{width:84px}
+.variety b{font:600 11px var(--mono);color:var(--fg);min-width:62px}
+.legend{position:absolute;left:12px;bottom:10px;display:flex;align-items:center;gap:6px;font:10px var(--mono);color:var(--muted);background:rgba(10,13,17,.8);padding:4px 8px;border-radius:6px}
+.legend i{display:block;width:180px;height:8px;border-radius:2px;background:linear-gradient(90deg,#30123b,#4662d7,#36aaf9,#1ae4b6,#72fe5e,#c7ef34,#faba39,#f66b19,#ca2a04,#7a0403)}
+.readouts{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--line);background:var(--panel)}
+.ro{padding:8px 14px;border-right:1px solid var(--line);min-width:0}
+.ro .k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.ro .v{font:500 13px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ro .v small{color:var(--muted);font-weight:400;font-size:11px}
+#panel{background:var(--panel);overflow-y:auto;min-width:0;scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+.sec{border-bottom:1px solid var(--line)}
+.sec>h2{margin:0;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:12px 16px 4px;display:flex;justify-content:space-between;align-items:center}
+.sec>h2 span{font:10px var(--mono);letter-spacing:0;text-transform:none;color:var(--faint)}
+.rows{display:grid;gap:2px;padding:4px 16px 14px}
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 10px;padding:3px 0}
+.row label{color:var(--fg);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .val{font:12px var(--mono);color:var(--accent);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.row input[type=range]{grid-column:1/-1}
+.row select,.row input[type=date],.row input[type=time],.row input[type=number]{background:var(--raise);border:1px solid var(--line2);border-radius:6px;padding:4px 6px;max-width:190px}
+.row.full{grid-template-columns:1fr}
+.note{color:var(--muted);font-size:12px;line-height:1.45}
+.note b{color:var(--fg);font-weight:500}
+.mono{font-family:var(--mono)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:18px;background:transparent;cursor:pointer;margin:0}
+input[type=range]::-webkit-slider-runnable-track{height:3px;background:var(--line2);border-radius:2px}
+input[type=range]::-moz-range-track{height:3px;background:var(--line2);border-radius:2px}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--fg);margin-top:-5px;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--faint)}
+input[type=range]::-moz-range-thumb{width:11px;height:11px;border-radius:50%;background:var(--fg);border:2px solid var(--panel)}
+input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 2px var(--accent)}
+input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+.btn{border:1px solid var(--line2);background:var(--raise);border-radius:7px;padding:7px 12px;cursor:pointer}
+.btn:hover{border-color:var(--faint)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn:disabled{opacity:.45;cursor:default}
+.prog{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+.err{position:absolute;inset:0;display:grid;place-items:center;padding:24px;text-align:center;color:var(--fg);background:var(--bg)}
+.err p{max-width:52ch;color:var(--muted)}
+.safe-note{position:absolute;left:12px;right:12px;bottom:12px;z-index:30;max-width:560px;background:rgba(16,20,26,.94);border:1px solid var(--warn);border-radius:10px;padding:10px 12px;color:var(--fg);font-size:12.5px;line-height:1.5}
+.safe-note i{color:var(--warn);font-style:normal}
+.safe-note .btn{margin-left:8px;padding:2px 10px}
+.ldc-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:3px;margin:4px 0 2px}
+.ldc-sw{aspect-ratio:1;border-radius:3px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.35)}
+.ldc-hist{width:100%;height:auto;display:block;background:var(--raise);border-radius:6px;margin-top:4px}
+.swatch{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:0}
+/* small screens: the tools get their own row, so nothing covers the image */
+@media (max-width:860px), (max-height:560px){
+  #stage>.view{grid-row:3} #stage>.tools{grid-row:2}
+  .tools{margin:0;padding:8px 10px;max-width:none;justify-self:stretch;gap:6px;border-bottom:1px solid var(--line);background:var(--bg)}
+  .seg button{padding:5px 9px}
+  .tools .seg{flex-wrap:wrap;max-width:100%}
+  .expo input[type=range]{width:90px}
+}
+@media (max-width:860px){
+  body{overflow:auto}
+  #app{grid-template-columns:1fr;height:auto}
+  /* a 2:1 panorama fills the width; look-around gets a little more height */
+  #stage{border-right:0;grid-template-rows:auto auto clamp(200px, 62vw, 60vh) auto}
+  #panel{overflow:visible}
+  .bar{flex-wrap:wrap;gap:8px;padding:10px 12px}
+  .presets{width:calc(100vw - 24px)}
+  .ro{padding:6px 10px}
+}
+/* short landscape screens (phones turned sideways): one scrolling row of tools and of readouts, a narrower rack */
+@media (max-height:560px) and (min-width:561px){
+  body{overflow:hidden}
+  #app{height:100%;grid-template-columns:minmax(0,1fr) min(320px, 40vw)}
+  #stage{border-right:1px solid var(--line);grid-template-rows:auto auto minmax(0,1fr) auto}
+  #panel{overflow-y:auto}
+  .bar{flex-wrap:nowrap;overflow-x:auto;padding:6px 10px;gap:8px;scrollbar-width:none}
+  .brand .tag{display:none}
+  .tools{flex-wrap:nowrap;overflow-x:auto;padding:6px 10px;scrollbar-width:none}
+  .tools>*{flex:none}
+  .readouts{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  .ro{padding:4px 10px;flex:none}
+  .ro .k{font-size:9px}
+  .ro .v{font-size:12px}
+}
+.loader{position:absolute;inset:0;z-index:20;display:grid;place-items:center;padding:16px;background:rgba(7,9,12,.86);transition:opacity .45s ease,background .45s ease}
+.loader.light{background:rgba(7,9,12,.3)}
+.loader.gone{opacity:0;pointer-events:none}
+.ld-card{width:min(340px,100%);background:rgba(16,20,26,.94);border:1px solid var(--line2);border-radius:12px;padding:18px 20px 16px;text-align:center;box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.ld-spin{width:30px;height:30px;margin:0 auto 12px;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--sun);animation:ldspin .9s linear infinite}
+@keyframes ldspin{to{transform:rotate(360deg)}}
+.ld-title{font-weight:600;font-size:14px}
+.ld-step{color:var(--muted);margin-top:3px;min-height:1.45em;font-size:12.5px}
+.ld-bar{height:3px;background:var(--line2);border-radius:2px;margin-top:12px;overflow:hidden}
+.ld-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s ease}
+.ld-hint{color:var(--faint);font-size:11.5px;margin-top:10px;line-height:1.45}
+@media (prefers-reduced-motion:reduce){.prog i{transition:none}.ld-spin{animation-duration:3s}.loader,.ld-bar i{transition:none}}
+
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="stage">
+    <header class="bar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span><b>Spectral Sky</b><span class="tag">Next · WebGPU · 24-band</span></div>
+    </header>
+    <div class="tools" id="tools">
+      <div class="seg" id="viewSeg" role="group" aria-label="View">
+        <button data-v="0" class="on">Panorama</button><button data-v="1">Look around</button><button data-v="2">Luminance</button>
+      </div>
+      <div class="expo"><label><input type="checkbox" id="autoEx" checked> Auto</label><input type="range" id="exSlider" min="-8" max="8" step="0.1" value="0" aria-label="Exposure"><span class="v" id="exVal">±0.0 EV</span></div>
+      <div class="seg" id="resSeg" role="group" aria-label="Preview resolution">
+        <button data-r="1024" class="on">1K</button><button data-r="2048">2K</button><button data-r="4096">4K</button>
+      </div>
+    </div>
+    <div class="view" id="view">
+      <canvas id="gl"></canvas>
+      <div class="overlay" id="overlay"></div>
+      <div class="loader" id="loader" role="status" aria-live="polite">
+        <div class="ld-card"><div class="ld-spin" aria-hidden="true"></div>
+          <div class="ld-title" id="ldTitle">Loading Spectral Sky</div>
+          <div class="ld-step" id="ldStep">Starting…</div>
+          <div class="ld-hint" id="ldHint">Needs a browser with WebGPU (Chrome, Edge, Safari 26 or newer).</div></div></div>
+      <div class="legend" id="legend" hidden><span>10⁻⁴</span><i></i><span>10⁹ cd/m²</span></div>
+      <div class="status" id="status">Starting…</div>
+    </div>
+    <footer class="readouts" id="readouts"></footer>
+  </section>
+  <aside id="panel"></aside>
+</div>
+<script>
+// Spectral Sky Next — shared core: constants, spectral tables, vectors, ephemerides.
+// Loaded by both the UI thread and the render worker.
+// Units: lengths km, extinction 1/km, spectral irradiance W·m⁻²·nm⁻¹, radiance W·m⁻²·sr⁻¹·nm⁻¹; output CIE XYZ, Y in cd/m².
+'use strict';
+const NL = 24, NG = 6, DL = 15;
+const LAM = Array.from({length:NL}, (_,i) => 387.5 + DL*i);
+const f32 = a => new Float32Array(a);
+const clamp = (x,a,b) => Math.min(b, Math.max(a, x));
+const D2R = Math.PI/180, R2D = 180/Math.PI;
+
+/* ---------- spectral tables ---------- */
+function lerpT(t, x){ if (x<=t[0][0]) return t[0][1]; const n=t.length; if (x>=t[n-1][0]) return t[n-1][1];
+  for (let i=1;i<n;i++) if (x<=t[i][0]){ const a=t[i-1], b=t[i]; return a[1]+(b[1]-a[1])*(x-a[0])/(b[0]-a[0]); } }
+const binAvg = (fn,l) => { let s=0; for (let k=-7;k<=7;k++) s+=fn(l+k); return s/15; };
+// Extraterrestrial solar spectral irradiance at 1 AU (W m^-2 nm^-1), smoothed ASTM E-490
+const SOLAR=[[380,1.10],[390,1.09],[400,1.69],[410,1.70],[420,1.75],[430,1.60],[440,1.83],[450,2.05],[460,2.07],[470,2.03],[480,2.07],[490,1.95],[500,1.95],[510,1.89],[520,1.85],[530,1.92],[540,1.86],[550,1.88],[560,1.83],[570,1.83],[580,1.84],[590,1.77],[600,1.75],[610,1.71],[620,1.66],[630,1.62],[640,1.60],[650,1.53],[660,1.52],[670,1.51],[680,1.47],[690,1.43],[700,1.41],[710,1.38],[720,1.35],[730,1.32],[740,1.28],[750,1.26],[760,1.23]];
+// O3 absorption cross-section, 293 K (cm^2) — Chappuis band
+const O3XS=[[380,0.2e-23],[400,1.0e-23],[425,6.0e-23],[450,2.7e-22],[475,6.5e-22],[500,1.4e-21],[525,2.5e-21],[550,3.3e-21],[575,4.6e-21],[600,5.1e-21],[625,4.2e-21],[650,2.6e-21],[675,1.4e-21],[700,0.8e-21],[725,0.55e-21],[750,0.4e-21],[780,0.3e-21]];
+// CIE 1931 2° colour matching functions (Wyman–Sloan–Shirley multi-lobe fit)
+const gl_ = (x,m,s1,s2) => { const t=(x-m)/(x<m?s1:s2); return Math.exp(-0.5*t*t); };
+const xbar = l => 1.056*gl_(l,599.8,37.9,31.0)+0.362*gl_(l,442.0,16.0,26.7)-0.065*gl_(l,501.1,20.4,26.2);
+const ybar = l => 0.821*gl_(l,568.8,46.9,40.5)+0.286*gl_(l,530.9,16.3,31.1);
+const zbar = l => 1.217*gl_(l,437.0,11.8,36.0)+0.681*gl_(l,459.0,26.0,13.8);
+const CMFX = LAM.map(l=>binAvg(xbar,l)*DL*683), CMFY = LAM.map(l=>binAvg(ybar,l)*DL*683), CMFZ = LAM.map(l=>binAvg(zbar,l)*DL*683);
+const SOLAR_BIN = LAM.map(l=>binAvg(x=>lerpT(SOLAR,x),l));
+// Spectral ground reflectance (directional-hemispherical, treated as Lambertian)
+const SURFACES = {
+  grey:{name:'Neutral (set albedo)', t:null},
+  grass:{name:'Green grass', t:[[400,.04],[450,.05],[500,.07],[550,.12],[600,.08],[650,.06],[680,.05],[700,.15],[720,.35],[740,.45]]},
+  drygrass:{name:'Dry grass / savanna', t:[[400,.07],[500,.10],[550,.14],[600,.20],[650,.24],[700,.28],[740,.32]]},
+  sand:{name:'Desert sand', t:[[400,.15],[450,.20],[500,.27],[550,.33],[600,.39],[650,.43],[700,.46],[740,.48]]},
+  soil:{name:'Bare soil', t:[[400,.06],[500,.09],[600,.13],[700,.17],[740,.19]]},
+  snow:{name:'Fresh snow', t:[[400,.96],[550,.95],[700,.92],[740,.90]]},
+  asphalt:{name:'Asphalt', t:[[400,.05],[740,.09]]},
+  concrete:{name:'Concrete', t:[[400,.22],[550,.30],[740,.35]]},
+  water:{name:'Water (diffuse approx.)', t:[[400,.08],[550,.05],[740,.03]]},
+};
+const AEROSOLS = {
+  continental:{name:'Continental', alpha:1.3, ssa:()=>0.93, g:0.70, hyg:0.35},
+  maritime:{name:'Maritime', alpha:0.45, ssa:()=>0.985, g:0.76, hyg:0.45},
+  urban:{name:'Urban / industrial', alpha:1.45, ssa:()=>0.82, g:0.66, hyg:0.30},
+  desert:{name:'Desert dust', alpha:0.25, ssa:l=>0.80+0.17*clamp((l-400)/300,0,1), g:0.73, hyg:0.05},
+  smoke:{name:'Wildfire smoke', alpha:1.85, ssa:l=>0.86+0.06*clamp((l-400)/300,0,1), g:0.62, hyg:0.15},
+  clean:{name:'Clean / polar', alpha:1.4, ssa:()=>0.97, g:0.70, hyg:0.30},
+};
+const ICE_N=[[400,1.3185],[450,1.3150],[500,1.3126],[550,1.3110],[600,1.3096],[650,1.3086],[700,1.3075],[750,1.3065]];
+// Rayleigh: Peck–Reeder refractivity, Bates/Bodhaine King factor, Ns at 15°C/1013.25 hPa
+function rayleighKm(lnm){ const l=lnm*1e-3, s2=1/(l*l);
+  const n1=(8060.51+2480990/(132.274-s2)+17455.7/(39.32957-s2))*1e-8, n=1+n1;
+  const FN2=1.034+3.17e-4*s2, FO2=1.096+1.385e-3*s2+1.448e-4*s2*s2, co2=0.042;
+  const F=(78.084*FN2+20.946*FO2+0.934+co2*1.15)/(78.084+20.946+0.934+co2);
+  const Ns=2.546899e25, lm=lnm*1e-9, n2=n*n;
+  const sigma=24*Math.PI**3*(n2-1)**2/(lm**4*Ns*Ns*(n2+2)**2)*F;
+  return sigma*Ns*1000; }
+const BETA_R = LAM.map(rayleighKm);
+function planck(lnm,T){ const l=lnm*1e-9; return 1/(l**5*(Math.exp(1.4387769e-2/(l*T))-1)); }
+const STAR_T = Array.from({length:16},(_,k)=>2500*Math.pow(10,k/15));
+const STAR_SPEC = (()=>{ const a=new Float32Array(16*NG*4); for (let k=0;k<16;k++){ const b=LAM.map(l=>planck(l,STAR_T[k])); let Y=0; for(let i=0;i<NL;i++) Y+=b[i]*CMFY[i]; for (let i=0;i<NL;i++){ const g=i>>2, c=i&3; a[(k*NG+g)*4+c]=b[i]/Y; } } return a; })();   // [temperature k][band group g] vec4, 1 cd/m² per unit
+// Jendersie & d'Eon (2023) approximate Mie phase for water droplets of diameter d (µm)
+function dropletPhase(d){ d=clamp(d,5,50); return { gHG:Math.exp(-0.0990567/(d-1.67154)), gD:Math.exp(-2.20679/(d+3.91029)-0.428934), a:Math.exp(3.62489-8.29288/(d+5.52825)), wD:Math.exp(-0.599085/(d-0.641583)-0.665888) }; }
+// Moon albedo map. Maria as overlapping discs at their selenographic positions [lon°E, lat°N, radius°, darkness]
+const MARIA=[[-15.6,32.8,17,.46],[-27,40,8,.44],[17.5,28.0,10.5,.42],[31.4,8.5,12.5,.48],[24,4,7,.46],[59.1,17.0,8.5,.47],[51.3,-7.8,11,.44],[56,-2,6,.44],
+ [35.5,-15.2,5.5,.45],[-16.6,-21.3,11,.40],[-23,-10,6,.40],[-38.6,-24.4,6.5,.44],[-30.9,7.5,8,.38],[3.6,13.3,4,.42],[1.7,2.4,3,.38],[-8.8,10.9,3.5,.40],
+ [-30,56,5,.38],[-15,57,5,.38],[0,56,5,.38],[15,57,5,.38],[30,58,5,.36],[-45,55,4,.36],
+ [-57,18,13,.44],[-50,5,10,.44],[-62,32,9,.42],[-45,-3,8,.42],[-68,8,9,.42],[-40,22,8,.44],[-72,22,7,.40],[-55,-10,6,.38],
+ [-31.5,44.1,4,.40],[86,13,4,.35],[87,1,4,.35],[-68.6,-5.2,1.8,.50],[-9.3,51.6,1.6,.50]];
+// bright young craters [lon, lat, radius°, brightness] and their ray systems [lon, lat, length°, strength]
+const CRATERS=[[-11.2,-43.3,1.4,.75],[-20.1,9.6,1.6,.55],[-38.0,8.1,0.9,.5],[-47.4,23.7,0.8,.95],[46.8,16.1,0.7,.6],[16.0,16.3,0.5,.5],[-35,-26,0.6,.35],[59,-40,0.9,.4]];
+const RAYS=[[-11.2,-43.3,40,.30],[-20.1,9.6,15,.22],[-38.0,8.1,9,.2],[-47.4,23.7,5,.2],[46.8,16.1,10,.18]];
+const glv4 = a => `vec4[${a.length}](${a.map(m=>`vec4(${m.map(v=>v.toFixed(2)).join(',')})`).join(',')})`;
+function sphDir(lon,lat){ lon*=D2R; lat*=D2R; return [Math.cos(lat)*Math.sin(lon), Math.sin(lat), Math.cos(lat)*Math.cos(lon)]; }
+const MARIA_C = MARIA.map(m=>sphDir(m[0],m[1]));
+const smooth = (a,b,x)=>{ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };
+const CRATERS_C = CRATERS.map(m=>sphDir(m[0],m[1]));
+function moonAlbedoJS(n){ let dark=0, br=0; for (let i=0;i<CRATERS.length;i++){ const c=CRATERS_C[i]; const ang=Math.acos(clamp(n[0]*c[0]+n[1]*c[1]+n[2]*c[2],-1,1))*R2D; br += CRATERS[i][3]*(1-smooth(CRATERS[i][2]*0.6, CRATERS[i][2]*1.3, ang)); }
+  for (let i=0;i<MARIA.length;i++){ const c=MARIA_C[i]; const ang=Math.acos(clamp(n[0]*c[0]+n[1]*c[1]+n[2]*c[2],-1,1))*R2D; dark=Math.max(dark, MARIA[i][3]*(1-smooth(MARIA[i][2]*0.7,MARIA[i][2]*1.15,ang))); } return 1-dark+br; }
+/* ---------- vectors ---------- */
+const V = { add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s], dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]], len:a=>Math.hypot(a[0],a[1],a[2]), norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/l,a[1]/l,a[2]/l];} };
+// world frame: x = east, y = up, z = north; azimuth clockwise from north
+const dirAzEl = (az,el) => [Math.sin(az*D2R)*Math.cos(el*D2R), Math.sin(el*D2R), Math.cos(az*D2R)*Math.cos(el*D2R)];
+const azElOf = d => [((Math.atan2(d[0],d[2])*R2D)+360)%360, Math.asin(clamp(d[1],-1,1))*R2D];
+/* ---------- ephemerides (NOAA solar, Meeus ch.47 lunar) ---------- */
+function refract(h){ if (h < -1.5) return h; return h + 1.02/Math.tan((h+10.3/(h+5.11))*D2R)/60; }
+function horiz(raDeg, decDeg, lstDeg, latDeg){ const H=(lstDeg-raDeg)*D2R, d=decDeg*D2R, p=latDeg*D2R;
+  const el=Math.asin(Math.sin(p)*Math.sin(d)+Math.cos(p)*Math.cos(d)*Math.cos(H));
+  const az=Math.atan2(-Math.cos(d)*Math.sin(H), Math.sin(d)*Math.cos(p)-Math.cos(d)*Math.sin(p)*Math.cos(H));
+  return [((az*R2D)+360)%360, el*R2D]; }
+function ephemeris(utcMs, lat, lon){
+  const jd = utcMs/86400000 + 2440587.5, T=(jd-2451545)/36525;
+  const L0=(280.46646+T*(36000.76983+T*0.0003032))%360, M=357.52911+T*(35999.05029-0.0001537*T), e=0.016708634-T*(0.000042037+0.0000001267*T);
+  const Mr=M*D2R, C=Math.sin(Mr)*(1.914602-T*(0.004817+0.000014*T))+Math.sin(2*Mr)*(0.019993-0.000101*T)+Math.sin(3*Mr)*0.000289;
+  const om=(125.04-1934.136*T)*D2R, lam=(L0+C-0.00569-0.00478*Math.sin(om))*D2R;
+  const eps0=23+(26+(21.448-T*(46.815+T*(0.00059-T*0.001813)))/60)/60, eps=(eps0+0.00256*Math.cos(om))*D2R;
+  const ra=Math.atan2(Math.cos(eps)*Math.sin(lam),Math.cos(lam))*R2D, dec=Math.asin(Math.sin(eps)*Math.sin(lam))*R2D;
+  const nu=Mr+C*D2R, au=1.000001018*(1-e*e)/(1+e*Math.cos(nu));
+  const gmst=(280.46061837+360.98564736629*(jd-2451545)+0.000387933*T*T-T*T*T/38710000)%360, lst=((gmst+lon)%360+360)%360;
+  let [saz, sel] = horiz(ra, dec, lst, lat); sel = refract(sel);
+  // Moon
+  const Lp=218.3164477+481267.88123421*T, Dm=(297.8501921+445267.1114034*T)*D2R, Ms=(357.5291092+35999.0502909*T)*D2R, Mp=(134.9633964+477198.8675055*T)*D2R, F=(93.2720950+483202.0175233*T)*D2R;
+  const ml=(Lp+6.288774*Math.sin(Mp)+1.274027*Math.sin(2*Dm-Mp)+0.658314*Math.sin(2*Dm)+0.213618*Math.sin(2*Mp)-0.185116*Math.sin(Ms)-0.114332*Math.sin(2*F))*D2R;
+  const mb=(5.128122*Math.sin(F)+0.280602*Math.sin(Mp+F)+0.277693*Math.sin(Mp-F)+0.173237*Math.sin(2*Dm-F))*D2R;
+  const dist=385000.56-20905.355*Math.cos(Mp)-3699.111*Math.cos(2*Dm-Mp)-2955.968*Math.cos(2*Dm)-569.925*Math.cos(2*Mp);
+  const mra=Math.atan2(Math.sin(ml)*Math.cos(eps)-Math.tan(mb)*Math.sin(eps),Math.cos(ml))*R2D, mdec=Math.asin(Math.sin(mb)*Math.cos(eps)+Math.cos(mb)*Math.sin(eps)*Math.sin(ml))*R2D;
+  let [maz, mel] = horiz(mra, mdec, lst, lat); mel -= Math.asin(6378.14/dist)*R2D*Math.cos(mel*D2R); mel = refract(mel);
+  return {saz, sel, maz, mel, dist, au, lst, subsolar:[dec, ((ra - gmst)%360 + 540)%360 - 180]};
+}
+function lstOnly(utcMs, lon){ const jd=utcMs/86400000+2440587.5, T=(jd-2451545)/36525; const g=(280.46061837+360.98564736629*(jd-2451545)+0.000387933*T*T)%360; return ((g+lon)%360+360)%360; }
+const GALACTIC = (()=>{ const eq=(ra,dec)=>[Math.cos(dec*D2R)*Math.cos(ra*D2R), Math.cos(dec*D2R)*Math.sin(ra*D2R), Math.sin(dec*D2R)];
+  const z = eq(192.85948,27.12825), gc = eq(266.405,-28.936); const x = V.norm(V.sub(gc, V.mul(z, V.dot(gc,z)))); return {x, y:V.cross(z,x), z}; })();
+const bennett = h => 1.02/Math.tan((h + 10.3/(h + 5.11))*D2R)/60;   // refraction (deg) at true altitude h
+function sunSquash(el){ if (el < -1.2 || el > 20) return 1; return clamp(1 + (bennett(el+0.15) - bennett(el-0.15))/0.3, 0.6, 1); }
+function moonDiskMean(md, ml, pole){
+  const zM = V.mul(md,-1); const yM = V.norm(V.sub(pole, V.mul(zM, V.dot(pole,zM)))); const xM = V.cross(yM, md);
+  const l = [V.dot(ml,xM), V.dot(ml,yM), V.dot(ml,zM)]; let s=0, n=0; const N=40;
+  for (let j=0;j<N;j++) for (let i=0;i<N;i++){ const x=(i+0.5)/N*2-1, y=(j+0.5)/N*2-1, rr=x*x+y*y; if (rr>=1) continue; const z=Math.sqrt(1-rr); n++;
+    const m0 = x*l[0]+y*l[1]+z*l[2]; if (m0>0) s += moonAlbedoJS([x,y,z])*m0/(m0+z); }
+  return Math.max(s/n, 1e-6); }
+const X2R = (X,Y,Z) => [3.2404542*X - 1.5371385*Y - 0.4985314*Z, -0.9692660*X + 1.8760108*Y + 0.0415560*Z, 0.0556434*X - 0.2040259*Y + 1.0572252*Z];
+
+// Spectral Sky Next — settings: defaults and the controls that edit them.
+'use strict';
+const DEFAULTS = {
+  // sun and moon: set by hand, or from a place, date and time
+  mode:'manual', sunAz:150, sunEl:35, moonAz:120, moonEl:-30, moonOverride:false, moonIllum:0.5, moonDistKm:384400, moonScale:1,
+  date:'2026-06-21', time:'12:00', utc:0, lat:47.6, lon:-122.3,
+  // air
+  aerosol:'continental', aod:0.1, humidity:50, aerH:1.2, ozone:300, fogVis:50, fogH:0.15, diurnal:true, siteAlt:0,
+  // ground
+  surface:'grass', albedo:0.2, groundMode:'lit',
+  // night sky
+  stars:true, starMag:6.5, mw:1, airglow:1, includeSun:true,
+  // camera
+  camH:0.002, azOff:0,
+  // rendering
+  previewRes:1024, atmSteps:32,
+};
+
+// Spectral Sky Next — physical state of the sky from the settings: sun and moon, air, aerosols, ozone, fog, ground.
+// Produces the Frame uniform block (layout must match struct Frame in common.wgsl) and readouts for the UI.
+'use strict';
+const FRAME_LAYOUT = [
+  ['BR', 6], ['BMs', 6], ['BMa', 6], ['BO', 6], ['Alb', 6], ['SunE', 6], ['MoonE', 6], ['SunK', 6], ['SunA', 6], ['MoonK', 6], ['Air', 6],
+  ['CMFx', 6], ['CMFy', 6], ['CMFz', 6], ['Star', 96],
+  ['atm', 1], ['atm2', 1], ['fogPh', 1], ['sunDir', 1], ['moonDir', 1], ['moonLight', 1], ['pole', 1], ['eqX', 1], ['eqY', 1], ['eqZ', 1],
+  ['galX', 1], ['galY', 1], ['galZ', 1], ['opts', 1],
+];
+const FRAME_OFF = (() => { const o = {}; let n = 0; for (const [k, len] of FRAME_LAYOUT){ o[k] = n; n += len*4; } o._size = n; return o; })();
+
+function utcMs(P){ const [y, m, d] = P.date.split('-').map(Number); const [hh, mm] = P.time.split(':').map(Number); return Date.UTC(y, (m||1) - 1, d||1, hh||0, mm||0) - P.utc*3600e3; }
+
+// P: the settings. Returns {frame: Float32Array, atmKey, derived}. In 'location' mode the sun and moon come from the
+// ephemerides and are written back into derived.sun/moon (the UI shows them).
+function computeFrame(P){
+  const utc = utcMs(P); let au = 1, moonDist = P.moonDistKm || 384400, lst = lstOnly(utc, P.lon);
+  let sunAz = P.sunAz, sunEl = P.sunEl, moonAz = P.moonAz, moonEl = P.moonEl;
+  if (P.mode === 'location'){ const e = ephemeris(utc, P.lat, P.lon); sunAz = e.saz; sunEl = e.sel; moonAz = e.maz; moonEl = e.mel; au = e.au; moonDist = e.dist; lst = e.lst; }
+  const sd = dirAzEl(sunAz, sunEl), md = dirAzEl(moonAz, moonEl);
+  let ml = V.norm(V.sub(V.mul(sd, 1.496e8*au), V.mul(md, moonDist)));
+  let phase = Math.acos(clamp(V.dot(ml, V.mul(md, -1)), -1, 1));
+  if (P.moonOverride){ phase = Math.acos(clamp(2*P.moonIllum - 1, -1, 1)); const vm = V.mul(md, -1); let e = V.sub(sd, V.mul(vm, V.dot(sd, vm)));
+    if (V.len(e) < 1e-5) e = V.cross(vm, [0, 1, 0]); if (V.len(e) < 1e-5) e = [1, 0, 0]; e = V.norm(e);
+    ml = V.norm(V.add(V.mul(vm, Math.cos(phase)), V.mul(e, Math.sin(phase)))); }
+  const pole = dirAzEl(0, P.lat);
+  const phi = P.lat*D2R, Lr = lst*D2R; const xp = [0, Math.cos(phi), -Math.sin(phi)], eW = [-1, 0, 0], zp = [0, Math.sin(phi), Math.cos(phi)];
+  const eqX = V.add(V.mul(xp, Math.cos(Lr)), V.mul(eW, Math.sin(Lr))), eqY = V.sub(V.mul(xp, Math.sin(Lr)), V.mul(eW, Math.cos(Lr)));
+  // diurnal boundary layer: dawn = shallow, cool, moist stable layer (haze trapped low, radiation mist);
+  // dusk = deep afternoon mixed layer that has lofted dust and pollution to 1.5–2.5 km
+  const low = 1 - smooth(-6, 35, sunEl), east = 0.5 + 0.5*Math.sin(sunAz*D2R);
+  const dawn = P.diurnal ? low*east : 0, dusk = P.diurnal ? low*(1 - east) : 0;
+  const RHp = clamp(P.humidity + 22*dawn - 8*dusk, 0, 97);
+  const earthF = 1/(au*au), altK = Math.exp(-(P.siteAlt || 0)/8);
+  const ae = AEROSOLS[P.aerosol] || AEROSOLS.continental; const RH = RHp/100;
+  const grow = Math.pow((1 - RH)/0.5, -ae.hyg); const alphaE = ae.alpha*(1 - 0.25*clamp((RH - 0.5)/0.47, 0, 1));
+  const aodE = P.aod*grow*(1 - 0.2*dawn + 0.25*dusk), HM = P.aerH*(1 - 0.45*dawn + 0.35*dusk), betaM550 = aodE/HM;
+  const nO3 = P.ozone*2.687e20/15000;
+  const mist = dawn*smooth(72, 96, RHp); const mistS = mist > 0.05 ? 3.912/(40 + (1.5 - 40)*mist) : 0;
+  const userFog = P.fogVis >= 49.5 ? 0 : 3.912/P.fogVis;
+  const fogS = userFog + mistS, fogH = userFog > 0 ? P.fogH : (mistS > 0 ? 0.06 : P.fogH);
+  const surf = SURFACES[P.surface] || SURFACES.grey;
+  const dropF = dropletPhase(11);
+  const sunRad = 0.2666*D2R/au, omegaSun = 2*Math.PI*(1 - Math.cos(sunRad));
+  const moonRad = Math.asin(1737.4/moonDist), omegaMoon = 2*Math.PI*(1 - Math.cos(moonRad));
+  const phaseDeg = phase*R2D, allen = Math.pow(10, -0.4*(0.026*phaseDeg + 4e-9*phaseDeg**4));
+  const meanALS = moonDiskMean(md, ml, pole);
+  const F = new Float32Array(FRAME_OFF._size);
+  const put = (k, i, v) => { F[FRAME_OFF[k] + i] = v; };
+  for (let i = 0; i < NL; i++){ const l = LAM[i];
+    const ext = betaM550*Math.pow(l/550, -alphaE); const ssa = 1 - (1 - ae.ssa(l))/Math.pow(grow, 0.7);
+    put('BR', i, BETA_R[i]*altK); put('BMs', i, ext*ssa); put('BMa', i, ext*(1 - ssa)); put('BO', i, nO3*lerpT(O3XS, l)*1e-4*1000);
+    put('Alb', i, surf.t ? lerpT(surf.t, l) : P.albedo);
+    const Es = SOLAR_BIN[i]*earthF; put('SunE', i, Es);
+    const alpha = -0.023 + 0.292/(l/1000); put('SunA', i, alpha); put('SunK', i, Es/(omegaSun*2/(alpha + 2)));
+    const geoAlb = 0.12*(1 + 0.9*(l - 550)/550); const Em = Es*geoAlb*Math.pow(1737.4/moonDist, 2)*allen; put('MoonE', i, Em); put('MoonK', i, Em/(omegaMoon*meanALS));
+    const phot = lnm => 7.958e8*1.98645e-25/(lnm*1e-9); let ag = 4*phot(l);
+    for (const [ll, R] of [[557.7, 250], [589.3, 40], [630.0, 60], [636.4, 20]]) if (Math.abs(ll - l) <= 7.5) ag += R*phot(ll)/DL;
+    put('Air', i, ag*P.airglow);
+    put('CMFx', i, CMFX[i]); put('CMFy', i, CMFY[i]); put('CMFz', i, CMFZ[i]);
+  }
+  F.set(STAR_SPEC, FRAME_OFF.Star);
+  const sunOn = sunEl > -14 ? 1 : 0, moonOn = (moonEl > -2 && sunEl < 2) ? 1 : 0;
+  const v4 = (k, a, b, c, d) => F.set([a, b, c, d], FRAME_OFF[k]);
+  v4('atm', 8.0, HM, fogS, fogH);
+  v4('atm2', ae.g, P.camH, P.azOff*D2R, sunRad);
+  v4('fogPh', dropF.gHG, dropF.gD, dropF.a, dropF.wD);
+  v4('sunDir', ...sd, sunOn); v4('moonDir', ...md, moonOn); v4('moonLight', ...ml, moonRad*P.moonScale);
+  v4('pole', ...pole, sunSquash(sunEl));
+  v4('eqX', ...eqX, sunEl < 0 ? 1 : 0); v4('eqY', ...eqY, P.stars ? 1 : 0); v4('eqZ', ...zp, P.starMag);
+  v4('galX', ...GALACTIC.x, P.mw); v4('galY', ...GALACTIC.y, Math.round(15*Math.log10(4600/2500))); v4('galZ', ...GALACTIC.z, P.includeSun ? 1 : 0);
+  v4('opts', P.atmSteps || 32, P.groundMode === 'black' ? 1 : 0, P.includeSun ? 1 : 0, 0);
+  // the tables depend only on the air and the ground, not on the sun (except the sky irradiance table, rebuilt per change)
+  const atmKey = [aodE, HM, alphaE, fogS, fogH, P.aerosol, P.ozone, P.surface, P.albedo, RH, P.siteAlt || 0].map(v => typeof v === 'number' ? v.toPrecision(5) : v).join('|');
+  const i550 = 11, h = P.camH, b550 = BETA_R[i550]*altK*Math.exp(-h/8) + (F[FRAME_OFF.BMs + i550] + F[FRAME_OFF.BMa + i550])*Math.exp(-h/HM) + fogS*Math.exp(-h/fogH);
+  const derived = {sunAz, sunEl, moonAz, moonEl, vis:3.912/b550, aodE, illum:(1 + Math.cos(phase))/2, phaseDeg, RHp, dawn, dusk, mistVis:mistS ? 3.912/mistS : 0};
+  return {frame:F, atmKey, derived};
+}
+
+const WORKER_SRC = "// Spectral Sky Next — shared core: constants, spectral tables, vectors, ephemerides.\n// Loaded by both the UI thread and the render worker.\n// Units: lengths km, extinction 1/km, spectral irradiance W·m⁻²·nm⁻¹, radiance W·m⁻²·sr⁻¹·nm⁻¹; output CIE XYZ, Y in cd/m².\n'use strict';\nconst NL = 24, NG = 6, DL = 15;\nconst LAM = Array.from({length:NL}, (_,i) => 387.5 + DL*i);\nconst f32 = a => new Float32Array(a);\nconst clamp = (x,a,b) => Math.min(b, Math.max(a, x));\nconst D2R = Math.PI/180, R2D = 180/Math.PI;\n\n/* ---------- spectral tables ---------- */\nfunction lerpT(t, x){ if (x<=t[0][0]) return t[0][1]; const n=t.length; if (x>=t[n-1][0]) return t[n-1][1];\n  for (let i=1;i<n;i++) if (x<=t[i][0]){ const a=t[i-1], b=t[i]; return a[1]+(b[1]-a[1])*(x-a[0])/(b[0]-a[0]); } }\nconst binAvg = (fn,l) => { let s=0; for (let k=-7;k<=7;k++) s+=fn(l+k); return s/15; };\n// Extraterrestrial solar spectral irradiance at 1 AU (W m^-2 nm^-1), smoothed ASTM E-490\nconst SOLAR=[[380,1.10],[390,1.09],[400,1.69],[410,1.70],[420,1.75],[430,1.60],[440,1.83],[450,2.05],[460,2.07],[470,2.03],[480,2.07],[490,1.95],[500,1.95],[510,1.89],[520,1.85],[530,1.92],[540,1.86],[550,1.88],[560,1.83],[570,1.83],[580,1.84],[590,1.77],[600,1.75],[610,1.71],[620,1.66],[630,1.62],[640,1.60],[650,1.53],[660,1.52],[670,1.51],[680,1.47],[690,1.43],[700,1.41],[710,1.38],[720,1.35],[730,1.32],[740,1.28],[750,1.26],[760,1.23]];\n// O3 absorption cross-section, 293 K (cm^2) — Chappuis band\nconst O3XS=[[380,0.2e-23],[400,1.0e-23],[425,6.0e-23],[450,2.7e-22],[475,6.5e-22],[500,1.4e-21],[525,2.5e-21],[550,3.3e-21],[575,4.6e-21],[600,5.1e-21],[625,4.2e-21],[650,2.6e-21],[675,1.4e-21],[700,0.8e-21],[725,0.55e-21],[750,0.4e-21],[780,0.3e-21]];\n// CIE 1931 2° colour matching functions (Wyman–Sloan–Shirley multi-lobe fit)\nconst gl_ = (x,m,s1,s2) => { const t=(x-m)/(x<m?s1:s2); return Math.exp(-0.5*t*t); };\nconst xbar = l => 1.056*gl_(l,599.8,37.9,31.0)+0.362*gl_(l,442.0,16.0,26.7)-0.065*gl_(l,501.1,20.4,26.2);\nconst ybar = l => 0.821*gl_(l,568.8,46.9,40.5)+0.286*gl_(l,530.9,16.3,31.1);\nconst zbar = l => 1.217*gl_(l,437.0,11.8,36.0)+0.681*gl_(l,459.0,26.0,13.8);\nconst CMFX = LAM.map(l=>binAvg(xbar,l)*DL*683), CMFY = LAM.map(l=>binAvg(ybar,l)*DL*683), CMFZ = LAM.map(l=>binAvg(zbar,l)*DL*683);\nconst SOLAR_BIN = LAM.map(l=>binAvg(x=>lerpT(SOLAR,x),l));\n// Spectral ground reflectance (directional-hemispherical, treated as Lambertian)\nconst SURFACES = {\n  grey:{name:'Neutral (set albedo)', t:null},\n  grass:{name:'Green grass', t:[[400,.04],[450,.05],[500,.07],[550,.12],[600,.08],[650,.06],[680,.05],[700,.15],[720,.35],[740,.45]]},\n  drygrass:{name:'Dry grass / savanna', t:[[400,.07],[500,.10],[550,.14],[600,.20],[650,.24],[700,.28],[740,.32]]},\n  sand:{name:'Desert sand', t:[[400,.15],[450,.20],[500,.27],[550,.33],[600,.39],[650,.43],[700,.46],[740,.48]]},\n  soil:{name:'Bare soil', t:[[400,.06],[500,.09],[600,.13],[700,.17],[740,.19]]},\n  snow:{name:'Fresh snow', t:[[400,.96],[550,.95],[700,.92],[740,.90]]},\n  asphalt:{name:'Asphalt', t:[[400,.05],[740,.09]]},\n  concrete:{name:'Concrete', t:[[400,.22],[550,.30],[740,.35]]},\n  water:{name:'Water (diffuse approx.)', t:[[400,.08],[550,.05],[740,.03]]},\n};\nconst AEROSOLS = {\n  continental:{name:'Continental', alpha:1.3, ssa:()=>0.93, g:0.70, hyg:0.35},\n  maritime:{name:'Maritime', alpha:0.45, ssa:()=>0.985, g:0.76, hyg:0.45},\n  urban:{name:'Urban / industrial', alpha:1.45, ssa:()=>0.82, g:0.66, hyg:0.30},\n  desert:{name:'Desert dust', alpha:0.25, ssa:l=>0.80+0.17*clamp((l-400)/300,0,1), g:0.73, hyg:0.05},\n  smoke:{name:'Wildfire smoke', alpha:1.85, ssa:l=>0.86+0.06*clamp((l-400)/300,0,1), g:0.62, hyg:0.15},\n  clean:{name:'Clean / polar', alpha:1.4, ssa:()=>0.97, g:0.70, hyg:0.30},\n};\nconst ICE_N=[[400,1.3185],[450,1.3150],[500,1.3126],[550,1.3110],[600,1.3096],[650,1.3086],[700,1.3075],[750,1.3065]];\n// Rayleigh: Peck–Reeder refractivity, Bates/Bodhaine King factor, Ns at 15°C/1013.25 hPa\nfunction rayleighKm(lnm){ const l=lnm*1e-3, s2=1/(l*l);\n  const n1=(8060.51+2480990/(132.274-s2)+17455.7/(39.32957-s2))*1e-8, n=1+n1;\n  const FN2=1.034+3.17e-4*s2, FO2=1.096+1.385e-3*s2+1.448e-4*s2*s2, co2=0.042;\n  const F=(78.084*FN2+20.946*FO2+0.934+co2*1.15)/(78.084+20.946+0.934+co2);\n  const Ns=2.546899e25, lm=lnm*1e-9, n2=n*n;\n  const sigma=24*Math.PI**3*(n2-1)**2/(lm**4*Ns*Ns*(n2+2)**2)*F;\n  return sigma*Ns*1000; }\nconst BETA_R = LAM.map(rayleighKm);\nfunction planck(lnm,T){ const l=lnm*1e-9; return 1/(l**5*(Math.exp(1.4387769e-2/(l*T))-1)); }\nconst STAR_T = Array.from({length:16},(_,k)=>2500*Math.pow(10,k/15));\nconst STAR_SPEC = (()=>{ const a=new Float32Array(16*NG*4); for (let k=0;k<16;k++){ const b=LAM.map(l=>planck(l,STAR_T[k])); let Y=0; for(let i=0;i<NL;i++) Y+=b[i]*CMFY[i]; for (let i=0;i<NL;i++){ const g=i>>2, c=i&3; a[(k*NG+g)*4+c]=b[i]/Y; } } return a; })();   // [temperature k][band group g] vec4, 1 cd/m² per unit\n// Jendersie & d'Eon (2023) approximate Mie phase for water droplets of diameter d (µm)\nfunction dropletPhase(d){ d=clamp(d,5,50); return { gHG:Math.exp(-0.0990567/(d-1.67154)), gD:Math.exp(-2.20679/(d+3.91029)-0.428934), a:Math.exp(3.62489-8.29288/(d+5.52825)), wD:Math.exp(-0.599085/(d-0.641583)-0.665888) }; }\n// Moon albedo map. Maria as overlapping discs at their selenographic positions [lon°E, lat°N, radius°, darkness]\nconst MARIA=[[-15.6,32.8,17,.46],[-27,40,8,.44],[17.5,28.0,10.5,.42],[31.4,8.5,12.5,.48],[24,4,7,.46],[59.1,17.0,8.5,.47],[51.3,-7.8,11,.44],[56,-2,6,.44],\n [35.5,-15.2,5.5,.45],[-16.6,-21.3,11,.40],[-23,-10,6,.40],[-38.6,-24.4,6.5,.44],[-30.9,7.5,8,.38],[3.6,13.3,4,.42],[1.7,2.4,3,.38],[-8.8,10.9,3.5,.40],\n [-30,56,5,.38],[-15,57,5,.38],[0,56,5,.38],[15,57,5,.38],[30,58,5,.36],[-45,55,4,.36],\n [-57,18,13,.44],[-50,5,10,.44],[-62,32,9,.42],[-45,-3,8,.42],[-68,8,9,.42],[-40,22,8,.44],[-72,22,7,.40],[-55,-10,6,.38],\n [-31.5,44.1,4,.40],[86,13,4,.35],[87,1,4,.35],[-68.6,-5.2,1.8,.50],[-9.3,51.6,1.6,.50]];\n// bright young craters [lon, lat, radius°, brightness] and their ray systems [lon, lat, length°, strength]\nconst CRATERS=[[-11.2,-43.3,1.4,.75],[-20.1,9.6,1.6,.55],[-38.0,8.1,0.9,.5],[-47.4,23.7,0.8,.95],[46.8,16.1,0.7,.6],[16.0,16.3,0.5,.5],[-35,-26,0.6,.35],[59,-40,0.9,.4]];\nconst RAYS=[[-11.2,-43.3,40,.30],[-20.1,9.6,15,.22],[-38.0,8.1,9,.2],[-47.4,23.7,5,.2],[46.8,16.1,10,.18]];\nconst glv4 = a => `vec4[${a.length}](${a.map(m=>`vec4(${m.map(v=>v.toFixed(2)).join(',')})`).join(',')})`;\nfunction sphDir(lon,lat){ lon*=D2R; lat*=D2R; return [Math.cos(lat)*Math.sin(lon), Math.sin(lat), Math.cos(lat)*Math.cos(lon)]; }\nconst MARIA_C = MARIA.map(m=>sphDir(m[0],m[1]));\nconst smooth = (a,b,x)=>{ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };\nconst CRATERS_C = CRATERS.map(m=>sphDir(m[0],m[1]));\nfunction moonAlbedoJS(n){ let dark=0, br=0; for (let i=0;i<CRATERS.length;i++){ const c=CRATERS_C[i]; const ang=Math.acos(clamp(n[0]*c[0]+n[1]*c[1]+n[2]*c[2],-1,1))*R2D; br += CRATERS[i][3]*(1-smooth(CRATERS[i][2]*0.6, CRATERS[i][2]*1.3, ang)); }\n  for (let i=0;i<MARIA.length;i++){ const c=MARIA_C[i]; const ang=Math.acos(clamp(n[0]*c[0]+n[1]*c[1]+n[2]*c[2],-1,1))*R2D; dark=Math.max(dark, MARIA[i][3]*(1-smooth(MARIA[i][2]*0.7,MARIA[i][2]*1.15,ang))); } return 1-dark+br; }\n/* ---------- vectors ---------- */\nconst V = { add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s], dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],\n  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]], len:a=>Math.hypot(a[0],a[1],a[2]), norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/l,a[1]/l,a[2]/l];} };\n// world frame: x = east, y = up, z = north; azimuth clockwise from north\nconst dirAzEl = (az,el) => [Math.sin(az*D2R)*Math.cos(el*D2R), Math.sin(el*D2R), Math.cos(az*D2R)*Math.cos(el*D2R)];\nconst azElOf = d => [((Math.atan2(d[0],d[2])*R2D)+360)%360, Math.asin(clamp(d[1],-1,1))*R2D];\n/* ---------- ephemerides (NOAA solar, Meeus ch.47 lunar) ---------- */\nfunction refract(h){ if (h < -1.5) return h; return h + 1.02/Math.tan((h+10.3/(h+5.11))*D2R)/60; }\nfunction horiz(raDeg, decDeg, lstDeg, latDeg){ const H=(lstDeg-raDeg)*D2R, d=decDeg*D2R, p=latDeg*D2R;\n  const el=Math.asin(Math.sin(p)*Math.sin(d)+Math.cos(p)*Math.cos(d)*Math.cos(H));\n  const az=Math.atan2(-Math.cos(d)*Math.sin(H), Math.sin(d)*Math.cos(p)-Math.cos(d)*Math.sin(p)*Math.cos(H));\n  return [((az*R2D)+360)%360, el*R2D]; }\nfunction ephemeris(utcMs, lat, lon){\n  const jd = utcMs/86400000 + 2440587.5, T=(jd-2451545)/36525;\n  const L0=(280.46646+T*(36000.76983+T*0.0003032))%360, M=357.52911+T*(35999.05029-0.0001537*T), e=0.016708634-T*(0.000042037+0.0000001267*T);\n  const Mr=M*D2R, C=Math.sin(Mr)*(1.914602-T*(0.004817+0.000014*T))+Math.sin(2*Mr)*(0.019993-0.000101*T)+Math.sin(3*Mr)*0.000289;\n  const om=(125.04-1934.136*T)*D2R, lam=(L0+C-0.00569-0.00478*Math.sin(om))*D2R;\n  const eps0=23+(26+(21.448-T*(46.815+T*(0.00059-T*0.001813)))/60)/60, eps=(eps0+0.00256*Math.cos(om))*D2R;\n  const ra=Math.atan2(Math.cos(eps)*Math.sin(lam),Math.cos(lam))*R2D, dec=Math.asin(Math.sin(eps)*Math.sin(lam))*R2D;\n  const nu=Mr+C*D2R, au=1.000001018*(1-e*e)/(1+e*Math.cos(nu));\n  const gmst=(280.46061837+360.98564736629*(jd-2451545)+0.000387933*T*T-T*T*T/38710000)%360, lst=((gmst+lon)%360+360)%360;\n  let [saz, sel] = horiz(ra, dec, lst, lat); sel = refract(sel);\n  // Moon\n  const Lp=218.3164477+481267.88123421*T, Dm=(297.8501921+445267.1114034*T)*D2R, Ms=(357.5291092+35999.0502909*T)*D2R, Mp=(134.9633964+477198.8675055*T)*D2R, F=(93.2720950+483202.0175233*T)*D2R;\n  const ml=(Lp+6.288774*Math.sin(Mp)+1.274027*Math.sin(2*Dm-Mp)+0.658314*Math.sin(2*Dm)+0.213618*Math.sin(2*Mp)-0.185116*Math.sin(Ms)-0.114332*Math.sin(2*F))*D2R;\n  const mb=(5.128122*Math.sin(F)+0.280602*Math.sin(Mp+F)+0.277693*Math.sin(Mp-F)+0.173237*Math.sin(2*Dm-F))*D2R;\n  const dist=385000.56-20905.355*Math.cos(Mp)-3699.111*Math.cos(2*Dm-Mp)-2955.968*Math.cos(2*Dm)-569.925*Math.cos(2*Mp);\n  const mra=Math.atan2(Math.sin(ml)*Math.cos(eps)-Math.tan(mb)*Math.sin(eps),Math.cos(ml))*R2D, mdec=Math.asin(Math.sin(mb)*Math.cos(eps)+Math.cos(mb)*Math.sin(eps)*Math.sin(ml))*R2D;\n  let [maz, mel] = horiz(mra, mdec, lst, lat); mel -= Math.asin(6378.14/dist)*R2D*Math.cos(mel*D2R); mel = refract(mel);\n  return {saz, sel, maz, mel, dist, au, lst, subsolar:[dec, ((ra - gmst)%360 + 540)%360 - 180]};\n}\nfunction lstOnly(utcMs, lon){ const jd=utcMs/86400000+2440587.5, T=(jd-2451545)/36525; const g=(280.46061837+360.98564736629*(jd-2451545)+0.000387933*T*T)%360; return ((g+lon)%360+360)%360; }\nconst GALACTIC = (()=>{ const eq=(ra,dec)=>[Math.cos(dec*D2R)*Math.cos(ra*D2R), Math.cos(dec*D2R)*Math.sin(ra*D2R), Math.sin(dec*D2R)];\n  const z = eq(192.85948,27.12825), gc = eq(266.405,-28.936); const x = V.norm(V.sub(gc, V.mul(z, V.dot(gc,z)))); return {x, y:V.cross(z,x), z}; })();\nconst bennett = h => 1.02/Math.tan((h + 10.3/(h + 5.11))*D2R)/60;   // refraction (deg) at true altitude h\nfunction sunSquash(el){ if (el < -1.2 || el > 20) return 1; return clamp(1 + (bennett(el+0.15) - bennett(el-0.15))/0.3, 0.6, 1); }\nfunction moonDiskMean(md, ml, pole){\n  const zM = V.mul(md,-1); const yM = V.norm(V.sub(pole, V.mul(zM, V.dot(pole,zM)))); const xM = V.cross(yM, md);\n  const l = [V.dot(ml,xM), V.dot(ml,yM), V.dot(ml,zM)]; let s=0, n=0; const N=40;\n  for (let j=0;j<N;j++) for (let i=0;i<N;i++){ const x=(i+0.5)/N*2-1, y=(j+0.5)/N*2-1, rr=x*x+y*y; if (rr>=1) continue; const z=Math.sqrt(1-rr); n++;\n    const m0 = x*l[0]+y*l[1]+z*l[2]; if (m0>0) s += moonAlbedoJS([x,y,z])*m0/(m0+z); }\n  return Math.max(s/n, 1e-6); }\nconst X2R = (X,Y,Z) => [3.2404542*X - 1.5371385*Y - 0.4985314*Z, -0.9692660*X + 1.8760108*Y + 0.0415560*Z, 0.0556434*X - 0.2040259*Y + 1.0572252*Z];\n\n// Spectral Sky Next — settings: defaults and the controls that edit them.\n'use strict';\nconst DEFAULTS = {\n  // sun and moon: set by hand, or from a place, date and time\n  mode:'manual', sunAz:150, sunEl:35, moonAz:120, moonEl:-30, moonOverride:false, moonIllum:0.5, moonDistKm:384400, moonScale:1,\n  date:'2026-06-21', time:'12:00', utc:0, lat:47.6, lon:-122.3,\n  // air\n  aerosol:'continental', aod:0.1, humidity:50, aerH:1.2, ozone:300, fogVis:50, fogH:0.15, diurnal:true, siteAlt:0,\n  // ground\n  surface:'grass', albedo:0.2, groundMode:'lit',\n  // night sky\n  stars:true, starMag:6.5, mw:1, airglow:1, includeSun:true,\n  // camera\n  camH:0.002, azOff:0,\n  // rendering\n  previewRes:1024, atmSteps:32,\n};\n\n// Spectral Sky Next — physical state of the sky from the settings: sun and moon, air, aerosols, ozone, fog, ground.\n// Produces the Frame uniform block (layout must match struct Frame in common.wgsl) and readouts for the UI.\n'use strict';\nconst FRAME_LAYOUT = [\n  ['BR', 6], ['BMs', 6], ['BMa', 6], ['BO', 6], ['Alb', 6], ['SunE', 6], ['MoonE', 6], ['SunK', 6], ['SunA', 6], ['MoonK', 6], ['Air', 6],\n  ['CMFx', 6], ['CMFy', 6], ['CMFz', 6], ['Star', 96],\n  ['atm', 1], ['atm2', 1], ['fogPh', 1], ['sunDir', 1], ['moonDir', 1], ['moonLight', 1], ['pole', 1], ['eqX', 1], ['eqY', 1], ['eqZ', 1],\n  ['galX', 1], ['galY', 1], ['galZ', 1], ['opts', 1],\n];\nconst FRAME_OFF = (() => { const o = {}; let n = 0; for (const [k, len] of FRAME_LAYOUT){ o[k] = n; n += len*4; } o._size = n; return o; })();\n\nfunction utcMs(P){ const [y, m, d] = P.date.split('-').map(Number); const [hh, mm] = P.time.split(':').map(Number); return Date.UTC(y, (m||1) - 1, d||1, hh||0, mm||0) - P.utc*3600e3; }\n\n// P: the settings. Returns {frame: Float32Array, atmKey, derived}. In 'location' mode the sun and moon come from the\n// ephemerides and are written back into derived.sun/moon (the UI shows them).\nfunction computeFrame(P){\n  const utc = utcMs(P); let au = 1, moonDist = P.moonDistKm || 384400, lst = lstOnly(utc, P.lon);\n  let sunAz = P.sunAz, sunEl = P.sunEl, moonAz = P.moonAz, moonEl = P.moonEl;\n  if (P.mode === 'location'){ const e = ephemeris(utc, P.lat, P.lon); sunAz = e.saz; sunEl = e.sel; moonAz = e.maz; moonEl = e.mel; au = e.au; moonDist = e.dist; lst = e.lst; }\n  const sd = dirAzEl(sunAz, sunEl), md = dirAzEl(moonAz, moonEl);\n  let ml = V.norm(V.sub(V.mul(sd, 1.496e8*au), V.mul(md, moonDist)));\n  let phase = Math.acos(clamp(V.dot(ml, V.mul(md, -1)), -1, 1));\n  if (P.moonOverride){ phase = Math.acos(clamp(2*P.moonIllum - 1, -1, 1)); const vm = V.mul(md, -1); let e = V.sub(sd, V.mul(vm, V.dot(sd, vm)));\n    if (V.len(e) < 1e-5) e = V.cross(vm, [0, 1, 0]); if (V.len(e) < 1e-5) e = [1, 0, 0]; e = V.norm(e);\n    ml = V.norm(V.add(V.mul(vm, Math.cos(phase)), V.mul(e, Math.sin(phase)))); }\n  const pole = dirAzEl(0, P.lat);\n  const phi = P.lat*D2R, Lr = lst*D2R; const xp = [0, Math.cos(phi), -Math.sin(phi)], eW = [-1, 0, 0], zp = [0, Math.sin(phi), Math.cos(phi)];\n  const eqX = V.add(V.mul(xp, Math.cos(Lr)), V.mul(eW, Math.sin(Lr))), eqY = V.sub(V.mul(xp, Math.sin(Lr)), V.mul(eW, Math.cos(Lr)));\n  // diurnal boundary layer: dawn = shallow, cool, moist stable layer (haze trapped low, radiation mist);\n  // dusk = deep afternoon mixed layer that has lofted dust and pollution to 1.5–2.5 km\n  const low = 1 - smooth(-6, 35, sunEl), east = 0.5 + 0.5*Math.sin(sunAz*D2R);\n  const dawn = P.diurnal ? low*east : 0, dusk = P.diurnal ? low*(1 - east) : 0;\n  const RHp = clamp(P.humidity + 22*dawn - 8*dusk, 0, 97);\n  const earthF = 1/(au*au), altK = Math.exp(-(P.siteAlt || 0)/8);\n  const ae = AEROSOLS[P.aerosol] || AEROSOLS.continental; const RH = RHp/100;\n  const grow = Math.pow((1 - RH)/0.5, -ae.hyg); const alphaE = ae.alpha*(1 - 0.25*clamp((RH - 0.5)/0.47, 0, 1));\n  const aodE = P.aod*grow*(1 - 0.2*dawn + 0.25*dusk), HM = P.aerH*(1 - 0.45*dawn + 0.35*dusk), betaM550 = aodE/HM;\n  const nO3 = P.ozone*2.687e20/15000;\n  const mist = dawn*smooth(72, 96, RHp); const mistS = mist > 0.05 ? 3.912/(40 + (1.5 - 40)*mist) : 0;\n  const userFog = P.fogVis >= 49.5 ? 0 : 3.912/P.fogVis;\n  const fogS = userFog + mistS, fogH = userFog > 0 ? P.fogH : (mistS > 0 ? 0.06 : P.fogH);\n  const surf = SURFACES[P.surface] || SURFACES.grey;\n  const dropF = dropletPhase(11);\n  const sunRad = 0.2666*D2R/au, omegaSun = 2*Math.PI*(1 - Math.cos(sunRad));\n  const moonRad = Math.asin(1737.4/moonDist), omegaMoon = 2*Math.PI*(1 - Math.cos(moonRad));\n  const phaseDeg = phase*R2D, allen = Math.pow(10, -0.4*(0.026*phaseDeg + 4e-9*phaseDeg**4));\n  const meanALS = moonDiskMean(md, ml, pole);\n  const F = new Float32Array(FRAME_OFF._size);\n  const put = (k, i, v) => { F[FRAME_OFF[k] + i] = v; };\n  for (let i = 0; i < NL; i++){ const l = LAM[i];\n    const ext = betaM550*Math.pow(l/550, -alphaE); const ssa = 1 - (1 - ae.ssa(l))/Math.pow(grow, 0.7);\n    put('BR', i, BETA_R[i]*altK); put('BMs', i, ext*ssa); put('BMa', i, ext*(1 - ssa)); put('BO', i, nO3*lerpT(O3XS, l)*1e-4*1000);\n    put('Alb', i, surf.t ? lerpT(surf.t, l) : P.albedo);\n    const Es = SOLAR_BIN[i]*earthF; put('SunE', i, Es);\n    const alpha = -0.023 + 0.292/(l/1000); put('SunA', i, alpha); put('SunK', i, Es/(omegaSun*2/(alpha + 2)));\n    const geoAlb = 0.12*(1 + 0.9*(l - 550)/550); const Em = Es*geoAlb*Math.pow(1737.4/moonDist, 2)*allen; put('MoonE', i, Em); put('MoonK', i, Em/(omegaMoon*meanALS));\n    const phot = lnm => 7.958e8*1.98645e-25/(lnm*1e-9); let ag = 4*phot(l);\n    for (const [ll, R] of [[557.7, 250], [589.3, 40], [630.0, 60], [636.4, 20]]) if (Math.abs(ll - l) <= 7.5) ag += R*phot(ll)/DL;\n    put('Air', i, ag*P.airglow);\n    put('CMFx', i, CMFX[i]); put('CMFy', i, CMFY[i]); put('CMFz', i, CMFZ[i]);\n  }\n  F.set(STAR_SPEC, FRAME_OFF.Star);\n  const sunOn = sunEl > -14 ? 1 : 0, moonOn = (moonEl > -2 && sunEl < 2) ? 1 : 0;\n  const v4 = (k, a, b, c, d) => F.set([a, b, c, d], FRAME_OFF[k]);\n  v4('atm', 8.0, HM, fogS, fogH);\n  v4('atm2', ae.g, P.camH, P.azOff*D2R, sunRad);\n  v4('fogPh', dropF.gHG, dropF.gD, dropF.a, dropF.wD);\n  v4('sunDir', ...sd, sunOn); v4('moonDir', ...md, moonOn); v4('moonLight', ...ml, moonRad*P.moonScale);\n  v4('pole', ...pole, sunSquash(sunEl));\n  v4('eqX', ...eqX, sunEl < 0 ? 1 : 0); v4('eqY', ...eqY, P.stars ? 1 : 0); v4('eqZ', ...zp, P.starMag);\n  v4('galX', ...GALACTIC.x, P.mw); v4('galY', ...GALACTIC.y, Math.round(15*Math.log10(4600/2500))); v4('galZ', ...GALACTIC.z, P.includeSun ? 1 : 0);\n  v4('opts', P.atmSteps || 32, P.groundMode === 'black' ? 1 : 0, P.includeSun ? 1 : 0, 0);\n  // the tables depend only on the air and the ground, not on the sun (except the sky irradiance table, rebuilt per change)\n  const atmKey = [aodE, HM, alphaE, fogS, fogH, P.aerosol, P.ozone, P.surface, P.albedo, RH, P.siteAlt || 0].map(v => typeof v === 'number' ? v.toPrecision(5) : v).join('|');\n  const i550 = 11, h = P.camH, b550 = BETA_R[i550]*altK*Math.exp(-h/8) + (F[FRAME_OFF.BMs + i550] + F[FRAME_OFF.BMa + i550])*Math.exp(-h/HM) + fogS*Math.exp(-h/fogH);\n  const derived = {sunAz, sunEl, moonAz, moonEl, vis:3.912/b550, aodE, illum:(1 + Math.cos(phase))/2, phaseDeg, RHp, dawn, dusk, mistVis:mistS ? 3.912/mistS : 0};\n  return {frame:F, atmKey, derived};\n}\n\nconst WGSL = {\"atmo\":\"// ---------- lookups into the atmosphere tables (needs transTex, msTex, linSamp, amb bound by the including shader) ----------\\nfn transmittance(g: u32, r0: f32, mu: f32) -> vec4f {\\n  let r = max(r0, Rg + 1e-4);\\n  let H = sqrt(Rt*Rt - Rg*Rg); let rho = sqrt(max((r - Rg)*(r + Rg), 0.0));\\n  let d = distToTop(r, mu); let dmin = Rt - r; let dmax = rho + H;\\n  let xmu = clamp((d - dmin)/max(dmax - dmin, 1e-6), 0.0, 1.0); let xr = rho/H;\\n  let uv = vec2f(0.5/256.0 + xmu*(255.0/256.0), 0.5/64.0 + xr*(63.0/64.0));\\n  let T = textureSampleLevel(transTex, linSamp, uv, i32(g), 0.0);\\n  // the planet's shadow edge, softened over the solar disc\\n  let muH = -rho/r; let eps = 0.00465*sqrt(max(1.0 - muH*muH, 0.0)) + 1e-5;\\n  return T*smoothstep(muH - eps, muH + eps, mu);\\n}\\nfn msLUT(g: u32, h: f32, mus: f32) -> vec4f {\\n  var uv = vec2f(clamp(mus*0.5 + 0.5, 0.0, 1.0), sqrt(clamp(h/100.0, 0.0, 1.0)));\\n  uv = (0.5 + uv*31.0)/32.0;\\n  return textureSampleLevel(msTex, linSamp, uv, i32(g), 0.0);\\n}\\n// clear-sky irradiance on a level surface facing up (sky only, no direct sun or moon) at height h km\\nfn ambE(g: u32, h: f32) -> vec4f {\\n  let x = sqrt(clamp(h/20.0, 0.0, 1.0))*31.0; let i0 = u32(floor(x)); let i1 = min(i0 + 1u, 31u); let f = x - f32(i0);\\n  return mix(amb[i0*6u + g], amb[i1*6u + g], f);\\n}\\n\",\"common\":\"// ---------- shared constants, frame uniforms and atmosphere functions ----------\\n// Spectrum: 24 bands (387.5 … 732.5 nm, 15 nm wide), stored as 6 vec4 groups.\\nconst PI: f32 = 3.14159265358979;\\nconst Rg: f32 = 6360.0;          // planet radius, km\\nconst Rt: f32 = 6460.0;          // top of the atmosphere, km\\nconst C0: vec3f = vec3f(0.0, -6360.0, 0.0);   // planet centre; the camera stands at (0, camH, 0)\\n\\nstruct Frame {\\n  BR: array<vec4f, 6>,    // Rayleigh scattering at sea level, 1/km\\n  BMs: array<vec4f, 6>,   // aerosol scattering at the ground\\n  BMa: array<vec4f, 6>,   // aerosol absorption\\n  BO: array<vec4f, 6>,    // ozone absorption at the layer peak\\n  Alb: array<vec4f, 6>,   // ground albedo\\n  SunE: array<vec4f, 6>,  // solar irradiance at the top of the atmosphere\\n  MoonE: array<vec4f, 6>, // lunar irradiance\\n  SunK: array<vec4f, 6>,  // solar disc radiance at its centre\\n  SunA: array<vec4f, 6>,  // limb darkening exponent\\n  MoonK: array<vec4f, 6>, // lunar disc radiance scale\\n  Air: array<vec4f, 6>,   // airglow radiance at the zenith\\n  CMFx: array<vec4f, 6>, CMFy: array<vec4f, 6>, CMFz: array<vec4f, 6>,\\n  Star: array<vec4f, 96>, // blackbody spectra (16 temperatures × 6 groups), 1 cd/m² per unit\\n  atm: vec4f,      // x HR (Rayleigh scale height), y HM (aerosol scale height), z fog extinction, w fog scale height\\n  atm2: vec4f,     // x aerosol asymmetry g, y camera height km, z azimuth offset rad, w sun angular radius rad\\n  fogPh: vec4f,    // fog droplet phase (gHG, gD, alpha, wD)\\n  sunDir: vec4f,   // xyz, w sun on\\n  moonDir: vec4f,  // xyz, w moon on\\n  moonLight: vec4f,// direction of sunlight at the Moon, w moon angular radius\\n  pole: vec4f,     // celestial pole, w sun disc squash (refraction)\\n  eqX: vec4f, eqY: vec4f, eqZ: vec4f,   // equatorial frame; w: night, stars on, faintest star magnitude\\n  galX: vec4f, galY: vec4f, galZ: vec4f,// galactic frame; w: Milky Way strength, its spectrum index, include sun disc\\n  opts: vec4f,     // x atmosphere steps, y sky only (no ground), z sun disc on, w unused\\n}\\n\\nstruct Pass { rowOff: u32, frame: u32, W: u32, H: u32 }\\n\\nfn pcg3d(v0: vec3u) -> vec3u {\\n  var v = v0*1664525u + 1013904223u;\\n  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;\\n  v ^= v >> vec3u(16u);\\n  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;\\n  return v;\\n}\\nfn hash3(v: vec3u) -> vec3f { return vec3f(pcg3d(v))*(1.0/4294967295.0); }\\n\\n// ray/sphere around the planet centre from radius r, cos-zenith mu: (near, far), near < 0 … no hit gives (-1, -1)\\nfn sphereHit(r: f32, mu: f32, R: f32) -> vec2f {\\n  let b = -r*mu; let c = (r - R)*(r + R); let disc = b*b - c;\\n  if (disc < 0.0) { return vec2f(-1.0, -1.0); }\\n  let s = sqrt(disc); let q = select(b - s, b + s, b >= 0.0);\\n  let t1 = q; let t2 = select(0.0, c/q, abs(q) > 1e-12);\\n  return vec2f(min(t1, t2), max(t1, t2));\\n}\\nfn distToTop(r: f32, mu: f32) -> f32 { return max(sphereHit(r, mu, Rt).y, 0.0); }\\n// ground hit distance along the ray, or -1\\nfn groundHit(r: f32, mu: f32) -> f32 { let h = sphereHit(r, mu, Rg); if (h.x > 0.0) { return h.x; } return -1.0; }\\n\\nfn densR(h: f32) -> f32 { return exp(-h/F.atm.x); }\\nfn densM(h: f32) -> f32 { return exp(-h/F.atm.y); }\\nfn densO(h: f32) -> f32 { return max(0.0, 1.0 - abs(h - 25.0)/15.0); }\\nfn densF(h: f32) -> f32 { return F.atm.z*exp(-h/F.atm.w); }\\nfn extinctionAt(g: u32, h: f32) -> vec4f {\\n  return F.BR[g]*densR(h) + (F.BMs[g] + F.BMa[g])*densM(h) + F.BO[g]*densO(h) + vec4f(densF(h));\\n}\\nfn scatterAt(g: u32, h: f32) -> vec4f { return F.BR[g]*densR(h) + F.BMs[g]*densM(h) + vec4f(densF(h)); }\\n\\nfn phaseR(c: f32) -> f32 { let gm = 0.01415; return 3.0/(16.0*PI*(1.0 + 2.0*gm))*((1.0 + 3.0*gm) + (1.0 - gm)*c*c); }\\nfn phaseCS(c0: f32, g: f32) -> f32 { let c = clamp(c0, -1.0, 1.0); let g2 = g*g;\\n  return 3.0/(8.0*PI)*(1.0 - g2)*(1.0 + c*c)/((2.0 + g2)*pow(max(1.0 + g2 - 2.0*g*c, 1e-6), 1.5)); }\\nfn phaseHG(c0: f32, g: f32) -> f32 { let c = clamp(c0, -1.0, 1.0); let g2 = g*g; return (1.0 - g2)/(4.0*PI*pow(max(1.0 + g2 - 2.0*g*c, 1e-7), 1.5)); }\\nfn phaseDraine(c0: f32, g: f32, a: f32) -> f32 { let c = clamp(c0, -1.0, 1.0); let g2 = g*g;\\n  return (1.0 - g2)*(1.0 + a*c*c)/(4.0*PI*(1.0 + a*(1.0 + 2.0*g2)/3.0)*pow(max(1.0 + g2 - 2.0*g*c, 1e-7), 1.5)); }\\nfn phaseFog(c: f32) -> f32 { return mix(phaseHG(c, F.fogPh.x), phaseDraine(c, F.fogPh.y, F.fogPh.z), F.fogPh.w); }\\n\\nfn dirFromPixel(px: vec2f, W: f32, H: f32) -> vec3f {\\n  let az = (px.x/W - 0.5)*2.0*PI + F.atm2.z; let el = (0.5 - px.y/H)*PI;\\n  return normalize(vec3f(sin(az)*cos(el), sin(el), cos(az)*cos(el)));\\n}\\nfn toXYZ(L: array<vec4f, 6>) -> vec3f {\\n  var xyz = vec3f(0.0);\\n  for (var g = 0u; g < 6u; g++) { xyz += vec3f(dot(L[g], F.CMFx[g]), dot(L[g], F.CMFy[g]), dot(L[g], F.CMFz[g])); }\\n  return xyz;\\n}\\n\",\"display\":\"// ---------- display: the accumulated panorama, exposed and tone mapped (AgX), as a panorama or a pinhole camera ----------\\nstruct Disp {\\n  canvas: vec2f, pano: vec2f,      // canvas size px; panorama size px\\n  rect: vec4f,                     // panorama placement in the canvas (x, y, w, h)\\n  view: vec4f,                     // x mode (0 panorama, 1 look around, 2 luminance), y yaw, z pitch, w vertical fov\\n  ex: vec4f,                       // x exposure (multiplies cd/m²), y azimuth offset\\n}\\n@group(0) @binding(0) var<uniform> D: Disp;\\n@group(0) @binding(1) var<storage, read> accum: array<vec4f>;\\n\\nstruct VO { @builtin(position) pos: vec4f }\\n@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {\\n  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));\\n  var o: VO; o.pos = vec4f(p*2.0 - 1.0, 0.0, 1.0); return o;\\n}\\nfn agxContrast(x: vec3f) -> vec3f { let x2 = x*x; let x4 = x2*x2; return 15.5*x4*x2 - 40.14*x4*x + 31.96*x4 - 6.868*x2*x + 0.4298*x2 + 0.1191*x - 0.00232; }\\nfn agx(v0: vec3f) -> vec3f {\\n  let M = mat3x3f(0.842479062253094, 0.0423282422610123, 0.0423756549057051, 0.0784335999999992, 0.878468636469772, 0.0784336, 0.0792237451477643, 0.0791661274605434, 0.879142973793104);\\n  let Mi = mat3x3f(1.19687900512017, -0.0528968517574562, -0.0529716355144438, -0.0980208811401368, 1.15190312990417, -0.0980434501171241, -0.0990297440797205, -0.0989611768448433, 1.15107367264116);\\n  let mn = -12.47393; let mx = 4.026069;\\n  var v = M*v0; v = clamp(log2(max(v, vec3f(1e-10))), vec3f(mn), vec3f(mx)); v = (v - mn)/(mx - mn);\\n  return clamp(Mi*agxContrast(v), vec3f(0.0), vec3f(1.0));\\n}\\nfn turbo(x: f32) -> vec3f {\\n  let kR = vec4f(0.13572138, 4.61539260, -42.66032258, 132.13108234); let kR2 = vec2f(-152.94239396, 59.28637943);\\n  let kG = vec4f(0.09140261, 2.19418839, 4.84296658, -14.18503333); let kG2 = vec2f(4.27729857, 2.82956604);\\n  let kB = vec4f(0.10667330, 12.64194608, -60.58204836, 110.36276771); let kB2 = vec2f(-89.90310912, 27.34824973);\\n  let v4 = vec4f(1.0, x, x*x, x*x*x); let v2 = v4.zw*v4.z;\\n  return clamp(vec3f(dot(v4, kR) + dot(v2, kR2), dot(v4, kG) + dot(v2, kG2), dot(v4, kB) + dot(v2, kB2)), vec3f(0.0), vec3f(1.0));\\n}\\nfn texel(x: i32, y: i32) -> vec3f {\\n  let W = i32(D.pano.x); let H = i32(D.pano.y);\\n  let xx = ((x % W) + W) % W; let yy = clamp(y, 0, H - 1);\\n  let a = accum[u32(yy*W + xx)]; return a.xyz/max(a.w, 1e-6);\\n}\\nfn samplePano(uv: vec2f) -> vec3f {   // bilinear, wrapping in azimuth\\n  let p = uv*D.pano - 0.5; let i = floor(p); let f = p - i; let x = i32(i.x); let y = i32(i.y);\\n  return mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);\\n}\\n@fragment fn fs(v: VO) -> @location(0) vec4f {\\n  let fc = v.pos.xy; var xyz: vec3f;\\n  let mode = i32(D.view.x);\\n  if (mode == 1) {\\n    // look around: pinhole camera (yaw from north, clockwise; pitch up)\\n    let ndc = vec2f(fc.x/D.canvas.x*2.0 - 1.0, 1.0 - fc.y/D.canvas.y*2.0); let tf = tan(D.view.w*0.5);\\n    let dc = normalize(vec3f(ndc.x*tf*D.canvas.x/D.canvas.y, ndc.y*tf, 1.0));\\n    let cy = cos(D.view.y); let sy = sin(D.view.y); let cp = cos(D.view.z); let sp = sin(D.view.z);\\n    let fwd = vec3f(sy*cp, sp, cy*cp); let right = normalize(vec3f(cy, 0.0, -sy)); let up = cross(fwd, right);\\n    let d = normalize(fwd*dc.z + right*dc.x + up*dc.y);\\n    let az = atan2(d.x, d.z) - D.ex.y; let el = asin(clamp(d.y, -1.0, 1.0));\\n    xyz = samplePano(vec2f(fract(az/(2.0*PI) + 0.5), 0.5 - el/PI));\\n  } else {\\n    let q = (fc - D.rect.xy)/D.rect.zw;\\n    if (any(q < vec2f(0.0)) || any(q > vec2f(1.0))) { return vec4f(0.027, 0.035, 0.047, 1.0); }\\n    xyz = texel(i32(q.x*D.pano.x), i32(q.y*D.pano.y));\\n  }\\n  if (mode == 2) { let l = (log(max(xyz.y, 1e-7))/log(10.0) + 4.0)/13.0; return vec4f(turbo(clamp(l, 0.0, 1.0)), 1.0); }\\n  let X2R = mat3x3f(3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314, 0.0415560, 1.0572252);\\n  let lin = max(X2R*xyz, vec3f(0.0))*D.ex.x;\\n  return vec4f(agx(lin), 1.0);\\n}\\nconst PI: f32 = 3.14159265358979;\\n\",\"luts\":\"// ---------- atmosphere tables: transmittance, multiple scattering (Hillaire 2020), sky irradiance vs height ----------\\n// three entry points; each pipeline binds only what its entry point uses\\n@group(0) @binding(0) var<uniform> F: Frame;\\n@group(0) @binding(1) var transOut: texture_storage_2d_array<rgba16float, write>;\\n@group(0) @binding(2) var transTex: texture_2d_array<f32>;\\n@group(0) @binding(3) var msTex: texture_2d_array<f32>;\\n@group(0) @binding(4) var linSamp: sampler;\\n@group(0) @binding(5) var msOut: texture_storage_2d_array<rgba16float, write>;\\n@group(0) @binding(6) var<storage, read_write> ambOut: array<vec4f>;\\n@group(0) @binding(7) var<storage, read> amb: array<vec4f>;   // (unused here; atmo.wgsl names it)\\n\\n@compute @workgroup_size(8, 8, 1)\\nfn transLUT(@builtin(global_invocation_id) id: vec3u) {\\n  if (id.x >= 256u || id.y >= 64u) { return; }\\n  let g = id.z;\\n  let xmu = f32(id.x)/255.0; let xr = f32(id.y)/63.0;\\n  let H = sqrt(Rt*Rt - Rg*Rg); let rho = H*xr; let r = sqrt(rho*rho + Rg*Rg);\\n  let dmin = Rt - r; let dmax = rho + H; let d = dmin + xmu*(dmax - dmin);\\n  let mu = select(clamp((H*H - rho*rho - d*d)/(2.0*r*d), -1.0, 1.0), 1.0, d <= 0.0);\\n  var tau = vec4f(0.0); let N = 80; let dt = d/f32(N);\\n  for (var i = 0; i < N; i++) {\\n    let t = (f32(i) + 0.5)*dt; let h = sqrt(max(r*r + t*t + 2.0*r*mu*t, 0.0)) - Rg;\\n    tau += extinctionAt(g, max(h, 0.0))*dt;\\n  }\\n  textureStore(transOut, vec2u(id.xy), g, exp(-tau));\\n}\\n\\n@compute @workgroup_size(8, 8, 1)\\nfn msLUTpass(@builtin(global_invocation_id) id: vec3u) {\\n  if (id.x >= 32u || id.y >= 32u) { return; }\\n  let g = id.z;\\n  let uv = vec2f(id.xy)/31.0; let mus = uv.x*2.0 - 1.0; let h = max(uv.y*uv.y*100.0, 0.005); let r = Rg + h;\\n  let sd = vec3f(sqrt(max(1.0 - mus*mus, 0.0)), mus, 0.0); let pos = vec3f(0.0, r, 0.0);\\n  var L2 = vec4f(0.0); var fms = vec4f(0.0);\\n  for (var i = 0; i < 8; i++) { for (var j = 0; j < 8; j++) {\\n    let u = (f32(i) + 0.5)/8.0; let v = (f32(j) + 0.5)/8.0; let ct = 1.0 - 2.0*v; let st = sqrt(max(1.0 - ct*ct, 0.0)); let ph = 2.0*PI*u;\\n    let rd = vec3f(st*cos(ph), ct, st*sin(ph)); let mu = ct;\\n    let gN = groundHit(r, mu); let hitG = gN > 0.0;\\n    let tmax = select(distToTop(r, mu), gN, hitG);\\n    let N = 24; let dt = tmax/f32(N); var T = vec4f(1.0);\\n    for (var k = 0; k < N; k++) {\\n      let t = (f32(k) + 0.5)*dt; let p = pos + rd*t; let rr = length(p); let hh = rr - Rg; let up = p/rr;\\n      let sT = extinctionAt(g, hh); let sS = scatterAt(g, hh); let Ts = transmittance(g, rr, dot(up, sd));\\n      let att = exp(-sT*dt); let S = sS*Ts*(0.25/PI);\\n      L2 += T*(S - S*att)/max(sT, vec4f(1e-9)); fms += T*(sS - sS*att)/max(sT, vec4f(1e-9)); T *= att;\\n    }\\n    if (hitG) { let p = pos + rd*gN; let up = normalize(p); let m = dot(up, sd); L2 += T*transmittance(g, Rg, m)*max(m, 0.0)*F.Alb[g]/PI; }\\n  } }\\n  L2 /= 64.0; fms /= 64.0;\\n  textureStore(msOut, vec2u(id.xy), g, L2/max(vec4f(1.0) - fms, vec4f(1e-3)));\\n}\\n\\n// sky irradiance on a level surface at 32 heights (0 … 20 km, square-root spaced), cosine-weighted directions\\n@compute @workgroup_size(32, 1, 1)\\nfn ambPass(@builtin(global_invocation_id) id: vec3u) {\\n  let hi = id.x; let g = id.y;\\n  let x = f32(hi)/31.0; let h = x*x*20.0; let r = Rg + h; let pos = vec3f(0.0, r, 0.0);\\n  let Ls = F.sunDir.xyz; let Lm = F.moonDir.xyz;\\n  var E = vec4f(0.0);\\n  for (var i = 0; i < 8; i++) { for (var j = 0; j < 16; j++) {\\n    let u1 = (f32(i) + 0.5)/8.0; let u2 = (f32(j) + 0.5)/16.0; let rr = sqrt(u1); let ph = 2.0*PI*u2;\\n    let rd = vec3f(rr*cos(ph), sqrt(1.0 - u1), rr*sin(ph)); let tmax = distToTop(r, rd.y);\\n    let cS = dot(rd, Ls); let cM = dot(rd, Lm);\\n    let pRs = phaseR(cS); let pMs = phaseCS(cS, F.atm2.x); let pFs = phaseFog(cS);\\n    let pRm = phaseR(cM); let pMm = phaseCS(cM, F.atm2.x); let pFm = phaseFog(cM);\\n    let N = 16; var T = vec4f(1.0); var L = vec4f(0.0);\\n    for (var k = 0; k < N; k++) {\\n      let f0 = f32(k)/f32(N); let f1 = f32(k + 1)/f32(N); let ta = tmax*f0*f0; let tb = tmax*f1*f1; let dt = tb - ta;\\n      let p = pos + rd*(ta + 0.5*dt); let rp = length(p); let hp = rp - Rg; let up = p/rp;\\n      let dF = densF(hp); let sR = F.BR[g]*densR(hp); let sM = F.BMs[g]*densM(hp); let ext = extinctionAt(g, hp); let sT = sR + sM + vec4f(dF);\\n      let muS = dot(up, Ls); let muM = dot(up, Lm); var S = vec4f(0.0);\\n      if (F.sunDir.w > 0.5) { S += F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, rp, muS) + sT*msLUT(g, hp, muS)); }\\n      if (F.moonDir.w > 0.5) { S += F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, rp, muM) + sT*msLUT(g, hp, muM)); }\\n      let att = exp(-ext*dt); L += T*(S - S*att)/max(ext, vec4f(1e-9)); T *= att;\\n    }\\n    E += L;\\n  } }\\n  ambOut[hi*6u + g] = E*(PI/128.0);\\n}\\n\",\"meter\":\"// ---------- metering: illuminance on the ground (for auto exposure) ----------\\n@group(0) @binding(0) var<uniform> F: Frame;\\n@group(0) @binding(1) var transTex: texture_2d_array<f32>;\\n@group(0) @binding(2) var msTex: texture_2d_array<f32>;\\n@group(0) @binding(3) var linSamp: sampler;\\n@group(0) @binding(4) var<storage, read> amb: array<vec4f>;\\n@group(0) @binding(5) var<storage, read_write> meterOut: array<f32>;\\n\\n@compute @workgroup_size(1)\\nfn main() {\\n  let h = F.atm2.y; let r = Rg + h;\\n  var Ed = 0.0; var Esky = 0.0;\\n  for (var g = 0u; g < 6u; g++) {\\n    let a = ambE(g, h); Esky += dot(a, F.CMFy[g]);\\n    var dir = vec4f(0.0);\\n    if (F.sunDir.w > 0.5) { dir += F.SunE[g]*transmittance(g, r, F.sunDir.y)*max(F.sunDir.y, 0.0); }\\n    if (F.moonDir.w > 0.5) { dir += F.MoonE[g]*transmittance(g, r, F.moonDir.y)*max(F.moonDir.y, 0.0); }\\n    Ed += dot(dir, F.CMFy[g]);\\n  }\\n  meterOut[0] = Ed + Esky; meterOut[1] = Ed; meterOut[2] = Esky; meterOut[3] = 0.0;\\n}\\n\",\"sky\":\"// ---------- the panorama: one sample per pixel per pass, added into the accumulation buffer ----------\\n@group(0) @binding(0) var<uniform> F: Frame;\\n@group(0) @binding(1) var transTex: texture_2d_array<f32>;\\n@group(0) @binding(2) var msTex: texture_2d_array<f32>;\\n@group(0) @binding(3) var linSamp: sampler;\\n@group(0) @binding(4) var<storage, read> amb: array<vec4f>;\\n@group(0) @binding(5) var<uniform> PS: Pass;\\n@group(0) @binding(6) var<storage, read_write> accum: array<vec4f>;\\n\\nconst MARIA = /*@MARIA*/;\\nconst CRATERS = /*@CRATERS*/;\\nconst RAYS = /*@RAYS*/;\\n\\nfn vnoise(p: vec3f) -> f32 {\\n  let i = floor(p); var f = p - i; f = f*f*(3.0 - 2.0*f); let b = vec3u(vec3i(i) + vec3i(4096));\\n  let a000 = hash3(b).x; let a100 = hash3(b + vec3u(1u, 0u, 0u)).x; let a010 = hash3(b + vec3u(0u, 1u, 0u)).x; let a110 = hash3(b + vec3u(1u, 1u, 0u)).x;\\n  let a001 = hash3(b + vec3u(0u, 0u, 1u)).x; let a101 = hash3(b + vec3u(1u, 0u, 1u)).x; let a011 = hash3(b + vec3u(0u, 1u, 1u)).x; let a111 = hash3(b + vec3u(1u, 1u, 1u)).x;\\n  return mix(mix(mix(a000, a100, f.x), mix(a010, a110, f.x), f.y), mix(mix(a001, a101, f.x), mix(a011, a111, f.x), f.y), f.z);\\n}\\nfn fbm3(p0: vec3f) -> f32 { var s = 0.0; var a = 0.5; var p = p0; for (var i = 0; i < 5; i++) { s += a*vnoise(p); p *= 2.03; a *= 0.5; } return s; }\\nfn selDir(ll: vec2f) -> vec3f { let lo = radians(ll.x); let la = radians(ll.y); return vec3f(cos(la)*sin(lo), sin(la), cos(la)*cos(lo)); }\\nfn moonHeight(n: vec3f) -> f32 { return fbm3(n*16.0)*0.6 + vnoise(n*48.0)*0.3 + vnoise(n*140.0)*0.1; }\\nfn moonAlbedo(n: vec3f) -> f32 {\\n  var dark = 0.0;\\n  let wv = (fbm3(n*5.0 + 11.0) - 0.47)*2.0;\\n  for (var i = 0; i < i32(arrayLength_MARIA); i++) { let m = MARIA[i]; let ang = degrees(acos(clamp(dot(n, selDir(m.xy)), -1.0, 1.0))) + wv*m.z*0.45;\\n    dark = max(dark, m.w*(1.0 - smoothstep(m.z*0.55, m.z*1.2, ang))); }\\n  var a = 1.0 - dark*(0.75 + 0.5*fbm3(n*12.0)) + 0.09*(fbm3(n*9.0) - 0.5) + 0.07*(vnoise(n*42.0) - 0.5)*(1.0 - dark) + 0.05*(vnoise(n*130.0) - 0.5);\\n  a += 0.3*smoothstep(0.86, 0.97, vnoise(n*95.0))*(1.0 - 0.6*dark) + 0.2*smoothstep(0.9, 0.98, vnoise(n*230.0 + 5.0));\\n  for (var i = 0; i < i32(arrayLength_CRATERS); i++) { let c = CRATERS[i]; let ang = degrees(acos(clamp(dot(n, selDir(c.xy)), -1.0, 1.0))); a += c.w*(1.0 - smoothstep(c.z*0.6, c.z*1.3, ang)); }\\n  for (var i = 0; i < i32(arrayLength_RAYS); i++) { let r = RAYS[i]; let c = selDir(r.xy); let ang = degrees(acos(clamp(dot(n, c), -1.0, 1.0)));\\n    if (ang < r.z) { let e1 = normalize(cross(c, vec3f(0.0, 1.0, 0.0))); let e2 = cross(c, e1); let v = n - c*dot(n, c); let ph = atan2(dot(v, e2), dot(v, e1));\\n      let pat = pow(vnoise(vec3f(cos(ph)*11.0, sin(ph)*11.0, f32(i)*7.31)), 3.0) + 0.5*pow(vnoise(vec3f(cos(ph)*29.0, sin(ph)*29.0, f32(i)*3.7 + 40.0)), 4.0);\\n      a += r.w*pat*pow(1.0 - ang/r.z, 1.4)*smoothstep(1.0, 2.5, ang)*(0.7 + 0.6*vnoise(n*60.0)); } }\\n  return max(a, 0.2);\\n}\\nfn starSpec(t: u32, g: u32) -> vec4f { return F.Star[t*6u + g]; }\\n\\n// stars found near this direction (at most 9), their weights and blackbody index, gathered once per pixel\\nstruct Stars { w: array<f32, 9>, t: array<u32, 9>, n: u32 }\\n\\n@compute @workgroup_size(8, 8, 1)\\nfn main(@builtin(global_invocation_id) id: vec3u) {\\n  let W = PS.W; let H = PS.H; let py = id.y + PS.rowOff;\\n  if (id.x >= W || py >= H) { return; }\\n  let fW = f32(W); let fH = f32(H);\\n  let n = PS.frame;\\n  let jit = select(vec2f(fract(0.5 + f32(n)*0.7548776662) - 0.5, fract(0.5 + f32(n)*0.5698402910) - 0.5), vec2f(0.0), n == 0u);\\n  let px = vec2f(f32(id.x), f32(py)) + 0.5 + jit;\\n  let rd = dirFromPixel(px, fW, fH);\\n  let camH = F.atm2.y; let ro = vec3f(0.0, camH, 0.0); let r0 = Rg + camH; let mu = rd.y;\\n  let gN = groundHit(r0, mu); let hitG = gN > 0.0 && F.opts.y < 0.5;\\n  let tEnd = select(distToTop(r0, mu), gN, gN > 0.0);\\n  let Ls = F.sunDir.xyz; let Lm = F.moonDir.xyz; let cS = dot(rd, Ls); let cM = dot(rd, Lm);\\n  let pRs = phaseR(cS); let pMs = phaseCS(cS, F.atm2.x); let pFs = phaseFog(cS);\\n  let pRm = phaseR(cM); let pMm = phaseCS(cM, F.atm2.x); let pFm = phaseFog(cM);\\n  let ign = fract(hash3(vec3u(id.x, py, 977u)).x + f32(n)*0.61803398875);\\n  let jt = select(fract(0.5 + f32(n)*0.61803398875 + (ign - 0.5)*0.3), 0.5, n == 0u);\\n  let NS = u32(F.opts.x);\\n\\n  // ---- what lies behind, as wavelength-independent factors: ground, sun disc, moon disc, stars, Milky Way\\n  var ground = vec4f(0.0, 0.0, 0.0, 0.0);   // x: μ_sun, y: μ_moon at the ground point (hitG)\\n  var sunSm: array<f32, 16>; var sunN = 0u;\\n  var moonAcc = 0.0; var inMoon = false; var mwL = 0.0; var st: Stars; st.n = 0u;\\n  let vr = 1.0/sqrt(max(1.0 - pow(Rg/(Rg + 95.0), 2.0)*(1.0 - mu*mu), 1e-4));   // airglow: van Rhijn brightening toward the horizon\\n  if (hitG) { let pg = ro + rd*gN; let up = normalize(pg - C0); ground = vec4f(dot(up, Ls), dot(up, Lm), 0.0, 0.0); }\\n  else if (gN <= 0.0) {\\n    let pa = PI/fH; let sunRad = F.atm2.w; let squash = F.pole.w;\\n    if (F.opts.z > 0.5 && length(rd - Ls) < sunRad/squash + 3.0*pa) {\\n      // the solar disc (limb-darkened, squashed by refraction near the horizon), 16 sub-samples\\n      let upT = select(vec3f(1.0, 0.0, 0.0), normalize(vec3f(0.0, 1.0, 0.0) - Ls*Ls.y), abs(Ls.y) < 0.999); let rtT = cross(upT, Ls);\\n      for (var k = 0u; k < 16u; k++) {\\n        let so = (vec2f(f32(k % 4u), f32(k/4u)) + 0.5)/4.0 - 0.5; let d = dirFromPixel(px + so, fW, fH); let v = d - Ls*dot(d, Ls);\\n        let x = length(vec2f(dot(v, rtT), dot(v, upT)/squash))/sunRad;\\n        if (x < 1.0 && dot(d, Ls) > 0.0) { sunSm[sunN] = max(sqrt(1.0 - x*x), 1e-4); sunN++; }\\n      }\\n    }\\n    let moonRad = F.moonLight.w;\\n    if (length(rd - Lm) < moonRad + 3.0*pa) {\\n      let zM = -Lm; let yM = normalize(F.pole.xyz - dot(F.pole.xyz, zM)*zM); let xM = cross(yM, Lm); let rho = sin(moonRad);\\n      for (var k = 0u; k < 16u; k++) {\\n        let so = (vec2f(f32(k % 4u), f32(k/4u)) + 0.5)/4.0 - 0.5; let d = dirFromPixel(px + so, fW, fH); let dist = length(cross(d, Lm));\\n        if (dist < rho && dot(d, Lm) > 0.0) {\\n          let tt = dot(d, Lm) - sqrt(rho*rho - dist*dist); let nn = (d*tt - Lm)/rho;\\n          let nm = vec3f(dot(nn, xM), dot(nn, yM), dot(nn, zM));\\n          let E = 0.004; let h0 = moonHeight(nm);\\n          let gm = vec3f(moonHeight(nm + vec3f(E, 0.0, 0.0)) - h0, moonHeight(nm + vec3f(0.0, E, 0.0)) - h0, moonHeight(nm + vec3f(0.0, 0.0, E)) - h0)/E;\\n          let gw = gm.x*xM + gm.y*yM + gm.z*zM; let nb = normalize(nn - 0.012*(gw - nn*dot(gw, nn)));\\n          let m0 = dot(nb, F.moonLight.xyz); let mv = max(dot(nn, -d), 0.0);\\n          moonAcc += moonAlbedo(nm)*select(2e-4*mv, m0/(m0 + mv), m0 > 0.0)*smoothstep(-0.02, 0.03, dot(nn, F.moonLight.xyz) + 0.02);\\n        }\\n      }\\n      moonAcc /= 16.0; inMoon = length(rd - Lm) < moonRad;\\n    }\\n    if (F.eqX.w > 0.5 && !inMoon) {\\n      let q = vec3f(dot(F.eqX.xyz, rd), dot(F.eqY.xyz, rd), dot(F.eqZ.xyz, rd));\\n      if (F.galX.w > 0.0) {\\n        let b = asin(clamp(dot(q, F.galZ.xyz), -1.0, 1.0)); let l = atan2(dot(q, F.galY.xyz), dot(q, F.galX.xyz)); let lw = abs(l);\\n        let disk = exp(-abs(b)/radians(7.5))*(0.32 + 0.68*exp(-lw*lw/2.0));\\n        let bulge = exp(-(l*l)/(2.0*0.30*0.30) - (b*b)/(2.0*0.16*0.16));\\n        let nz = fbm3(q*7.0 + 3.1);\\n        let lanes = 1.0 - 0.75*exp(-abs(b + 0.015*sin(l*5.0))/radians(2.2))*smoothstep(0.35, 0.75, fbm3(q*11.0 + 7.3))*exp(-lw*lw/(2.0*1.4*1.4));\\n        mwL = 6e-4*F.galX.w*(disk*(0.55 + 0.9*nz) + 1.3*bulge)*lanes;\\n      }\\n      if (F.eqY.w > 0.5) {\\n        // stars: a hashed catalogue on the faces of a cube in the equatorial frame, magnitudes from a power law\\n        let aq = abs(q); var face = 0u; var fuv = vec2f(0.0);\\n        if (aq.x >= aq.y && aq.x >= aq.z) { face = select(1u, 0u, q.x > 0.0); fuv = vec2f(q.z, q.y)/aq.x; }\\n        else if (aq.y >= aq.z) { face = select(3u, 2u, q.y > 0.0); fuv = vec2f(q.x, q.z)/aq.y; }\\n        else { face = select(5u, 4u, q.z > 0.0); fuv = vec2f(q.x, q.y)/aq.z; }\\n        let NC = 256.0; let cell = vec2i(floor((fuv*0.5 + 0.5)*NC)); let sig = 0.5*pa;\\n        for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) {\\n          let c = cell + vec2i(dx, dy); if (c.x < 0 || c.y < 0 || c.x >= 256 || c.y >= 256) { continue; }\\n          let hh = hash3(vec3u(u32(c.x), u32(c.y), face*7919u + 17u));\\n          let m = (log(max(hh.x, 1e-9)*393216.0)/log(10.0) - 0.9)/0.47; if (m > F.eqZ.w) { continue; }\\n          let h2 = hash3(vec3u(u32(c.y) + 911u, u32(c.x) + 313u, face*104729u + 3u));\\n          let suv = (vec2f(c) + hh.yz)/NC*2.0 - 1.0; var sd: vec3f;\\n          if (face == 0u) { sd = vec3f(1.0, suv.y, suv.x); } else if (face == 1u) { sd = vec3f(-1.0, suv.y, suv.x); }\\n          else if (face == 2u) { sd = vec3f(suv.x, 1.0, suv.y); } else if (face == 3u) { sd = vec3f(suv.x, -1.0, suv.y); }\\n          else if (face == 4u) { sd = vec3f(suv.x, suv.y, 1.0); } else { sd = vec3f(suv.x, suv.y, -1.0); }\\n          sd = normalize(sd); let ang = length(q - sd); if (ang > 4.0*sig) { continue; }\\n          let kern = exp(-ang*ang/(2.0*sig*sig))/(2.0*PI*sig*sig); let Ev = 2.54e-6*pow(10.0, -0.4*m);\\n          let u = h2.x; var Tk: f32;\\n          if (u < 0.12) { Tk = mix(3000.0, 3800.0, h2.y); } else if (u < 0.42) { Tk = mix(3900.0, 5200.0, h2.y); } else if (u < 0.70) { Tk = mix(5200.0, 6000.0, h2.y); }\\n          else if (u < 0.85) { Tk = mix(6000.0, 7500.0, h2.y); } else if (u < 0.95) { Tk = mix(7500.0, 10000.0, h2.y); } else { Tk = mix(10000.0, 25000.0, h2.y); }\\n          st.w[st.n] = Ev*kern; st.t[st.n] = u32(clamp(floor(15.0*log(Tk/2500.0)/log(10.0) + 0.5), 0.0, 15.0)); st.n++;\\n        } }\\n      }\\n    }\\n  }\\n\\n  // ---- each spectral group: the air along the view ray (single scattering + the multiple-scattering table), then what is behind\\n  var xyz = vec3f(0.0);\\n  for (var g = 0u; g < 6u; g++) {\\n    var L = vec4f(0.0); var T = vec4f(1.0);\\n    for (var i = 0u; i < NS; i++) {\\n      let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let t = ta + dt*jt;\\n      let p = ro + rd*t; let r = length(p - C0); let h = r - Rg; let up = (p - C0)/r;\\n      let dM = densM(h); let dF = densF(h);\\n      let sR = F.BR[g]*densR(h); let sM = F.BMs[g]*dM; let ext = sR + sM + F.BMa[g]*dM + F.BO[g]*densO(h) + vec4f(dF); let sT = sR + sM + vec4f(dF);\\n      var S = vec4f(0.0);\\n      if (F.sunDir.w > 0.5) { let muS = dot(up, Ls); S += F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, r, muS) + sT*msLUT(g, h, muS)); }\\n      if (F.moonDir.w > 0.5) { let muM = dot(up, Lm); S += F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, r, muM) + sT*msLUT(g, h, muM)); }\\n      let att = exp(-ext*dt); L += T*(S - S*att)/max(ext, vec4f(1e-9)); T *= att;\\n    }\\n    var bg = vec4f(0.0);\\n    if (hitG) {\\n      var Ed = ambE(g, 0.0);\\n      if (F.sunDir.w > 0.5) { Ed += F.SunE[g]*transmittance(g, Rg, ground.x)*max(ground.x, 0.0); }\\n      if (F.moonDir.w > 0.5) { Ed += F.MoonE[g]*transmittance(g, Rg, ground.y)*max(ground.y, 0.0); }\\n      bg = F.Alb[g]*Ed/PI;\\n    } else if (gN <= 0.0) {\\n      bg = F.Air[g]*vr;\\n      if (sunN > 0u) { var acc = vec4f(0.0); for (var k = 0u; k < sunN; k++) { acc += pow(vec4f(sunSm[k]), F.SunA[g]); } bg += F.SunK[g]*acc/16.0; }\\n      bg += F.MoonK[g]*moonAcc;\\n      bg += mwL*starSpec(u32(F.galY.w), g);\\n      for (var k = 0u; k < st.n; k++) { bg += st.w[k]*starSpec(st.t[k], g); }\\n    }\\n    L += T*bg;\\n    xyz += vec3f(dot(L, F.CMFx[g]), dot(L, F.CMFy[g]), dot(L, F.CMFz[g]));\\n  }\\n  let idx = py*W + id.x;\\n  accum[idx] += vec4f(select(vec3f(0.0), xyz, all(xyz == xyz)), 1.0);\\n}\\n\"};\n// Spectral Sky Next — render worker: owns the GPU (WebGPU) and the canvas; the UI thread only sends settings and view.\n// The panorama is rendered progressively in bands of rows, a few milliseconds of GPU work per frame, so the page never stalls.\n'use strict';\nlet device = null, gctx = null, canvasFmt = 'bgra8unorm', canvas = null;\nconst R = {};             // GPU resources\nconst S = {                // render state\n  P: null, view: {mode:0, yaw:0, pitch:0, fov:75*D2R, expoComp:0, auto:true, cw:1, ch:1},\n  frame: null, atmKey: '', paramsDirty: false, W: 0, H: 0, sample: 0, row: 0, rows: 16, target: 64,\n  inFlight: 0, meter: {E:1, Ed:0, Esky:0}, derived: null, t0: 0, sampleT: 0, lastStatus: 0, error: null,\n};\nconst post = (m, tr) => self.postMessage(m, tr || []);\nfunction fail(msg){ S.error = msg; post({type:'error', message:String(msg)}); }\n\nconst glArr = (a, digits=2) => `array<vec4f, ${a.length}>(${a.map(m => `vec4f(${m.map(v => (+v).toFixed(digits)).join(', ')})`).join(', ')})`;\nfunction wgsl(...parts){\n  let s = parts.map(p => WGSL[p]).join('\\n');\n  s = s.replace('/*@MARIA*/', glArr(MARIA)).replace('/*@CRATERS*/', glArr(CRATERS)).replace('/*@RAYS*/', glArr(RAYS))\n       .replace(/arrayLength_MARIA/g, String(MARIA.length)).replace(/arrayLength_CRATERS/g, String(CRATERS.length)).replace(/arrayLength_RAYS/g, String(RAYS.length));\n  return s;\n}\nasync function module(label, code){\n  const m = device.createShaderModule({label, code});\n  const info = await m.getCompilationInfo();\n  const errs = info.messages.filter(x => x.type === 'error');\n  if (errs.length){ const lines = code.split('\\n'); throw new Error(`${label}: ` + errs.map(e => `line ${e.lineNum}: ${e.message}\\n  ${lines[e.lineNum - 1] || ''}`).join('\\n')); }\n  return m;\n}\nconst computePipe = async (label, code, entry) => device.createComputePipeline({label, layout:'auto', compute:{module: await module(label, code), entryPoint: entry || 'main'}});\nconst bg = (pipe, entries) => device.createBindGroup({layout: pipe.getBindGroupLayout(0), entries: entries.map(([binding, r]) => ({binding, resource: r.size !== undefined && r.mapState !== undefined ? {buffer: r} : r}))});\n\nasync function init(m){\n  if (!navigator.gpu) throw new Error('WebGPU is not available in this browser');\n  const adapter = await navigator.gpu.requestAdapter({powerPreference:'high-performance'}); R.adapter = adapter; R.gpu = navigator.gpu;   // (kept alive: losing them can drop the device)\n  if (!adapter) throw new Error('No WebGPU adapter');\n  const lim = adapter.limits;\n  device = await adapter.requestDevice({requiredLimits:{maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize, maxBufferSize: lim.maxBufferSize}});\n  device.lost.then(i => fail('GPU device lost: ' + i.message));\n  device.addEventListener('uncapturederror', e => fail('GPU error: ' + e.error.message));\n  canvas = m.canvas; canvasFmt = navigator.gpu.getPreferredCanvasFormat();\n  // headless test runs (SwiftShader) lose the device when a canvas is configured: they draw the display into a texture instead\n  S.noPresent = !!m.noPresent;\n  if (!S.noPresent){ gctx = canvas.getContext('webgpu'); gctx.configure({device, format: canvasFmt, alphaMode:'opaque'}); } else canvasFmt = 'rgba8unorm';\n  post({type:'stage', text:'compiling shaders'});\n  const info = adapter.info || {};\n  // atmosphere tables\n  R.frame = device.createBuffer({size: FRAME_OFF._size*4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});\n  R.trans = device.createTexture({size:[256, 64, 6], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});\n  R.ms = device.createTexture({size:[32, 32, 6], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});\n  R.amb = device.createBuffer({size: 32*6*16, usage: GPUBufferUsage.STORAGE});\n  R.meter = device.createBuffer({size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});\n  R.samp = device.createSampler({magFilter:'linear', minFilter:'linear', addressModeU:'clamp-to-edge', addressModeV:'clamp-to-edge'});\n  const transV = R.trans.createView({dimension:'2d-array'}), msV = R.ms.createView({dimension:'2d-array'});\n  const [pT, pM, pA, pMeter, pSky] = await Promise.all([\n    computePipe('transLUT', wgsl('common', 'atmo', 'luts'), 'transLUT'),\n    computePipe('msLUT', wgsl('common', 'atmo', 'luts'), 'msLUTpass'),\n    computePipe('ambLUT', wgsl('common', 'atmo', 'luts'), 'ambPass'),\n    computePipe('meter', wgsl('common', 'atmo', 'meter')),\n    computePipe('sky', wgsl('common', 'atmo', 'sky')),\n  ]);\n  R.pT = pT; R.pM = pM; R.pA = pA; R.pMeter = pMeter; R.pSky = pSky;\n  R.bgT = bg(pT, [[0, R.frame], [1, transV]]);\n  R.bgM = bg(pM, [[0, R.frame], [2, transV], [4, R.samp], [5, msV]]);\n  R.bgA = bg(pA, [[0, R.frame], [2, transV], [3, msV], [4, R.samp], [6, R.amb]]);\n  R.bgMeter = bg(pMeter, [[0, R.frame], [1, transV], [3, R.samp], [4, R.amb], [5, R.meter]]);\n  R.transV = transV; R.msV = msV;\n  // display\n  const dm = await module('display', WGSL.display);\n  R.pDisp = device.createRenderPipeline({label:'display', layout:'auto', vertex:{module: dm, entryPoint:'vs'}, fragment:{module: dm, entryPoint:'fs', targets:[{format: canvasFmt}]}, primitive:{topology:'triangle-list'}});\n  R.disp = device.createBuffer({size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});\n  // per-band pass uniforms: a small pool, one per band submitted in a frame\n  R.passBufs = Array.from({length: 64}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));\n  post({type:'ready', adapter: {vendor: info.vendor || '', arch: info.architecture || '', desc: info.description || ''}});\n  requestAnimationFrame(tick);\n}\n\nfunction allocPanorama(W, H){\n  if (S.W === W && S.H === H && R.accum) return;\n  if (R.accum) R.accum.destroy();\n  S.W = W; S.H = H;\n  R.accum = device.createBuffer({size: W*H*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});\n  R.bgSky = R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, R.accum]]));\n  R.bgDisp = bg(R.pDisp, [[0, R.disp], [1, R.accum]]);\n  resetAccum();\n}\nfunction resetAccum(){ S.sample = 0; S.row = 0; S.needClear = true; S.t0 = performance.now(); S.sampleT = S.t0; }\n\n// new settings: recompute the physical state; rebuild the tables only when the air or the ground changed\nfunction applyParams(){\n  S.paramsDirty = false;\n  const P = S.P; const res = Math.max(256, Math.min(8192, P.previewRes|0));\n  allocPanorama(res, res/2);\n  const fr = computeFrame(P); S.derived = fr.derived;\n  device.queue.writeBuffer(R.frame, 0, fr.frame);\n  const enc = device.createCommandEncoder();\n  if (fr.atmKey !== S.atmKey && P.dbg !== 'nolut'){ S.atmKey = fr.atmKey;\n    let c = enc.beginComputePass(); c.setPipeline(R.pT); c.setBindGroup(0, R.bgT); c.dispatchWorkgroups(32, 8, 6); c.end();\n    c = enc.beginComputePass(); c.setPipeline(R.pM); c.setBindGroup(0, R.bgM); c.dispatchWorkgroups(4, 4, 6); c.end(); }\n  if (P.dbg !== 'noamb'){ let c = enc.beginComputePass(); c.setPipeline(R.pA); c.setBindGroup(0, R.bgA); c.dispatchWorkgroups(1, 6, 1); c.end();\n  c = enc.beginComputePass(); c.setPipeline(R.pMeter); c.setBindGroup(0, R.bgMeter); c.dispatchWorkgroups(1); c.end();\n  var mr = device.createBuffer({size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST}); enc.copyBufferToBuffer(R.meter, 0, mr, 0, 16); }\n  device.queue.submit([enc.finish()]);\n  if (mr){ const seq = S.meterSeq = (S.meterSeq || 0) + 1; mr.mapAsync(GPUMapMode.READ).then(() => { const a = new Float32Array(mr.getMappedRange().slice(0)); mr.unmap(); mr.destroy(); if (seq === S.meterSeq) S.meter = {E:a[0], Ed:a[1], Esky:a[2]}; }).catch(() => {}); }\n  resetAccum();\n}\n\nfunction exposure(){ const v = S.view; if (v.auto){ const E = Math.max(S.meter.E || 1e-3, 0.44); return Math.PI/E*Math.pow(2, v.expoComp); } return 1/(1.2*Math.pow(2, v.expoComp)); }\n\nfunction tick(){\n  requestAnimationFrame(tick);\n  if (S.error || !S.P) return;\n  if (S.paramsDirty) applyParams();\n  if (!R.accum) return;\n  const enc = device.createCommandEncoder(); let used = false;\n  if (S.needClear){ enc.clearBuffer(R.accum); S.needClear = false; used = true; }\n  // render bands of rows within this frame's budget, but never queue up more than two frames of GPU work\n  let submitted = 0;\n  if (S.sample < S.target && S.inFlight < 2 && S.P.dbg !== 'nosky'){\n    let budgetRows = Math.max(8, S.rows); let k = 0;\n    while (budgetRows > 0 && k < R.passBufs.length && S.sample < S.target){\n      const rows = Math.min(budgetRows, S.H - S.row);\n      device.queue.writeBuffer(R.passBufs[k], 0, new Uint32Array([S.row, S.sample, S.W, S.H]));\n      const c = enc.beginComputePass(); c.setPipeline(R.pSky); c.setBindGroup(0, R.bgSky[k]); c.dispatchWorkgroups(Math.ceil(S.W/8), Math.ceil(rows/8)); c.end();\n      S.row += Math.ceil(rows/8)*8; budgetRows -= rows; submitted += rows; k++;\n      if (S.row >= S.H){ S.row = 0; S.sample++; const now = performance.now(); S.lastSampleMs = now - S.sampleT; S.sampleT = now; }\n    }\n    used = true;\n  }\n  // display: only when the image or the view changed, and not while two displays are still queued\n  if ((submitted || S.dispDirty) && !S.noPresent && (S.dispInFlight || 0) < 2){ S.dispDirty = false; display(enc); used = true; S.dispInFlight = (S.dispInFlight || 0) + 1;\n    device.queue.onSubmittedWorkDone().then(() => { S.dispInFlight--; }); }\n  else if (submitted) S.dispDirty = true;\n  if (used){ const t0 = performance.now(); device.queue.submit([enc.finish()]);\n    if (submitted){ S.inFlight++; const sub = submitted, row0 = S.row; if (S.P.dbgLog) post({type:'log', text:`submit ${sub} rows (row ${row0}, sample ${S.sample})`});\n      device.queue.onSubmittedWorkDone().then(() => { S.inFlight--; const dt = performance.now() - t0; if (S.P.dbgLog) post({type:'log', text:`done ${sub} rows in ${dt.toFixed(0)} ms`});\n        // aim for ~10 ms of GPU work per frame\n        S.rows = Math.round(clamp(sub*10/Math.max(dt, 0.5), 8, S.H)); }); } }\n  const now = performance.now();\n  if (now - S.lastStatus > 200 || (submitted && S.sample === S.target && S.row === 0)){ S.lastStatus = now;\n    post({type:'status', sample: S.sample, target: S.target, row: S.row, W: S.W, H: S.H, ms: S.lastSampleMs || 0, total: now - S.t0, derived: S.derived, meter: S.meter, expo: exposure(), done: S.sample >= S.target}); }\n}\nfunction display(enc){\n  const v = S.view, cw = canvas.width, ch = canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }\n  device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0]));\n  const tex = S.noPresent ? dispTarget(cw, ch) : gctx.getCurrentTexture();\n  const rp = enc.beginRenderPass({colorAttachments:[{view: tex.createView(), loadOp:'clear', storeOp:'store', clearValue:{r:0.027, g:0.035, b:0.047, a:1}}]});\n  rp.setPipeline(R.pDisp); rp.setBindGroup(0, R.bgDisp); rp.draw(3); rp.end();\n}\nfunction dispTarget(w, h){ if (!R.dispTex || R.dispTex.width !== w || R.dispTex.height !== h){ if (R.dispTex) R.dispTex.destroy();\n  R.dispTex = device.createTexture({size:[w, h], format:'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC}); } return R.dispTex; }\n// the displayed image (test runs): RGBA8, rows top to bottom\nasync function shot(){ { const e = device.createCommandEncoder(); display(e); device.queue.submit([e.finish()]); } const t = R.dispTex; if (!t) return null; const w = t.width, h = t.height, bpr = Math.ceil(w*4/256)*256;\n  const rb = device.createBuffer({size: bpr*h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});\n  const enc = device.createCommandEncoder(); enc.copyTextureToBuffer({texture: t}, {buffer: rb, bytesPerRow: bpr}, [w, h]); device.queue.submit([enc.finish()]);\n  await rb.mapAsync(GPUMapMode.READ); const src = new Uint8Array(rb.getMappedRange()), o = new Uint8Array(w*h*4);\n  for (let y = 0; y < h; y++) o.set(src.subarray(y*bpr, y*bpr + w*4), y*w*4); rb.unmap(); rb.destroy(); return {w, h, rgba: o}; }\n// accumulated panorama as XYZ (divided by the sample count): for tests and exports\nasync function readback(){\n  const n = S.W*S.H*16; const rb = device.createBuffer({size: n, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});\n  const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(R.accum, 0, rb, 0, n); device.queue.submit([enc.finish()]);\n  await rb.mapAsync(GPUMapMode.READ); const a = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); rb.destroy();\n  const o = new Float32Array(S.W*S.H*3);\n  for (let i = 0; i < S.W*S.H; i++){ const w = Math.max(a[4*i + 3], 1e-6); o[3*i] = a[4*i]/w; o[3*i + 1] = a[4*i + 1]/w; o[3*i + 2] = a[4*i + 2]/w; }\n  return o;\n}\n\nself.onmessage = async e => {\n  const m = e.data;\n  try {\n    if (m.type === 'init') await init(m);\n    else if (m.type === 'params'){ S.P = m.P; S.target = m.target || S.target; S.paramsDirty = true; }\n    else if (m.type === 'view'){ Object.assign(S.view, m.view); S.dispDirty = true; if (m.view.cw && canvas){ canvas.width = m.view.cw; canvas.height = m.view.ch; } }\n    else if (m.type === 'shot'){ const r = await shot(); post({type:'shot', id: m.id, ...(r || {})}, r ? [r.rgba.buffer] : []); }\n    else if (m.type === 'readback'){ const xyz = await readback(); post({type:'pixels', id: m.id, W: S.W, H: S.H, xyz}, [xyz.buffer]); }\n  } catch (err){ fail(err && err.message || err); }\n};\n";
+// Spectral Sky Next — UI thread: the settings panel, the view, and messages to the render worker.
+'use strict';
+const $ = s => document.querySelector(s);
+const P = JSON.parse(JSON.stringify(DEFAULTS));
+try { const q = new URLSearchParams(location.search).get('p'); if (q) Object.assign(P, JSON.parse(q)); } catch (e){}
+const view = {mode:0, yaw:0, pitch:0.1, fov:75*D2R, expoComp:0, auto:true};
+let worker = null, lastStatus = null, ready = false;
+
+/* ---------- panel schema ---------- */
+const fmtDeg = v => `${(+v).toFixed(1)}°`;
+const SECTIONS = [
+  {title:'Sun & moon', items:[
+    {k:'mode', label:'Position from', type:'select', opts:[['manual', 'Set by hand'], ['location', 'Place, date and time']]},
+    {k:'sunEl', label:'Sun elevation', min:-20, max:90, step:0.1, fmt:fmtDeg, show:() => P.mode === 'manual'},
+    {k:'sunAz', label:'Sun azimuth', min:0, max:360, step:0.5, fmt:fmtDeg, show:() => P.mode === 'manual'},
+    {k:'moonEl', label:'Moon elevation', min:-20, max:90, step:0.1, fmt:fmtDeg, show:() => P.mode === 'manual'},
+    {k:'moonAz', label:'Moon azimuth', min:0, max:360, step:0.5, fmt:fmtDeg, show:() => P.mode === 'manual'},
+    {k:'date', label:'Date', type:'date', show:() => P.mode === 'location'},
+    {k:'time', label:'Local time', type:'time', show:() => P.mode === 'location'},
+    {k:'utc', label:'UTC offset (h)', type:'number', min:-12, max:14, step:0.5, show:() => P.mode === 'location'},
+    {k:'lat', label:'Latitude', min:-90, max:90, step:0.1, fmt:fmtDeg, show:() => P.mode === 'location'},
+    {k:'lon', label:'Longitude', min:-180, max:180, step:0.1, fmt:fmtDeg, show:() => P.mode === 'location'},
+    {k:'moonOverride', label:'Set the moon phase by hand', type:'check'},
+    {k:'moonIllum', label:'Moon illuminated', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.moonOverride},
+  ]},
+  {title:'Air', items:[
+    {k:'aerosol', label:'Aerosol type', type:'select', opts:Object.entries(AEROSOLS).map(([k, a]) => [k, a.name])},
+    {k:'aod', label:'Haze (aerosol optical depth, 550 nm)', min:0.01, max:2, log:true, fmt:v => v.toFixed(3)},
+    {k:'humidity', label:'Relative humidity', min:5, max:97, step:1, fmt:v => `${Math.round(v)}%`},
+    {k:'aerH', label:'Haze layer height', min:0.3, max:4, step:0.05, fmt:v => `${v.toFixed(2)} km`},
+    {k:'ozone', label:'Ozone', min:200, max:500, step:5, fmt:v => `${Math.round(v)} DU`},
+    {k:'fogVis', label:'Fog or mist (visibility)', min:0.05, max:50, log:true, fmt:v => v >= 49.5 ? 'none' : v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(1)} km`},
+    {k:'fogH', label:'Fog depth', min:0.02, max:1, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.fogVis < 49.5},
+    {k:'diurnal', label:'Morning mist and evening haze follow the sun', type:'check'},
+    {k:'siteAlt', label:'Ground altitude', min:0, max:5, step:0.05, fmt:v => `${Math.round(v*1000)} m`},
+  ]},
+  {title:'Ground', items:[
+    {k:'surface', label:'Surface', type:'select', opts:Object.entries(SURFACES).map(([k, s]) => [k, s.name])},
+    {k:'albedo', label:'Albedo', min:0, max:1, step:0.01, fmt:v => v.toFixed(2), show:() => P.surface === 'grey'},
+    {k:'groundMode', label:'Below the horizon', type:'select', opts:[['lit', 'Lit ground'], ['black', 'Black (sky only)']]},
+    {k:'camH', label:'Camera height', min:0.001, max:3, log:true, fmt:v => v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(2)} km`},
+  ]},
+  {title:'Night sky', items:[
+    {k:'stars', label:'Stars', type:'check'},
+    {k:'starMag', label:'Faintest stars', min:2, max:7.5, step:0.1, fmt:v => `mag ${v.toFixed(1)}`, show:() => P.stars},
+    {k:'mw', label:'Milky Way', min:0, max:2, step:0.05, fmt:v => v.toFixed(2)},
+    {k:'airglow', label:'Airglow', min:0, max:3, step:0.05, fmt:v => v.toFixed(2)},
+  ]},
+  {title:'Clouds', items:[
+    {type:'note', html:'The new cloud engine is being built: every cloud type as its own layer you can switch off or adjust, all of them in one 3D volume lit the same way. They arrive in the next phase.'},
+  ]},
+];
+
+/* ---------- panel ---------- */
+const CTRL = [];
+function sliderPos(it, v){ return it.log ? Math.log(v/it.min)/Math.log(it.max/it.min) : v; }
+function sliderVal(it, x){ return it.log ? it.min*Math.pow(it.max/it.min, x) : x; }
+function buildPanel(){
+  const panel = $('#panel'); panel.innerHTML = '';
+  for (const sec of SECTIONS){
+    const el = document.createElement('section'); el.className = 'sec'; el.innerHTML = `<h2>${sec.title}</h2>`; const rows = document.createElement('div'); rows.className = 'rows'; el.appendChild(rows);
+    for (const it of sec.items){
+      const row = document.createElement('div'); row.className = 'row'; rows.appendChild(row);
+      if (it.type === 'note'){ row.classList.add('full'); row.innerHTML = `<div class="note">${it.html}</div>`; CTRL.push({it, row}); continue; }
+      const id = 'c_' + it.k;
+      if (it.type === 'select'){ row.innerHTML = `<label for="${id}">${it.label}</label><select id="${id}">${it.opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`;
+        const s = row.querySelector('select'); s.onchange = () => { P[it.k] = s.value; changed(); }; CTRL.push({it, row, set:() => { s.value = P[it.k]; }}); }
+      else if (it.type === 'check'){ row.innerHTML = `<label for="${id}">${it.label}</label><input type="checkbox" id="${id}">`;
+        const c = row.querySelector('input'); c.onchange = () => { P[it.k] = c.checked; changed(); }; CTRL.push({it, row, set:() => { c.checked = !!P[it.k]; }}); }
+      else if (it.type === 'date' || it.type === 'time' || it.type === 'number'){ row.innerHTML = `<label for="${id}">${it.label}</label><input type="${it.type}" id="${id}" ${it.step ? `step="${it.step}"` : ''}>`;
+        const c = row.querySelector('input'); c.onchange = () => { P[it.k] = it.type === 'number' ? +c.value : c.value; changed(); }; CTRL.push({it, row, set:() => { c.value = P[it.k]; }}); }
+      else { // range
+        row.innerHTML = `<label for="${id}">${it.label}</label><span class="val"></span><input type="range" id="${id}">`;
+        const r = row.querySelector('input'), val = row.querySelector('.val');
+        if (it.log){ r.min = 0; r.max = 1; r.step = 0.001; } else { r.min = it.min; r.max = it.max; r.step = it.step || 0.01; }
+        r.oninput = () => { P[it.k] = sliderVal(it, +r.value); val.textContent = it.fmt ? it.fmt(P[it.k]) : P[it.k]; changed(true); };
+        CTRL.push({it, row, set:() => { r.value = sliderPos(it, P[it.k]); val.textContent = it.fmt ? it.fmt(P[it.k]) : P[it.k]; }});
+      }
+    }
+    panel.appendChild(el);
+  }
+  syncUI();
+}
+function syncUI(){ for (const c of CTRL){ if (c.set) c.set(); c.row.hidden = c.it.show ? !c.it.show() : false; } }
+
+/* ---------- talking to the worker ---------- */
+let sendPending = false;
+function changed(fromSlider){ if (!fromSlider) syncUI(); else for (const c of CTRL) c.row.hidden = c.it.show ? !c.it.show() : false;
+  if (sendPending) return; sendPending = true; requestAnimationFrame(() => { sendPending = false; sendParams(); }); }
+function sendParams(){ if (worker) worker.postMessage({type:'params', P}); drawOverlay(); }
+function sendView(extra){ if (!worker) return; worker.postMessage({type:'view', view:{...view, ...extra}}); }
+
+function setStatus(t){ $('#status').textContent = t; }
+function readouts(st){
+  const d = st.derived || {}, m = st.meter || {}; const lux = v => v >= 1000 ? `${(v/1000).toFixed(1)} klx` : v >= 1 ? `${v.toFixed(1)} lx` : `${v.toPrecision(2)} lx`;
+  const items = [['Sun', `${(d.sunEl ?? 0).toFixed(1)}° <small>az ${(d.sunAz ?? 0).toFixed(0)}°</small>`], ['Moon', `${(d.moonEl ?? 0).toFixed(1)}° <small>${Math.round((d.illum ?? 0)*100)}% lit</small>`],
+    ['Visibility', d.vis ? `${d.vis >= 10 ? d.vis.toFixed(0) : d.vis.toFixed(1)} km` : '–'], ['Ground light', m.E ? `${lux(m.E)} <small>${lux(m.Ed || 0)} direct</small>` : '–'], ['Humidity', d.RHp ? `${Math.round(d.RHp)}%` : '–']];
+  $('#readouts').innerHTML = items.map(([k, v]) => `<div class="ro"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+}
+
+/* ---------- view: overlay (compass, horizon), dragging, sizing ---------- */
+const cv = $('#gl');
+function canvasSize(){ const r = $('#view').getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2); return [Math.max(1, Math.round(r.width*dpr)), Math.max(1, Math.round(r.height*dpr)), r]; }
+function panoRect(){ const [, , r] = canvasSize(); let w = r.width, h = w/2; if (h > r.height){ h = r.height; w = h*2; } return {x:(r.width - w)/2, y:(r.height - h)/2, w, h}; }
+function drawOverlay(){
+  const ov = $('#overlay'); if (view.mode === 1){ ov.innerHTML = ''; return; }
+  const pr = panoRect(); let html = `<div class="hline" style="left:${pr.x}px;width:${pr.w}px;top:${pr.y + pr.h/2}px"></div>`;
+  ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].forEach((n, i) => { const az = i*45; const u = (((az - P.azOff)/360 + 0.5) % 1 + 1) % 1; html += `<div class="compass" style="left:${pr.x + u*pr.w}px;top:${pr.y + pr.h/2 + 4}px">${n}</div>`; });
+  ov.innerHTML = html; }
+function resize(){ const [w, h] = canvasSize(); sendView({cw:w, ch:h}); drawOverlay(); }
+new ResizeObserver(resize).observe($('#view'));
+let drag = null;
+cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); drag = {x:e.clientX, y:e.clientY, yaw:view.yaw, pitch:view.pitch, moved:false}; });
+cv.addEventListener('pointermove', e => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 3) drag.moved = true;
+  if (view.mode === 1 && drag.moved){ const k = view.fov/cv.getBoundingClientRect().height; view.yaw = drag.yaw - dx*k; view.pitch = clamp(drag.pitch + dy*k, -1.5, 1.5); sendView(); }
+  else if (view.mode !== 1 && P.mode === 'manual') placeSun(e); });
+cv.addEventListener('pointerup', e => { if (drag && !drag.moved && view.mode !== 1 && P.mode === 'manual') placeSun(e); drag = null; });
+cv.addEventListener('wheel', e => { if (view.mode !== 1) return; e.preventDefault(); view.fov = clamp(view.fov*Math.exp(e.deltaY*0.001), 10*D2R, 140*D2R); sendView(); }, {passive:false});
+function placeSun(e){ const pr = panoRect(), r = $('#view').getBoundingClientRect(); const u = (e.clientX - r.left - pr.x)/pr.w, v = (e.clientY - r.top - pr.y)/pr.h; if (u < 0 || u > 1 || v < 0 || v > 1) return;
+  P.sunAz = ((((u - 0.5)*360 + P.azOff) % 360) + 360) % 360; P.sunEl = clamp((0.5 - v)*180, -20, 90); changed(); }
+document.querySelectorAll('#viewSeg button').forEach(b => b.onclick = () => { document.querySelectorAll('#viewSeg button').forEach(x => x.classList.toggle('on', x === b)); view.mode = +b.dataset.v; $('#legend').hidden = view.mode !== 2; sendView(); drawOverlay(); });
+document.querySelectorAll('#resSeg button').forEach(b => b.onclick = () => { document.querySelectorAll('#resSeg button').forEach(x => x.classList.toggle('on', x === b)); P.previewRes = +b.dataset.r; changed(); });
+$('#autoEx').onchange = e => { view.auto = e.target.checked; sendView(); };
+$('#exSlider').oninput = e => { view.expoComp = +e.target.value; $('#exVal').textContent = `${view.expoComp >= 0 ? '+' : '−'}${Math.abs(view.expoComp).toFixed(1)} EV`; sendView(); };
+
+/* ---------- start ---------- */
+const pending = new Map(); let rbId = 0;
+function start(){
+  buildPanel(); readouts({});
+  if (!navigator.gpu){ $('#ldStep').textContent = 'This browser has no WebGPU.'; setStatus('No WebGPU'); return; }
+  const blob = new Blob([WORKER_SRC], {type:'text/javascript'}); worker = new Worker(URL.createObjectURL(blob));
+  const off = cv.transferControlToOffscreen();
+  worker.onmessage = e => { const m = e.data;
+    if (m.type === 'log') console.log('[worker] ' + m.text);
+    else if (m.type === 'stage') $('#ldStep').textContent = m.text[0].toUpperCase() + m.text.slice(1) + '…';
+    else if (m.type === 'ready'){ ready = true; $('#loader').classList.add('gone'); resize(); sendParams(); window.__sky.adapter = m.adapter; }
+    else if (m.type === 'status'){ lastStatus = m; readouts(m);
+      setStatus(m.done ? `${m.W}×${m.H} · ${m.sample} samples · ${(m.total/1000).toFixed(1)} s` : `${m.W}×${m.H} · sample ${m.sample + 1}/${m.target} · ${Math.round(m.row/m.H*100)}%`); }
+    else if (m.type === 'error'){ console.error(m.message); setStatus('Error'); $('#loader').classList.remove('gone'); $('#ldTitle').textContent = 'Something went wrong'; $('#ldStep').textContent = m.message.slice(0, 400); window.__sky.error = m.message; }
+    else if (m.type === 'shot'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
+    else if (m.type === 'pixels'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); } };
+  worker.onerror = e => { console.error('worker', e.message); $('#ldStep').textContent = 'Worker error: ' + e.message; window.__sky.error = e.message; };
+  const [w, h] = canvasSize(); off.width = w; off.height = h;
+  worker.postMessage({type:'init', canvas: off, noPresent: !!P.noPresent}, [off]);
+}
+// test hooks (used by the automated checks)
+window.__sky = {
+  P, view,
+  set(o){ Object.assign(P, o); syncUI(); sendParams(); },
+  status: () => lastStatus, ready: () => ready,
+  readback: () => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'readback', id}); }),
+  setView(o){ Object.assign(view, o); sendView(); },
+  shot: () => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'shot', id}); }),
+};
+start();
+
+</script>
+</body>
+</html>

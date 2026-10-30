@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spectral Sky Next</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%226%22 fill=%22%23f0c27f%22/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/*@STYLE*/
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="stage">
+    <header class="bar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span><b>Spectral Sky</b><span class="tag">Next · WebGPU · 24-band</span></div>
+    </header>
+    <div class="tools" id="tools">
+      <div class="seg" id="viewSeg" role="group" aria-label="View">
+        <button data-v="0" class="on">Panorama</button><button data-v="1">Look around</button><button data-v="2">Luminance</button>
+      </div>
+      <div class="expo"><label><input type="checkbox" id="autoEx" checked> Auto</label><input type="range" id="exSlider" min="-8" max="8" step="0.1" value="0" aria-label="Exposure"><span class="v" id="exVal">±0.0 EV</span></div>
+      <div class="seg" id="resSeg" role="group" aria-label="Preview resolution">
+        <button data-r="1024" class="on">1K</button><button data-r="2048">2K</button><button data-r="4096">4K</button>
+      </div>
+    </div>
+    <div class="view" id="view">
+      <canvas id="gl"></canvas>
+      <div class="overlay" id="overlay"></div>
+      <div class="loader" id="loader" role="status" aria-live="polite">
+        <div class="ld-card"><div class="ld-spin" aria-hidden="true"></div>
+          <div class="ld-title" id="ldTitle">Loading Spectral Sky</div>
+          <div class="ld-step" id="ldStep">Starting…</div>
+          <div class="ld-hint" id="ldHint">Needs a browser with WebGPU (Chrome, Edge, Safari 26 or newer).</div></div></div>
+      <div class="legend" id="legend" hidden><span>10⁻⁴</span><i></i><span>10⁹ cd/m²</span></div>
+      <div class="status" id="status">Starting…</div>
+    </div>
+    <footer class="readouts" id="readouts"></footer>
+  </section>
+  <aside id="panel"></aside>
+</div>
+<script>
+/*@MAIN*/
+</script>
+</body>
+</html>
