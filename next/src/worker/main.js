@@ -65,7 +65,7 @@ async function init(m){
   R.samp = device.createSampler({magFilter:'linear', minFilter:'linear', addressModeU:'clamp-to-edge', addressModeV:'clamp-to-edge'});
   const transV = R.trans.createView({dimension:'2d-array'}), msV = R.ms.createView({dimension:'2d-array'});
   R.wrapSamp = device.createSampler({magFilter:'linear', minFilter:'linear', addressModeU:'repeat', addressModeV:'repeat', addressModeW:'repeat'});
-  R.cu = device.createBuffer({size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+  R.cu = device.createBuffer({size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.noise = device.createTexture({size:[128, 128, 128], dimension:'3d', format:'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});
   // (separate per-level uniforms for each pass kind: writeBuffer lands before the whole command buffer runs)
   R.gp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
@@ -135,7 +135,8 @@ function allocVolume(q){
 // sky columns over the central 64 km that are cloudy, seen from below) and the field rebuilt once per shape setting
 const shapeKey = P => JSON.stringify(Object.keys(P).filter(k => /^cu|^wind/.test(k) && !/^cu(Cover|Seed|Dens|Erode|Amb|Drop)$/.test(k)).map(k => P[k])) + R.volQ;
 function buildClouds(P, enc){
-  S.cuCal = S.cuCal || {}; const sk = shapeKey(P); const cal = S.cuCal[sk];
+  S.cuCal = S.cuCal || {}; const sk = shapeKey(P); if (P.cuCalHint && !S.cuCal[sk]) S.cuCal[sk] = {k: P.cuCalHint, n: 9, done: true};   // (tests: skip the calibration rebuilds)
+  const cal = S.cuCal[sk];
   const cu = genCumulus(P, cal ? cal.k : 2.2), pk = packCumulus(cu);
   // (measured from the sky columns, so only while cumulus is the only layer; otherwise the last calibration stands)
   const alone = !layerBand(P) && P.cuOn && P.cuCover > 0.001;
@@ -195,7 +196,7 @@ async function measureFields(P, ks){
 }
 function writeCU(P){ const [nx, nz, lx, lz] = R.volRes; const dp = dropletPhase(P.cuDrop || 14);
   device.queue.writeBuffer(R.cu, 0, new Float32Array([VOL.E0, VOL.ZTOP, VOL.NLEV, VOL.SDF_LEVELS, nx, nz, lx, lz,
-    S.band ? S.band[0] : 0, S.band ? S.band[1] : 0, S.cloudOn ? 1 : 0, P.cuErode ?? 1, dp.gHG, dp.gD, dp.a, dp.wD, 0.5, 0.45, 0.8, 0.8*(P.cuAmb ?? 1)])); }
+    S.band ? S.band[0] : 0, S.band ? S.band[1] : 0, S.cloudOn ? 1 : 0, P.cuErode ?? 1, dp.gHG, dp.gD, dp.a, dp.wD, 0.5, 0.45, 0.8, 0.6*(P.cuAmb ?? 1), ...(() => { const wl = Math.hypot(P.windX, P.windZ) || 1; return [P.windX/wl, P.windZ/wl, 1.2*(P.ciCell || 1.5), 0]; })()])); }
 function lightClouds(enc){ const [, , lx, lz] = R.volRes;
   for (let l = 0; l < VOL.NLEV; l++){ device.queue.writeBuffer(R.lp[l], 0, new Uint32Array([l, 0, 0, 0]));
     const c = enc.beginComputePass(); c.setPipeline(R.pLight);

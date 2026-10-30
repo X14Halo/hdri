@@ -186,7 +186,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // sunlight the cloud above has turned into diffuse light (two-stream: total transmission minus the direct beam)
           let m0 = max(Ls.y, 0.0);
           if (m0 > 0.0 && lt.z > 0.0) { let mm = min(m0, 1.0); let td = exp(-lt.z/max(m0, 0.05));
-            Fd += dI*CU.ms.w/(2.0*PI)*max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*td)/(1.0 + 0.105*lt.z) - td, 0.0); }
+            // (× 0.6: a finite cloud loses part of it out of its sides, unlike the infinite slab of the two-stream model)
+            Fd += 0.6*dI*CU.ms.w/(2.0*PI)*max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*td)/(1.0 + 0.105*lt.z) - td, 0.0); }
           Fg += dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.w);   // light from the ground below
           Tc *= exp(-sig*ds);
         }

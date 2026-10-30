@@ -127,12 +127,16 @@ fn evalAt(p: vec3f) -> Hit {
   var best = Hit(-1.0, 0.0, 0.0, 0.0);
   // the layers (alpha codes the style for the renderer's fine detail: < 0.5 cumulus by size, 0.65 water sheets, 0.9 ice)
   if (LY.sc.x > 0.0 && p.y > LY.sc.y - 0.35 && p.y < LY.sc.y + LY.sc.z + 0.3) {
-    let f = scField(p.xz); let th = LY.sc.z;
-    let top = LY.sc.y + th*(0.55 + 0.45*f.y) + th*0.25*(n2(p.xz, 1.7, 0.41) - 0.5);
-    let bot = LY.sc.y + th*0.12*(1.0 - f.y) + 0.06*(n2(p.xz, 2.3, 0.19) - 0.5);
+    // cells are domes: thickest in the middle, thinning to their edges (thin bright rims, dark cores seen from below), merging
+    // into a continuous deck where the cover is high
+    let f = scField(p.xz); let th = LY.sc.z; let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
+    let top = LY.sc.y + th*(0.2 + 0.8*m) + th*0.18*(n2(p.xz, 1.7, 0.41) - 0.5);
+    let bot = LY.sc.y + th*0.22*(1.0 - m) + 0.05*(n2(p.xz, 2.3, 0.19) - 0.5);
     let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.x)*LY.sc2.x*0.35;
     let d = min(dv, dh);
-    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp((p.y - bot)/max(top - bot, 0.05), 0.0, 1.0), 0.65); }
+    // lumpy (cumuliform) except for stratus: the size code drives the renderer's billows in proportion to the deck
+    let st = select(0.65, 0.5*clamp(th*0.9/2.4, 0.04, 0.5), LY.sc.w > 0.15);
+    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp((p.y - bot)/max(top - bot, 0.05), 0.0, 1.0), st); }
   }
   if (LY.ac.x > 0.0 && p.y > LY.ac.y - 0.3 && p.y < LY.ac.y + LY.ac.z + 0.3) {
     let f = acField(p.xz); let th = LY.ac.z; let form = LY.ac.w;
@@ -140,7 +144,8 @@ fn evalAt(p: vec3f) -> Hit {
     let bot = LY.ac.y + th*mix(0.05*(1.0 - f.y), 0.35*(1.0 - f.y), form);
     let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.y)*LY.ac2.x*0.3;
     let d = min(dv, dh);
-    if (d > best.d) { best = Hit(d, LY.ac2.z, clamp((p.y - bot)/max(top - bot, 0.05), 0.0, 1.0), 0.65); }
+    let st = select(0.65, 0.5*clamp(LY.ac2.x*0.45/2.4, 0.03, 0.5), form > 0.3);
+    if (d > best.d) { best = Hit(d, LY.ac2.z, clamp((p.y - bot)/max(top - bot, 0.05), 0.0, 1.0), st); }
   }
   if (LY.ci.x > 0.0 && p.y > LY.ci.y - LY.wind.w - 0.2 && p.y < LY.ci.y + LY.ci.z + 0.2) {
     // below the generating level the ice falls in streaks; a streak at depth dz traces back to a head displaced downwind

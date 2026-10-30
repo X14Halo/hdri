@@ -10,6 +10,7 @@ struct Cloud {
   band: vec4f,   // x lowest cloud base, y highest cloud top (km), z cloud on, w erosion strength
   cph: vec4f,    // cloud droplet phase (gHG, gD, alpha, wD)
   ms: vec4f,     // multiple scattering: x a, y b, z c, w ambient strength
+  wind: vec4f,   // x/y wind direction (x, z), z ice-fibre length km, w unused
 }
 
 fn levelE(l: u32) -> f32 { return CU.vol.x*exp2(f32(l)); }
