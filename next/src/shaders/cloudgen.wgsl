@@ -58,7 +58,7 @@ fn cuEval(p: vec3f, k: u32) -> vec2f {
   // the flat base (the condensation level), gently uneven
   let bn = (hash3(vec3u(u32(floor(q0.x*4.0) + 4096.0), u32(floor(q0.y*4.0) + 4096.0), seed)).x - 0.5)*0.0;
   d = min(d, y + bn);
-  return vec2f(d, clamp(y/max(H, 1e-3), 0.0, 1.0));
+  return vec2f(d, clamp(base/8.0, 0.0, 1.0));   // (this cloud's base altitude, for the extinction profile with height above it)
 }
 
 // ---------- noise for the layer fields: the tileable noise volume read at incommensurate scales (nothing repeats) ----------
@@ -136,7 +136,7 @@ fn evalAt(p: vec3f) -> Hit {
     let d = min(dv, dh);
     // lumpy (cumuliform) except for stratus: the size code drives the renderer's billows in proportion to the deck
     let st = select(0.65, 0.5*clamp(th*0.9/2.4, 0.04, 0.5), LY.sc.w > 0.15);
-    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp((p.y - bot)/max(top - bot, 0.05), 0.0, 1.0), st); }
+    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp(bot/8.0, 0.0, 1.0), st); }   // (the local base altitude: adiabatic profile above it)
   }
   if (LY.ac.x > 0.0 && p.y > LY.ac.y - 0.3 && p.y < LY.ac.y + LY.ac.z + 0.3) {
     let f = acField(p.xz); let th = LY.ac.z; let form = LY.ac.w;
@@ -145,7 +145,7 @@ fn evalAt(p: vec3f) -> Hit {
     let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.y)*LY.ac2.x*0.3;
     let d = min(dv, dh);
     let st = select(0.65, 0.5*clamp(LY.ac2.x*0.45/2.4, 0.03, 0.5), form > 0.3);
-    if (d > best.d) { best = Hit(d, LY.ac2.z, clamp((p.y - bot)/max(top - bot, 0.05), 0.0, 1.0), st); }
+    if (d > best.d) { best = Hit(d, LY.ac2.z, clamp(bot/8.0, 0.0, 1.0), st); }
   }
   if (LY.ci.x > 0.0 && p.y > LY.ci.y - LY.wind.w - 0.2 && p.y < LY.ci.y + LY.ci.z + 0.2) {
     // below the generating level the ice falls in streaks; a streak at depth dz traces back to a head displaced downwind

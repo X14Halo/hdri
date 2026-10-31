@@ -35,12 +35,13 @@ function genCumulus(P, calib){
   const Dmin = 0.3*size, Dmax = (1.6 + 7*Math.pow(dev, 1.4))*size;
   const b = 2.2 - 0.6*dev;                                  // shallower size spectrum as convection deepens
   const base = P.cuBase, capTop = base + 0.9 + 1.6*dev + 9*Math.pow(dev, 2.2);   // top of the convection (the inversion)
-  const sig0 = (45 + 70*dev)*P.cuDens;                     // core extinction, 1/km
+  const sig0 = P.cuDens;   // extinction factor (the profile with height above the base is in the renderer: ~60/km at 0.4 km)
   const half = VOL.DOMAIN/2, A = VOL.DOMAIN*VOL.DOMAIN;
   const cover = clamp(P.cuCover, 0, 0.95);
   const org = clamp(P.cuOrg, 0, 1), streets = clamp(P.cuStreets, 0, 1);
   const wind = [P.windX || 5, P.windZ || 0], wl = Math.hypot(wind[0], wind[1]) || 1, wd = [wind[0]/wl, wind[1]/wl];
-  const shear = [wd[0]*0.12*P.cuShear, wd[1]*0.12*P.cuShear];   // km of drift per km of height (tops lean downwind)
+  // km of drift per km of height: tops lean downwind, ~10° from vertical at the default, ~20° in strong shear (observed 10–30°)
+  const shear = [wd[0]*0.35*P.cuShear, wd[1]*0.35*P.cuShear];
   const seedM = (P.cuSeed*31 + 5) | 0;
   // where clouds may form: mesoscale moisture (clustered fields have clear gaps and dense patches)
   // (tabulated on a 1 km grid: the placement loop looks it up hundreds of thousands of times)
@@ -63,13 +64,16 @@ function genCumulus(P, calib){
   const k1 = 1 - bL, lo = Math.pow(Lmin, k1), hi = Math.pow(Lmax, k1);
   const windAng = Math.atan2(wd[1], wd[0]);
   let cBase = base;   // the condensation level of the complex being built (its cells share it)
-  const addCell = (x, z, D, el, ang, hmul, flatK) => {
+  // stage: most cells are growing or mature (hard billowed edges); about a quarter are decaying (thinned out by mixing:
+  // fewer droplets, so lower extinction and blurred, ragged edges), and most small fragments are remnants (fractus)
+  const addCell = (x, z, D, el, ang, hmul, flatK, pDecay = 0.2) => {
     const R = D/2, s = clamp((D - Dmin)/(Dmax - Dmin + 1e-6), 0, 1);
     // aspect (height/width): small fair-weather cumulus are flat, bigger ones taller; deep convection builds towers
-    const aspect = (0.28 + 0.34*Math.sqrt(s) + 0.9*dev*s)*(1 + 0.15*gaussR(r))*hmul*flatK;
+    // (observed depth/width: humilis 0.3–0.7, mediocris ~1, congestus 1.5–3)
+    const aspect = (0.28 + 0.34*Math.sqrt(s) + 2.2*dev*Math.pow(s, 1.2))*(1 + 0.15*gaussR(r))*hmul*flatK;
     const bz = cBase + 0.012*gaussR(r);
-    const H = clamp(aspect*D, 0.13, capTop - bz);
-    out.clouds.push({x, z, R, base: bz, H, seed: (r()*1e6) | 0, sx: shear[0], sz: shear[1], sig: sig0*(0.85 + 0.3*r()), dev, el, ang});
+    const H = clamp(aspect*D, 0.07, capTop - bz);
+    out.clouds.push({x, z, R, base: bz, H, seed: (r()*1e6) | 0, sx: shear[0], sz: shear[1], sig: sig0*(r() < pDecay ? 0.35 + 0.35*r() : 0.85 + 0.3*r()), dev, el, ang});
     out.top = Math.max(out.top, bz + H*1.2); out.base = Math.min(out.base, bz);
     return Math.PI*R*R*el; };
   // calib: footprint area placed per unit of cover actually seen from below (measured on the GPU, see the worker)
@@ -96,10 +100,10 @@ function genCumulus(P, calib){
     // fragments around the complex
     // (beyond ~60 km fragments are far smaller than a voxel; their cover is folded into the complexes instead)
     const far = Math.max(Math.abs(x), Math.abs(z)) > 60;
-    const nf = far ? 0 : Math.floor(r()*(1.2 + 2.2*L)*(1 - 0.6*dev));
+    const nf = far ? 0 : Math.floor(r()*(2 + 4*L)*(1 - 0.6*dev));
     for (let i = 0; i < nf; i++){ const rr = (0.55 + 0.9*r())*L*0.6, a2 = r()*2*Math.PI;
-      const D = Dmin*(1 + 1.6*r()*r());
-      cov += addCell(x + Math.cos(a2)*rr, z + Math.sin(a2)*rr, D, 1 + 0.8*r(), r()*Math.PI, 0.6 + 0.4*r(), 0.7); }
+      const D = 0.12*size*(1 + 4*r()*r());   // fragments: 0.1–0.6 km (ragged fractus down to ~100 m)
+      cov += addCell(x + Math.cos(a2)*rr, z + Math.sin(a2)*rr, D, 1 + 0.8*r(), r()*Math.PI, 0.6 + 0.4*r(), 0.7, 0.6); }
     area += cov*0.8;   // (cells overlap within a complex)
   }
   return out;
@@ -128,11 +132,11 @@ function packCumulus(cu){
 function layerUniforms(P, thr){
   const wl = Math.hypot(P.windX, P.windZ) || 1, wang = Math.atan2(P.windZ, P.windX);
   const on = (k) => P[k + 'On'] && P[k + 'Cover'] > 0.001;
-  const sigAc = 6 + 26*clamp(P.acForm, 0, 1);
+  const sigAc = 0.5 + 0.5*clamp(P.acForm, 0, 1);   // (factors on the adiabatic liquid-water profile from each layer's base)
   return new Float32Array([
-    on('sc') ? P.scCover : 0, P.scBase, P.scThick, P.scForm,   P.scCell, P.scSeed, (22 + 22*clamp(P.scForm, 0, 1))*P.scDens, wang,
+    on('sc') ? P.scCover : 0, P.scBase, P.scThick, P.scForm,   P.scCell, P.scSeed, (0.6 + 0.3*clamp(P.scForm, 0, 1))*P.scDens, wang,
     on('ac') ? P.acCover : 0, P.acBase, P.acThick, P.acForm,   P.acCell, P.acSeed + 101, sigAc*P.acDens, wang,
-    on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 1.4*P.ciDens, wang,
+    on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 0.7*P.ciDens, wang,
     P.windX/wl, P.windZ/wl, 1.8*P.ciShear, P.ciFall,
     thr.sc ?? 0.5, thr.ac ?? 0.5, thr.ci ?? 0.5, 0]);
 }

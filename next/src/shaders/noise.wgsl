@@ -1,4 +1,5 @@
-// ---------- tileable 3D detail noise (128³): r billows (Perlin–Worley), g/b cellular fBm at 2× and 4×, a Perlin fBm ----------
+// ---------- tileable 3D detail noise (128³): r billows (Perlin–Worley), g/b bubbles (rounded domes on cellular points, 8 and 16
+// per tile: their union is cauliflower, with sharp creases between the domes), a Perlin fBm ----------
 @group(0) @binding(0) var noiseOut: texture_storage_3d<rgba8unorm, write>;
 @group(0) @binding(9) var<uniform> F: Frame;   // (declared for common.wgsl; unused here)
 fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 { return c + (v - a)/(b - a)*(d - c); }
@@ -15,6 +16,16 @@ fn worleyP(p: vec3f, per: vec3f, seed: u32) -> f32 {
     let r = o + hash3(vec3u(c) + vec3u(seed*11u + 5u, seed*13u + 3u, seed*17u + 9u)) - f; d = min(d, dot(r, r)); } } }
   return 1.0 - clamp(sqrt(d), 0.0, 1.0);
 }
+// rounded bubbles: 1 at a cell's point, falling as a sphere's height (√(1 − (d/r)²)) to 0 at r, so the creases between are sharp
+fn bubbleP(p: vec3f, per: vec3f, seed: u32) -> f32 {
+  let i = floor(p); let f = p - i; var d = 1e9;
+  for (var z = -1; z <= 1; z++) { for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let o = vec3f(f32(x), f32(y), f32(z)); let c = (i + o) - per*floor((i + o)/per);
+    let h = hash3(vec3u(c) + vec3u(seed*11u + 5u, seed*13u + 3u, seed*17u + 9u));
+    let r = o + h - f; let rr = 0.62 + 0.3*fract(h.x*7.13 + h.y*3.1);   // (each bubble its own size)
+    d = min(d, dot(r, r)/(rr*rr)); } } }
+  return sqrt(max(1.0 - d, 0.0));
+}
 fn perlinFbm(p: vec3f, f0: f32, oct: u32, seed: u32) -> f32 { var s = 0.0; var a = 1.0; var n = 0.0; var f = f0;
   for (var i = 0u; i < oct; i++) { s += gnoiseP(p*f, vec3f(f), seed + i)*a; n += a; a *= 0.5; f *= 2.0; } return s/n; }
 fn worleyFbm(p: vec3f, f: f32, seed: u32) -> f32 { return worleyP(p*f, vec3f(f), seed)*0.625 + worleyP(p*f*2.0, vec3f(f*2.0), seed + 1u)*0.25 + worleyP(p*f*4.0, vec3f(f*4.0), seed + 2u)*0.125; }
@@ -25,5 +36,5 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var pf = perlinFbm(p, 4.0, 5u, 3u)*0.5 + 0.5; pf = clamp(remap(pf, 0.15, 0.85, 0.0, 1.0), 0.0, 1.0);
   let w1 = worleyFbm(p, 4.0, 20u);
   let billow = clamp(remap(pf, 0.0, 1.0, w1, 1.0), 0.0, 1.0);
-  textureStore(noiseOut, id, vec4f(billow, worleyFbm(p, 8.0, 30u), worleyFbm(p, 16.0, 40u), clamp(0.5 + 1.3*perlinFbm(p, 4.0, 4u, 75u), 0.0, 1.0)));
+  textureStore(noiseOut, id, vec4f(billow, bubbleP(p*8.0, vec3f(8.0), 30u), bubbleP(p*16.0, vec3f(16.0), 40u), clamp(0.5 + 1.3*perlinFbm(p, 4.0, 4u, 75u), 0.0, 1.0)));
 }

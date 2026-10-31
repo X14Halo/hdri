@@ -41,6 +41,12 @@ fn moonAlbedo(n: vec3f) -> f32 {
 }
 fn starSpec(t: u32, g: u32) -> vec4f { return F.Star[t*6u + g]; }
 
+// δ-Eddington slab reflectance of conservative water cloud (g = 0.86): for a collimated beam at cosine mu, and for diffuse
+// light (mean cosine 0.5); within a few % of Monte Carlo with the Mie phase function for τ 1–100
+const GM: f32 = 0.86;
+fn rDir(tau: f32, mu: f32) -> f32 { let k = (1.0 - GM)*tau; return clamp((k + (0.6667 - mu)*(1.0 - exp(-(1.0 - GM*GM)*tau/max(mu, 0.05))))/(1.3333 + k), 0.0, 1.0); }
+fn rDiff(tau: f32) -> f32 { return rDir(tau, 0.5); }
+
 // stars found near this direction (at most 9), their weights and blackbody index, gathered once per pixel
 struct Stars { w: array<f32, 9>, t: array<u32, 9>, n: u32 }
 
@@ -141,13 +147,15 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var Tc = 1.0;                                   // transmittance through the clouds so far
   let cloudOn = CU.band.z > 0.5;
   let cs1 = phaseCloud(cS); let cm1 = phaseCloud(cM);
+  // ice crystals (cirrus, 20–100 µm): a narrower diffraction peak and a broad body, asymmetry ≈ 0.8 (halos are separate)
+  let ci1 = 0.5*phaseHG(cS, 0.995) + 0.5*phaseHG(cS, 0.6); let cim = 0.5*phaseHG(cM, 0.995) + 0.5*phaseHG(cM, 0.6);
   let iso = 1.0/(4.0*PI);
   var cloudSteps = 0u;
   let rj = fract(hash3(vec3u(pxX, py, 4211u)).x + f32(n)*0.7548776662);
   for (var i = 0u; i < NS; i++) {
     let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let tAir = ta + dt*jt;
     // clouds in this segment
-    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var FgS = 0.0; var FgM = 0.0; var FgA = 0.0; var TcAir = Tc;
+    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var FgS = 0.0; var FgM = 0.0; var FgA = 0.0; var FgR = 0.0; var TcAir = Tc;
     let qa = volPos(ro + rd*ta); let qb = volPos(ro + rd*tb);
     let segLo = min(qa.y, qb.y); let segHi = max(qa.y, qb.y);
     if (cloudOn && Tc > 0.0 && segHi > CU.band.x - 0.3 && segLo < CU.band.y + 0.1) {
@@ -181,36 +189,91 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // the rest from the light volume beyond that point
           var lt = lightAt(q);
           if (F.sunDir.w > 0.5 && t < 60.0 && !coarse) {
-            var tl = 0.0; var d0 = 0.36;
-            for (var j = 0; j < 4; j++) { let sl = d0*(f32(j) + 0.5)/4.0; tl += densFull(volPos(p + Ls*sl))*d0/4.0; }
+            // (steps growing from 15 m: the billows and domes of ~50–150 m shade each other, which is what makes them read;
+            // sample positions jittered per pixel and pass: fixed ones would step as the cloud's surfaces cross them, drawing
+            // contour bands; jittered, the steps average out)
+            var tl = 0.0; var d0 = 0.0; var sf = 0.015;
+            let rl = fract(rj*1.618 + 0.31);
+            for (var j = 0; j < 7; j++) { tl += densFull(volPos(p + Ls*(d0 + rl*sf)))*sf; d0 += sf; sf *= 1.5; }
             var sd = 0.12;
-            for (var j = 0; j < 6; j++) { if (tl > 25.0) { break; } tl += densMacro(volPos(p + Ls*(d0 + 0.5*sd)))*sd; d0 += sd; sd *= 1.4; }
+            for (var j = 0; j < 6; j++) { if (tl > 25.0) { break; } tl += densMacro(volPos(p + Ls*(d0 + rl*sd)))*sd; d0 += sd; sd *= 1.4; }
             lt.x = tl + select(lightAt(volPos(p + Ls*d0)).x, 0.0, tl > 25.0);
           }
-          let a1 = CU.ms.x; let b1 = CU.ms.y; let c1 = CU.ms.z;
-          // single scattering with the droplets' full phase function (its sharp forward peak makes the silver linings);
-          // the multiple-scattering orders with a broad phase of reduced asymmetry (water clouds g ≈ 0.86): the diffraction
-          // peak is ~1° wide and is smeared out after the first scattering, so the sun's disc never reappears through a thick cloud
-          var sunF = cs1*exp(-lt.x); var moonF = cm1*exp(-lt.y); var ak = a1; var bk = b1; var ck = c1;
-          for (var o = 1; o < 3; o++) {
-            sunF += ak*phaseHG(cS, 0.86*ck)*exp(-bk*lt.x); moonF += ak*phaseHG(cM, 0.86*ck)*exp(-bk*lt.y);
-            ak *= a1; bk *= b1; ck *= c1;
-          }
+          // ---- light inside the cloud (all orders but the first from slab radiative transfer, δ-Eddington, g = 0.86).
+          // At this point the cloud is treated as a layer seen along its lit axis: the cloud between the point and the light
+          // (optical depth dA, measured) passes on a fraction, the cloud beyond it (dB, measured) reflects part of that back;
+          // adding the two layers gives the diffuse light travelling on (Dn) and back toward the light (Up). The axis is the
+          // vertical where the sunlight came in through the cloud's top, horizontal toward the sun where it came in through a
+          // side. A finite cloud loses diffuse light out of its sides (Monte Carlo on a cube: the base gets ~0.2× the slab's
+          // transmission at τ 20, ~0.1× at τ 50; the lit face ~0.5× the slab's reflection), more so the deeper the light has
+          // gone and the narrower the cloud is across the axis. The viewer sees the stream heading toward them.
+          let upl = normalize(p - C0);
+          let vr = rawCloud(q.xz, q.y, u32(levelOf(q.xz).x));
+          let isCu = vr.a < 0.55; let Rc = clamp(vr.a/0.5*2.4, 0.25, 2.4);
+          let Wc = select(40.0, 2.6*Rc, isCu);
+          let Hc = select(0.6, 2.0*Rc*mix(0.35, 0.65 + 1.6*CU.wind.w, clamp(Rc/1.5, 0.0, 1.0)), isCu);
+          // first order: the droplets' full phase function (silver linings, the bright aureole of thin edges)
+          let ice = vr.a > 0.8;
+          let sunF = select(cs1, ci1, ice)*exp(-lt.x); let moonF = select(cm1, cim, ice)*exp(-lt.y);
           let dI = Tc*(1.0 - exp(-sig*ds));
           Fs += dI*sunF; Fm += dI*moonF;
-          Fa += dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.z);   // skylight from above, diffusely through the cloud above
-          // sunlight the cloud above has turned into diffuse light (two-stream: total transmission minus the direct beam)
-          let m0 = max(Ls.y, 0.0);
-          if (m0 > 0.0 && lt.z > 0.0) { let mm = min(m0, 1.0); let td = exp(-lt.z/max(m0, 0.05));
-            // (isotropic radiance F/π from the downward flux F; × 0.6: a finite cloud loses part of it out of its sides, unlike
-            // the infinite slab of the two-stream model. This is sunlight, not ambient light, so the ambient setting stays out.)
-            Fd += 0.6*dI/PI*max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*td)/(1.0 + 0.105*lt.z) - td, 0.0); }
+          // sky: down through the cloud above, back up from the cloud below
+          let wv = clamp(0.5 + 0.5*dot(rd, upl), 0.0, 1.0);
+          let Rau = rDiff(lt.z); let Rbd = rDiff(lt.w);
+          let Dsk = (1.0 - Rau)/(1.0 - Rau*Rbd);
+          Fa += dI*CU.ms.w*Dsk*(wv + Rbd*(1.0 - wv))/PI;
+          // sun
+          if (F.sunDir.w > 0.5) {
+            var ya = lt.z + lt.w;
+            if (t < 60.0 && !coarse) {   // optical depth from here away from the sun, through the cloud beyond (~2 km)
+              ya = 0.0; var sa = 0.1; var da = 0.0;
+              let ra = fract(rj*2.718 + 0.57);
+              for (var j = 0; j < 6; j++) { ya += densMacro(volPos(p - Ls*(da + ra*sa)))*sa; da += sa; sa *= 1.5; }
+            }
+            let mu0 = clamp(dot(upl, Ls), 0.0, 1.0); let s0 = sqrt(max(1.0 - mu0*mu0, 0.0));
+            let ex = exp(-lt.x);
+            if (isCu) {
+              // a compact cloud: one slab along the beam (depth toward the sun dA, beyond it dB, both measured, so every billow
+              // and turret shades what lies behind it). Leakage out of the cloud across the beam grows with the beam's
+              // chord through the cloud relative to the cloud's width across it.
+              let dA = lt.x; let dB = ya;
+              let Ra = rDiff(dA); let Rb = rDiff(dB);
+              let Dn = (1.0 - rDir(dA, 1.0))/(1.0 - Ra*Rb); let Up = Rb*Dn;
+              let along = 1.0/(mu0/Hc + s0/Wc); let across = 1.0/(s0/Hc + mu0/Wc);
+              // (at least as for a cube: whatever the beam has crossed first, a turret or a billow, is no wider across the beam
+              // than along it, so the light it diffuses spreads out of it rather than on toward this point; what comes back
+              // from beyond (Up) is made of that same, reduced, light)
+              let A = clamp(along/across, 1.0, 5.0);
+              let fD = 1.0/(1.0 + 1.3*(1.0 - GM)*dA*A); let fU = 1.0/(1.0 + 0.5*min(A, 2.0));
+              let ws = clamp(0.5 + 0.5*cS, 0.0, 1.0);   // the stream travelling on (away from the sun) is seen looking toward it
+              // light that has crossed only a few optical depths still travels mostly forward (Monte Carlo: of the diffuse light
+              // through τ 1, 38% is within 5° of the beam; τ 5, 9%; gone by τ ~10–15): a narrow forward lobe that fades with
+              // depth, on top of the broad stream; this is what keeps thin clouds near the sun bright white
+              let fp = exp(-dA/2.5);
+              let fwd = (1.0 - fp)*ws + fp*PI*phaseHG(cS, 0.9);
+              Fd += dI*fD*(max(Dn - ex, 0.0)*fwd + fU*Up*(1.0 - ws))/PI;
+            } else {
+              // a wide layer: a horizontal slab lit through its top at the sun's incidence (projected measured depths)
+              let dAT = lt.x*mu0; let dBT = ya*mu0;
+              let RaT = rDiff(dAT); let RbT = rDiff(dBT);
+              let DnT = (1.0 - rDir(dAT, max(mu0, 0.05)))/(1.0 - RaT*RbT); let UpT = RbT*DnT;
+              Fd += dI*mu0*(max(DnT - ex, 0.0)*wv + UpT*(1.0 - wv))/PI;
+            }
+          }
+          // moon: the same through the vertical (its light is faint; the cheaper estimate is enough)
+          if (F.moonDir.w > 0.5) {
+            let mm = max(dot(upl, Lm), 0.05); let dA = lt.y*mm; let Ra = rDiff(dA);
+            let Dn = (1.0 - rDir(dA, 1.0))/(1.0 - Ra*Rbd);
+            Fm += dI*mm*(max(Dn - exp(-lt.y), 0.0)*wv + Rbd*Dn*(1.0 - wv))/PI;
+          }
           // light from the ground below: what the ground beneath receives (sun and moon through the clouds' shadows, sky),
-          // averaged over a patch about as wide as the height above it (read from a coarser level of the light volume)
-          let kg = dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.w);
+          // averaged over a patch about as wide as the height above it (read from a coarser level of the light volume);
+          // up through the cloud below, back down from the cloud above
+          let Ug = (1.0 - Rbd)/(1.0 - Rau*Rbd);
+          let kg = dI*Ug*((1.0 - wv) + Rau*wv)/PI;
           let lgl = u32(clamp(round(log2(max(q.y, 0.1)*CU.res.z/CU.vol.x)), levelOf(q.xz).x, CU.vol.z - 1.0));
           let gl = rawLight(q.xz, 0.0, lgl);
-          Fg += kg; FgS += kg*exp(-gl.x); FgM += kg*exp(-gl.y); FgA += kg/(1.0 + 0.18*gl.z);
+          Fg += kg; FgS += kg*exp(-gl.x); FgM += kg*exp(-gl.y); FgA += kg/(1.0 + 0.105*gl.z); FgR += kg*rDiff(gl.z);
           Tc *= exp(-sig*ds);
         }
         t += ds;
@@ -235,14 +298,15 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       L[g] += T[g]*TcAir*(S - S*att)/max(ext, vec4f(1e-9));
       if (Fs + Fm + Fa + Fg + Fd > 0.0) {
         var Ec = vec4f(0.0);
-        if (F.sunDir.w > 0.5) { let Te = F.SunE[g]*transmittance(g, rm, muSm); Ec += Te*(Fs + max(Ls.y, 0.0)*Fd); }
+        if (F.sunDir.w > 0.5) { let Te = F.SunE[g]*transmittance(g, rm, muSm); Ec += Te*(Fs + Fd); }
         if (F.moonDir.w > 0.5) { Ec += F.MoonE[g]*transmittance(g, rm, muMm)*Fm; }
         Ec += ambE(g, hm)*Fa;
         if (Fg > 0.0) {
           var Eg = ambE(g, 0.0)*FgA;
           if (F.sunDir.w > 0.5) { Eg += F.SunE[g]*transmittance(g, Rg, Ls.y)*max(Ls.y, 0.0)*FgS; }
           if (F.moonDir.w > 0.5) { Eg += F.MoonE[g]*transmittance(g, Rg, Lm.y)*max(Lm.y, 0.0)*FgM; }
-          Ec += F.Alb[g]*Eg;
+          // (light bouncing between the ground and the cloud deck above it: ×1/(1 − ρ_ground·ρ_cloud), ~2× over snow)
+          Ec += F.Alb[g]*Eg/(1.0 - F.Alb[g]*FgR/Fg);
         }
         L[g] += T[g]*sqrt(att)*Ec;
       }
@@ -263,7 +327,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         var tt = gs.x; if (gs.w > 0.0 && m0 > 0.0) { let mm = min(m0, 1.0); tt = max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*gs.x)/(1.0 + 0.105*gs.w), gs.x); }
         Ed += Es*tt; }
       if (F.moonDir.w > 0.5) { Ed += F.MoonE[g]*transmittance(g, Rg, ground.y)*max(ground.y, 0.0)*gs.y; }
-      bg = F.Alb[g]*Ed/PI;
+      bg = F.Alb[g]*Ed/PI/(1.0 - F.Alb[g]*select(0.0, rDiff(gs.w), cloudOn && hitG));
     } else if (gN <= 0.0) {
       bg = F.Air[g]*vr;
       if (sunN > 0u) { var acc = vec4f(0.0); for (var k = 0u; k < sunN; k++) { acc += pow(vec4f(sunSm[k]), F.SunA[g]); } bg += F.SunK[g]*acc/16.0; }

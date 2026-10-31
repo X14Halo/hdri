@@ -196,7 +196,7 @@ async function measureFields(P, ks){
 }
 function writeCU(P){ const [nx, nz, lx, lz] = R.volRes; const dp = dropletPhase(P.cuDrop || 14);
   device.queue.writeBuffer(R.cu, 0, new Float32Array([VOL.E0, VOL.ZTOP, VOL.NLEV, VOL.SDF_LEVELS, nx, nz, lx, lz,
-    S.band ? S.band[0] : 0, S.band ? S.band[1] : 0, S.cloudOn ? 1 : 0, P.cuErode ?? 1, dp.gHG, dp.gD, dp.a, dp.wD, 0.5, 0.45, 0.8, 0.6*(P.cuAmb ?? 1), ...(() => { const wl = Math.hypot(P.windX, P.windZ) || 1; return [P.windX/wl, P.windZ/wl, 1.2*(P.ciCell || 1.5), 0]; })()])); }
+    S.band ? S.band[0] : 0, S.band ? S.band[1] : 0, S.cloudOn ? 1 : 0, P.cuErode ?? 1, dp.gHG, dp.gD, dp.a, dp.wD, 0.5, 0.45, 0.8, (P.cuAmb ?? 1), ...(() => { const wl = Math.hypot(P.windX, P.windZ) || 1; return [P.windX/wl, P.windZ/wl, 1.2*(P.ciCell || 1.5), clamp(P.cuDev, 0, 1)]; })()])); }
 function lightClouds(enc){ const [, , lx, lz] = R.volRes;
   for (let l = 0; l < VOL.NLEV; l++){ device.queue.writeBuffer(R.lp[l], 0, new Uint32Array([l, 0, 0, 0]));
     const c = enc.beginComputePass(); c.setPipeline(R.pLight);
