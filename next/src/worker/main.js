@@ -270,7 +270,7 @@ function tick(){
         S.rows = Math.round(clamp(sub*10/Math.max(dt, 0.5), 8, S.H)); }); } }
   const now = performance.now();
   if (now - S.lastStatus > 200 || (submitted && S.sample === S.target && S.row === S.cr[1])){ S.lastStatus = now;
-    post({type:'status', sample: S.sample, target: S.target, row: S.row - S.cr[1], rows: S.cr[3] - S.cr[1], W: S.W, H: S.H, ms: S.lastSampleMs || 0, total: now - S.t0, derived: S.derived, meter: S.meter, expo: exposure(), done: S.sample >= S.target}); }
+    post({type:'status', sample: S.sample, target: S.target, row: S.row - S.cr[1], rows: S.cr[3] - S.cr[1], W: S.W, H: S.H, ms: S.lastSampleMs || 0, total: now - S.t0, derived: S.derived, meter: S.meter, expo: exposure(), done: S.sample >= S.target, busy: !!(S.fieldBusy || S.paramsDirty)}); }
 }
 function display(enc){
   const v = S.view, cw = canvas.width, ch = canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }

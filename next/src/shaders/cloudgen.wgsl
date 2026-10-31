@@ -100,8 +100,9 @@ fn acField(xz: vec2f) -> vec2f {
   let lump = 1.0 - smoothstep(0.05, 0.75, f.x);
   let wave = 0.5 + 0.5*sin(6.2831853*q.x*0.9 + 4.0*n2(xz, cs*6.0, 0.37));
   let veil = 0.75 + 0.25*fbm2s(xz, 6.0, 0.45);
-  let meso = fbm2s(xz, 22.0, 0.83) - 0.5;
-  let c = mix(veil, 0.75*lump + 0.25*wave, form) + 0.7*meso;
+  // (altocumulus comes in patches and sheets with clear sky between, at 20–60 km scales, not evenly over the whole sky)
+  let meso = fbm2s(xz, 22.0, 0.83) - 0.5 + 0.8*(n2(xz, 13.0, 0.27) - 0.5);
+  let c = mix(veil, 0.75*lump + 0.25*wave, form) + 1.0*meso;
   return vec2f(c, mix(veil, lump, form));
 }
 // ---------- cirrus: ice from generating cells high up, trailing fall streaks that hang back and curve as they sink into
@@ -112,10 +113,10 @@ fn ciField(xz: vec2f) -> vec2f {
   let warp = (n2(xz, cs*5.0, 0.17) - 0.5)*cs*2.5;
   let fib = nz(vec3f(q.x/(cs*9.0), 0.33, (q.y + warp)/(cs*0.55)));            // fibres along the wind
   let fib2 = nz(vec3f(q.x/(cs*3.0), 0.77, (q.y + warp*0.6)/(cs*0.21)));
-  let heads = 1.0 - smoothstep(0.1, 0.6, worley2(q/vec2f(cs*2.2, cs*1.4), seed + 9u).x);
+  let heads = 1.0 - smoothstep(0.1, 0.6, worley2(q/vec2f(cs*4.0, cs*1.2), seed + 9u).x);
   let veil = 0.8 + 0.2*fbm2s(xz, 9.0, 0.53);
   let cc = 1.0 - smoothstep(0.1, 0.7, worley2(q/(cs*0.12), seed + 13u).x);       // cirrocumulus grains
-  let streak = 0.45*fib + 0.25*fib2 + 0.3*heads;
+  let streak = 0.55*fib + 0.3*fib2 + 0.15*heads;
   var c = mix(veil, streak, smoothstep(0.0, 0.5, form));
   c = mix(c, 0.5*cc + 0.5*fib, smoothstep(0.6, 1.0, form));
   let meso = fbm2s(xz, 30.0, 0.29) - 0.5;
@@ -125,18 +126,29 @@ fn ciField(xz: vec2f) -> vec2f {
 struct Hit { d: f32, sig: f32, v: f32, r: f32 }
 fn evalAt(p: vec3f) -> Hit {
   var best = Hit(-1.0, 0.0, 0.0, 0.0);
-  // the layers (alpha codes the style for the renderer's fine detail: < 0.5 cumulus by size, 0.65 water sheets, 0.9 ice)
+  // the layers (alpha codes the style for the renderer: < 0.5 cumulus by size, 0.5–0.62 lumpy water layers by lump size,
+  // 0.7 smooth water sheets, 0.9 ice)
   if (LY.sc.x > 0.0 && p.y > LY.sc.y - 0.35 && p.y < LY.sc.y + LY.sc.z + 0.3) {
     // cells are domes: thickest in the middle, thinning to their edges (thin bright rims, dark cores seen from below), merging
     // into a continuous deck where the cover is high
-    let f = scField(p.xz); let th = LY.sc.z; let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
-    let top = LY.sc.y + th*(0.2 + 0.8*m) + th*0.18*(n2(p.xz, 1.7, 0.41) - 0.5);
-    let bot = LY.sc.y + th*0.22*(1.0 - m) + 0.05*(n2(p.xz, 2.3, 0.19) - 0.5);
-    let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.x)*LY.sc2.x*0.35;
+    // (the cell pattern wanders a little with height, so the cells' sides billow instead of being straight extrusions)
+    let hy = p.y*1.7; let wob = vec2f(n2(p.xz, 0.8, 0.31 + hy) - 0.5, n2(p.xz, 0.8, 0.77 + hy) - 0.5)*0.35;
+    let f = scField(p.xz + wob); let th = LY.sc.z; let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
+    // (a deck under an inversion: the top nearly flat, ±20–50 m, a little lower at the thin cell rims; the base undulating
+    // ±50–150 m and rising toward the gaps)
+    // (cells are pillows: full depth in their middles, thinning to their rims mostly by the base rising, so the deck reads
+    // as flattened cells packed side by side rather than as separate puffs)
+    let top = LY.sc.y + th*(0.85 + 0.15*m) + th*0.08*(n2(p.xz, 1.7, 0.41) - 0.5);
+    let bot = LY.sc.y + th*0.5*(1.0 - m) + 0.2*(n2(p.xz, 4.3, 0.19) - 0.5) + 0.06*(n2(p.xz, 1.1, 0.67) - 0.5);
+    // (pillow cross-section: the sides bulge at mid-height and curve in to the top and the base)
+    let hf = clamp((p.y - bot)/max(top - bot, 0.03), 0.0, 1.0);
+    let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.x)*LY.sc2.x*0.35 + th*(0.22*sin(3.14159*hf) - 0.1);
     let d = min(dv, dh);
     // lumpy (cumuliform) except for stratus: the size code drives the renderer's billows in proportion to the deck
-    let st = select(0.65, 0.5*clamp(th*0.9/2.4, 0.04, 0.5), LY.sc.w > 0.15);
-    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp(bot/8.0, 0.0, 1.0), st); }   // (the local base altitude: adiabatic profile above it)
+    // (softer lumps than cumulus: the cells are only 1–2 layer depths across)
+    let st = select(0.7, 0.5 + 0.12*clamp(LY.sc2.x*0.35/1.2, 0.02, 1.0), LY.sc.w > 0.15);
+    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp(LY.sc.y/8.0, 0.0, 1.0), st); }   // (the deck's nominal base: adiabatic profile above it; a constant, so
+    // its 8-bit storage cannot draw contours)
   }
   if (LY.ac.x > 0.0 && p.y > LY.ac.y - 0.3 && p.y < LY.ac.y + LY.ac.z + 0.3) {
     let f = acField(p.xz); let th = LY.ac.z; let form = LY.ac.w;
@@ -144,8 +156,8 @@ fn evalAt(p: vec3f) -> Hit {
     let bot = LY.ac.y + th*mix(0.05*(1.0 - f.y), 0.35*(1.0 - f.y), form);
     let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.y)*LY.ac2.x*0.3;
     let d = min(dv, dh);
-    let st = select(0.65, 0.5*clamp(LY.ac2.x*0.45/2.4, 0.03, 0.5), form > 0.3);
-    if (d > best.d) { best = Hit(d, LY.ac2.z, clamp(bot/8.0, 0.0, 1.0), st); }
+    let st = select(0.7, 0.5 + 0.12*clamp(LY.ac2.x*0.45/1.2, 0.02, 1.0), form > 0.3);
+    if (d > best.d) { best = Hit(d, LY.ac2.z, clamp(LY.ac.y/8.0, 0.0, 1.0), st); }
   }
   if (LY.ci.x > 0.0 && p.y > LY.ci.y - LY.wind.w - 0.2 && p.y < LY.ci.y + LY.ci.z + 0.2) {
     // below the generating level the ice falls in streaks; a streak at depth dz traces back to a head displaced downwind
@@ -189,9 +201,20 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     for (var s = 0u; s < 8u; s++) {
       let jt = (vec3f(f32(s & 1u), f32((s >> 1u) & 1u), f32((s >> 2u) & 1u)) - 0.5)*0.5 + (hash3(vec3u(id.x, id.y, k*8u + s)) - 0.5)*0.4;
       let h = evalAt(p + jt*vec3f(vx, vz, vx));
-      let inside = smoothstep(-0.03, 0.03, h.d); cov += inside; sg = max(sg, h.sig); vv += h.v*inside; st = max(st, h.r*inside);
+      // (the fraction of the voxel the renderer's near-field density would fill: the same fine-detail erosion, on average,
+      // and the same soft ramp for ice, so the cloud field keeps its look across the change from distances to coverage)
+      var inside = 0.0;
+      if (h.r > 0.8) { inside = smoothstep(0.0, 0.12, h.d + 0.06); }
+      else if (h.r < 0.63) {
+        let Rc = clamp(select((h.r - 0.5)/0.12*1.2, h.r/0.5*2.4, h.r < 0.5), 0.05, 2.4);
+        let Ae = 0.5*min(0.3*pow(Rc, 0.8), 0.45)*select(1.0, 0.45, h.r >= 0.5);
+        inside = smoothstep(-0.03, 0.03, h.d - Ae + 0.03);
+      } else { inside = smoothstep(0.0, 0.035, h.d); }
+      cov += inside; sg = max(sg, h.sig); vv += h.v*inside; if (inside > 0.0) { st = max(st, h.r); }   // (the style is a code, not an amount: never scaled)
     }
-    if (cov > 0.0) { o = vec4f(cov/8.0, encodeSig(sg), vv/cov, st); }
+    // (extinction code, base and style stored premultiplied by the coverage: filtering against empty neighbours then dilutes
+    // the coverage only, and the renderer divides back; the codes themselves never get blended toward zero)
+    if (cov > 0.0) { let c = cov/8.0; o = vec4f(c, encodeSig(sg)*c, vv/cov*c, st*c); }
   }
   textureStore(densOut, vec3u(id.x, id.y, l*NZ + k), o);
 }

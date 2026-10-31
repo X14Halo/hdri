@@ -19,7 +19,7 @@ const err = await p.evaluate(() => window.__sky.error); if (err){ console.log('F
 console.log(`ready in ${((Date.now() - t0)/1000).toFixed(1)} s`, JSON.stringify(await p.evaluate(() => window.__sky.adapter)));
 for (const c of cases){ const i = c.indexOf('='); const nm = c.slice(0, i), o = JSON.parse(c.slice(i + 1)); const t1 = Date.now();
   await p.evaluate(o => { window.__sky.set(o); }, o);
-  for (let k = 0; ; k++){ const st = await p.evaluate(n => { const s = window.__sky.status(); return [!!(window.__sky.error || (s && s.sample >= n && s.row === 0 && s.W === (window.__sky.P.previewRes|0))), s ? `${s.W}x${s.H} sample ${s.sample} row ${s.row}` : 'no status']; }, +spp);
+  for (let k = 0; ; k++){ const st = await p.evaluate(n => { const s = window.__sky.status(); return [!!(window.__sky.error || (s && s.sample >= n && s.row === 0 && !s.busy && s.W === (window.__sky.P.previewRes|0))), s ? `${s.W}x${s.H} sample ${s.sample} row ${s.row}` : 'no status']; }, +spp);
     if (st[0]) break; if (k % 40 === 0) console.log(`  ${nm}: ${st[1]}`); await new Promise(r => setTimeout(r, 250)); }
   const e2 = await p.evaluate(() => window.__sky.error); if (e2){ console.log('FAILED:', e2); break; }
   const r = await p.evaluate(async () => { const m = await window.__sky.readback(); const xyz = m.xyz, o = new Float32Array(m.W*m.H*3);

@@ -59,14 +59,11 @@ const SECTIONS = [
     {k:'cuDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
     {type:'buttons', btns:[['New clouds', () => { P.cuSeed = (P.cuSeed*7919 + 31) % 100003; changed(); }]], show:() => P.cuOn},
   ]},
-  {title:'Coming next', hidden:() => !!P.experimental, items:[
-    {type:'note', html:'Stratocumulus and stratus, altocumulus and altostratus, and cirrus, cirrostratus and cirrocumulus: each its own layer with its own controls, built into the same cloud volume and lit the same way. They are being built now.'},
-  ]},
   {title:'Wind', items:[
     {k:'windX', label:'From west (+) / east (−)', min:-60, max:60, step:1, fmt:v => `${Math.round(v)} km/h`},
     {k:'windZ', label:'From south (+) / north (−)', min:-60, max:60, step:1, fmt:v => `${Math.round(v)} km/h`},
   ]},
-  {title:'Stratocumulus · stratus', hidden:() => !P.experimental, items:[
+  {title:'Stratocumulus · stratus', items:[
     {k:'scOn', label:'Low cloud deck', type:'check'},
     {k:'scCover', label:'Cloud cover', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.scOn},
     {k:'scForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.15 ? 'stratus (featureless)' : v < 0.55 ? 'stratocumulus (closed cells)' : 'stratocumulus (open cells, broken)', show:() => P.scOn},
@@ -76,7 +73,7 @@ const SECTIONS = [
     {k:'scDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.scOn},
     {type:'buttons', btns:[['New pattern', () => { P.scSeed = (P.scSeed*7919 + 31) % 100003; changed(); }]], show:() => P.scOn},
   ]},
-  {title:'Altocumulus · altostratus', hidden:() => !P.experimental, items:[
+  {title:'Altocumulus · altostratus', items:[
     {k:'acOn', label:'Mid-level layer', type:'check'},
     {k:'acCover', label:'Cloud cover', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.acOn},
     {k:'acForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'altostratus (grey veil)' : v < 0.6 ? 'altostratus breaking into cloudlets' : 'altocumulus (cloudlets in rows)', show:() => P.acOn},
@@ -86,7 +83,7 @@ const SECTIONS = [
     {k:'acDens', label:'Density', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.acOn},
     {type:'buttons', btns:[['New pattern', () => { P.acSeed = (P.acSeed*7919 + 31) % 100003; changed(); }]], show:() => P.acOn},
   ]},
-  {title:'Cirrus · cirrostratus · cirrocumulus', hidden:() => !P.experimental, items:[
+  {title:'Cirrus · cirrostratus · cirrocumulus', items:[
     {k:'ciOn', label:'High ice-cloud layer', type:'check'},
     {k:'ciCover', label:'Cloud cover', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.ciOn},
     {k:'ciForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'cirrostratus (veil)' : v < 0.65 ? 'cirrus (fibres and fall streaks)' : 'cirrocumulus (ripples)', show:() => P.ciOn},

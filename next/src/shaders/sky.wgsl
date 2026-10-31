@@ -209,7 +209,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // gone and the narrower the cloud is across the axis. The viewer sees the stream heading toward them.
           let upl = normalize(p - C0);
           let vr = rawCloud(q.xz, q.y, u32(levelOf(q.xz).x));
-          let isCu = vr.a < 0.55; let Rc = clamp(vr.a/0.5*2.4, 0.25, 2.4);
+          let isCu = vr.a < 0.5; let Rc = clamp(vr.a/0.5*2.4, 0.25, 2.4);
           let Wc = select(40.0, 2.6*Rc, isCu);
           let Hc = select(0.6, 2.0*Rc*mix(0.35, 0.65 + 1.6*CU.wind.w, clamp(Rc/1.5, 0.0, 1.0)), isCu);
           // first order: the droplets' full phase function (silver linings, the bright aureole of thin edges)

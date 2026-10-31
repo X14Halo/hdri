@@ -136,7 +136,7 @@ function layerUniforms(P, thr){
   return new Float32Array([
     on('sc') ? P.scCover : 0, P.scBase, P.scThick, P.scForm,   P.scCell, P.scSeed, (0.6 + 0.3*clamp(P.scForm, 0, 1))*P.scDens, wang,
     on('ac') ? P.acCover : 0, P.acBase, P.acThick, P.acForm,   P.acCell, P.acSeed + 101, sigAc*P.acDens, wang,
-    on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 0.7*P.ciDens, wang,
+    on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 0.6*P.ciDens, wang,
     P.windX/wl, P.windZ/wl, 1.8*P.ciShear, P.ciFall,
     thr.sc ?? 0.5, thr.ac ?? 0.5, thr.ci ?? 0.5, 0]);
 }
