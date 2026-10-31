@@ -11,11 +11,13 @@
 // optical depth along a straight line from p (world) toward L, through the cloud band (macro density, no erosion)
 fn tauToward(p0: vec3f, L: vec3f) -> f32 {
   var tau = 0.0; var t = 0.0; let top = CU.band.y + 0.1;
-  for (var i = 0; i < 96; i++) {
+  // (all the way out of the band or the domain: a low sun is hidden by cloud banks 100+ km away, and so is everything they
+  // shadow, the near clouds and the air included; ~30 steps per level reach the edge of the domain even for a grazing sun)
+  for (var i = 0; i < 288; i++) {
     let p = p0 + L*t; let q = volPos(p);
-    if (q.y > top || q.y < -0.05 || max(abs(q.x), abs(q.z)) > 0.5*levelE(u32(CU.vol.z) - 1u)) { break; }
+    if (q.y > top || q.y < -0.05 || max(abs(q.x), abs(q.z)) > 0.5*levelE(u32(CU.vol.z) - 1u) || tau > 60.0) { break; }
     let lb = levelOf(q.xz); let vs = levelE(u32(lb.x))/CU.res.x;   // step about one voxel of the level it is in
-    let ds = clamp(vs*0.9, 0.04, 2.0)*select(1.0, 1.0 + 0.02*f32(i), i > 48);
+    let ds = clamp(vs*0.9, 0.04, 4.0);
     tau += densMacro(volPos(p0 + L*(t + 0.5*ds)))*ds; t += ds;
   }
   return tau;

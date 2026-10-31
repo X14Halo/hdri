@@ -147,7 +147,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   for (var i = 0u; i < NS; i++) {
     let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let tAir = ta + dt*jt;
     // clouds in this segment
-    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var TcAir = Tc;
+    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var FgS = 0.0; var FgM = 0.0; var FgA = 0.0; var TcAir = Tc;
     let qa = volPos(ro + rd*ta); let qb = volPos(ro + rd*tb);
     let segLo = min(qa.y, qb.y); let segHi = max(qa.y, qb.y);
     if (cloudOn && Tc > 0.0 && segHi > CU.band.x - 0.3 && segLo < CU.band.y + 0.1) {
@@ -177,17 +177,23 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         }
         if (sig > 0.0) {
           // optical depth to the sun: the first ~0.36 km marched through the detailed cloud (the shadows of its own billows),
+          // the next ~2 km through the full-resolution cloud shapes (crisp shadows cast by neighbouring turrets and clouds),
           // the rest from the light volume beyond that point
           var lt = lightAt(q);
           if (F.sunDir.w > 0.5 && t < 60.0 && !coarse) {
-            var tl = 0.0; let d0 = 0.36;
-            for (var j = 0; j < 4; j++) { let sl = d0*(f32(j) + 0.5 + 0.0*rj)/4.0; tl += densFull(volPos(p + Ls*sl))*d0/4.0; }
-            lt.x = tl + lightAt(volPos(p + Ls*d0)).x;
+            var tl = 0.0; var d0 = 0.36;
+            for (var j = 0; j < 4; j++) { let sl = d0*(f32(j) + 0.5)/4.0; tl += densFull(volPos(p + Ls*sl))*d0/4.0; }
+            var sd = 0.12;
+            for (var j = 0; j < 6; j++) { if (tl > 25.0) { break; } tl += densMacro(volPos(p + Ls*(d0 + 0.5*sd)))*sd; d0 += sd; sd *= 1.4; }
+            lt.x = tl + select(lightAt(volPos(p + Ls*d0)).x, 0.0, tl > 25.0);
           }
           let a1 = CU.ms.x; let b1 = CU.ms.y; let c1 = CU.ms.z;
-          var sunF = 0.0; var moonF = 0.0; var ak = 1.0; var bk = 1.0; var ck = 1.0;
-          for (var o = 0; o < 3; o++) {
-            sunF += ak*mix(iso, cs1, ck)*exp(-bk*lt.x); moonF += ak*mix(iso, cm1, ck)*exp(-bk*lt.y);
+          // single scattering with the droplets' full phase function (its sharp forward peak makes the silver linings);
+          // the multiple-scattering orders with a broad phase of reduced asymmetry (water clouds g ≈ 0.86): the diffraction
+          // peak is ~1° wide and is smeared out after the first scattering, so the sun's disc never reappears through a thick cloud
+          var sunF = cs1*exp(-lt.x); var moonF = cm1*exp(-lt.y); var ak = a1; var bk = b1; var ck = c1;
+          for (var o = 1; o < 3; o++) {
+            sunF += ak*phaseHG(cS, 0.86*ck)*exp(-bk*lt.x); moonF += ak*phaseHG(cM, 0.86*ck)*exp(-bk*lt.y);
             ak *= a1; bk *= b1; ck *= c1;
           }
           let dI = Tc*(1.0 - exp(-sig*ds));
@@ -196,9 +202,15 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // sunlight the cloud above has turned into diffuse light (two-stream: total transmission minus the direct beam)
           let m0 = max(Ls.y, 0.0);
           if (m0 > 0.0 && lt.z > 0.0) { let mm = min(m0, 1.0); let td = exp(-lt.z/max(m0, 0.05));
-            // (× 0.6: a finite cloud loses part of it out of its sides, unlike the infinite slab of the two-stream model)
-            Fd += 0.6*dI*CU.ms.w/(2.0*PI)*max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*td)/(1.0 + 0.105*lt.z) - td, 0.0); }
-          Fg += dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.w);   // light from the ground below
+            // (isotropic radiance F/π from the downward flux F; × 0.6: a finite cloud loses part of it out of its sides, unlike
+            // the infinite slab of the two-stream model. This is sunlight, not ambient light, so the ambient setting stays out.)
+            Fd += 0.6*dI/PI*max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*td)/(1.0 + 0.105*lt.z) - td, 0.0); }
+          // light from the ground below: what the ground beneath receives (sun and moon through the clouds' shadows, sky),
+          // averaged over a patch about as wide as the height above it (read from a coarser level of the light volume)
+          let kg = dI*CU.ms.w/(2.0*PI)/(1.0 + 0.18*lt.w);
+          let lgl = u32(clamp(round(log2(max(q.y, 0.1)*CU.res.z/CU.vol.x)), levelOf(q.xz).x, CU.vol.z - 1.0));
+          let gl = rawLight(q.xz, 0.0, lgl);
+          Fg += kg; FgS += kg*exp(-gl.x); FgM += kg*exp(-gl.y); FgA += kg/(1.0 + 0.18*gl.z);
           Tc *= exp(-sig*ds);
         }
         t += ds;
@@ -214,8 +226,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     var shS = 1.0; var shM = 1.0; var shA = 1.0;
     if (cloudOn) { let la = lightAt(volPos(p)); shS = exp(-la.x); shM = exp(-la.y); shA = 1.0/(1.0 + 0.18*la.z); }
     let dM = densM(h); let dF = densF(h); let dR = densR(h); let dO = densO(h);
-    var gq = vec4f(0.0); var groundUp = false;
-    if (Fg > 0.0) { let lg = lightAt(vec3f(volPos(pm).x, 0.0, volPos(pm).z)); gq = vec4f(exp(-lg.x), exp(-lg.y), 1.0/(1.0 + 0.18*lg.z), 0.0); groundUp = true; }
     for (var g = 0u; g < 6u; g++) {
       let sR = F.BR[g]*dR; let sM = F.BMs[g]*dM; let ext = sR + sM + F.BMa[g]*dM + F.BO[g]*dO + vec4f(dF); let sT = sR + sM + vec4f(dF);
       var S = vec4f(0.0);
@@ -228,11 +238,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         if (F.sunDir.w > 0.5) { let Te = F.SunE[g]*transmittance(g, rm, muSm); Ec += Te*(Fs + max(Ls.y, 0.0)*Fd); }
         if (F.moonDir.w > 0.5) { Ec += F.MoonE[g]*transmittance(g, rm, muMm)*Fm; }
         Ec += ambE(g, hm)*Fa;
-        if (groundUp) {
-          var Eg = ambE(g, 0.0)*gq.z;
-          if (F.sunDir.w > 0.5) { Eg += F.SunE[g]*transmittance(g, Rg, Ls.y)*max(Ls.y, 0.0)*gq.x; }
-          if (F.moonDir.w > 0.5) { Eg += F.MoonE[g]*transmittance(g, Rg, Lm.y)*max(Lm.y, 0.0)*gq.y; }
-          Ec += F.Alb[g]*Eg*Fg;
+        if (Fg > 0.0) {
+          var Eg = ambE(g, 0.0)*FgA;
+          if (F.sunDir.w > 0.5) { Eg += F.SunE[g]*transmittance(g, Rg, Ls.y)*max(Ls.y, 0.0)*FgS; }
+          if (F.moonDir.w > 0.5) { Eg += F.MoonE[g]*transmittance(g, Rg, Lm.y)*max(Lm.y, 0.0)*FgM; }
+          Ec += F.Alb[g]*Eg;
         }
         L[g] += T[g]*sqrt(att)*Ec;
       }
