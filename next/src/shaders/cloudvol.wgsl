@@ -21,12 +21,18 @@ fn densMacro(q: vec3f) -> f32 {
 // signed distance to the nearest cloud surface (km, level 0–2 only; > 0 inside), for stepping through empty air
 // how far the fine detail can push a cumulus surface outward (km), from the cloud's size code
 fn cuPush(a: f32) -> f32 { return 0.03; }
+// (the far levels hold coverage, not distances: there an empty voxel lets the ray skip half a voxel, anything else is sampled)
+fn hintL(q: vec3f, l: u32) -> f32 {
+  let v = rawCloud(q.xz, q.y, l);
+  if (f32(l) < CU.vol.w) { return v.r - 0.5 + cuPush(v.a); }
+  if (v.r <= 0.0) { return -0.5*levelE(l)/CU.res.x; }
+  return 0.0;
+}
 fn distHint(q: vec3f) -> f32 {
   if (q.y < CU.band.x - 0.3 || q.y > CU.band.y + 0.1) { return 1e9; }
   let lb = levelOf(q.xz); let l = u32(lb.x);
-  if (f32(l) >= CU.vol.w || lb.y > 0.0) { return -1.0; }
-  let v = rawCloud(q.xz, q.y, l);
-  return v.r - 0.5 + cuPush(v.a);
+  var h = hintL(q, l); if (lb.y > 0.0) { h = max(h, hintL(q, l + 1u)); }
+  return h;
 }
 fn nzs(q: vec3f) -> vec4f { return textureSampleLevel(noiseTex, wrapSamp, q, 0.0); }
 // puffs on puffs: billows at a third and a ninth of the cloud's own size (each cloud is lumpy in proportion to itself, so the

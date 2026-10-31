@@ -150,26 +150,36 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var TcAir = Tc;
     let qa = volPos(ro + rd*ta); let qb = volPos(ro + rd*tb);
     let segLo = min(qa.y, qb.y); let segHi = max(qa.y, qb.y);
-    if (cloudOn && Tc > 0.003 && segHi > CU.band.x - 0.3 && segLo < CU.band.y + 0.1 && cloudSteps < 640u) {
+    if (cloudOn && Tc > 0.0 && segHi > CU.band.x - 0.3 && segLo < CU.band.y + 0.1) {
       var t = ta; var airDone = false;
       let base = clamp(ta*0.005, 0.02, 1.0);
       t += base*rj;
       loop {
-        if (t >= tb || Tc < 0.003 || cloudSteps >= 640u) { break; }
+        // practically opaque: what lies behind (the sun's disc above all, ~1e9 cd/m²) is cut off entirely rather than leaking
+        // through as the last fraction of a percent
+        if (Tc < 0.002) { Tc = 0.0; break; }
+        if (t >= tb) { break; }
         if (!airDone && t >= tAir) { TcAir = Tc; airDone = true; }
         let p = ro + rd*t; let q = volPos(p);
-        let ds = clamp(t*0.005, 0.02, 1.0);
-        // empty air near the clouds: step by the distance to the nearest cloud surface
-        let dh = distHint(q);
-        if (dh > 1e8) { t += max(ds*4.0, 0.2); continue; }
-        if (dh < -0.06) { t += max(ds, 0.7*(-dh) - 0.03); cloudSteps++; continue; }
-        let sig = densFull(q);
-        cloudSteps++;
+        // past the fine-step budget (long grazing rays through distant cloud fields) the march carries on with coarse steps
+        // through the macro density, so far cloud banks still block what is behind them
+        let coarse = cloudSteps >= 640u;
+        var ds = clamp(t*0.005, 0.02, 1.0);
+        var sig = 0.0;
+        if (coarse) { ds = max(ds, dt*0.125); sig = densMacro(q); }
+        else {
+          // empty air near the clouds: step by the distance to the nearest cloud surface
+          let dh = distHint(q);
+          if (dh > 1e8) { t += max(ds*4.0, 0.2); continue; }
+          if (dh < -0.06) { t += max(ds, 0.7*(-dh) - 0.03); cloudSteps++; continue; }
+          sig = densFull(q);
+          cloudSteps++;
+        }
         if (sig > 0.0) {
           // optical depth to the sun: the first ~0.36 km marched through the detailed cloud (the shadows of its own billows),
           // the rest from the light volume beyond that point
           var lt = lightAt(q);
-          if (F.sunDir.w > 0.5 && t < 60.0) {
+          if (F.sunDir.w > 0.5 && t < 60.0 && !coarse) {
             var tl = 0.0; let d0 = 0.36;
             for (var j = 0; j < 4; j++) { let sl = d0*(f32(j) + 0.5 + 0.0*rj)/4.0; tl += densFull(volPos(p + Ls*sl))*d0/4.0; }
             lt.x = tl + lightAt(volPos(p + Ls*d0)).x;
@@ -228,7 +238,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       }
       T[g] *= att;
     }
-    if (Tc < 0.003) { break; }
+    if (Tc <= 0.0) { break; }
   }
   // what lies behind, through the air and the clouds
   var xyz = vec3f(0.0);
