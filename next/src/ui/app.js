@@ -9,6 +9,11 @@ let worker = null, lastStatus = null, ready = false;
 /* ---------- panel schema ---------- */
 const fmtDeg = v => `${(+v).toFixed(1)}°`;
 const SECTIONS = [
+  {title:'Scene file', items:[
+    {type:'buttons', btns:[['Save scene', () => saveScene()], ['Load scene', () => loadScene()]]},
+    {type:'buttons', btns:[['Mark issues', () => toggleMarking()], ['Clear marks', () => { MARKS.length = 0; drawMarks(); }], ['Save report', () => saveReport()]]},
+    {type:'note', html:'<span id="markInfo">To report a problem: <b>Mark issues</b>, paint over it in the view, add a note, then <b>Save report</b>. The report holds the scene, the marks, the view and a picture, so it can be reproduced exactly.</span><textarea id="noteBox" class="notebox" placeholder="What looks wrong? (optional)"></textarea>'},
+  ]},
   {title:'Randomize', items:[
     {k:'rndStyle', label:'Character', min:0, max:1, step:0.01, fmt:v => v < 0.15 ? 'realistic' : v < 0.5 ? 'realistic, some drama' : v < 0.85 ? 'stylized' : 'very stylized'},
     {type:'buttons', btns:[['Everything', () => randomize('all')], ['Clouds', () => randomize('clouds')], ['Time of day', () => randomize('sun')]]},
@@ -148,7 +153,7 @@ let sendPending = false;
 function changed(fromSlider){ if (!fromSlider) syncUI(); else for (const c of CTRL) c.row.hidden = c.it.show ? !c.it.show() : false;
   if (sendPending) return; sendPending = true; requestAnimationFrame(() => { sendPending = false; sendParams(); }); }
 function sendParams(){ if (worker) worker.postMessage({type:'params', P}); drawOverlay(); }
-function sendView(extra){ if (!worker) return; worker.postMessage({type:'view', view:{...view, ...extra}}); }
+function sendView(extra){ if (!worker) return; worker.postMessage({type:'view', view:{...view, ...extra}}); if (MARKS.length) drawMarks(); }
 
 function setStatus(t){ $('#status').textContent = t; }
 function readouts(st){
@@ -167,14 +172,14 @@ function drawOverlay(){
   const pr = panoRect(); let html = `<div class="hline" style="left:${pr.x}px;width:${pr.w}px;top:${pr.y + pr.h/2}px"></div>`;
   ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].forEach((n, i) => { const az = i*45; const u = (((az - P.azOff)/360 + 0.5) % 1 + 1) % 1; html += `<div class="compass" style="left:${pr.x + u*pr.w}px;top:${pr.y + pr.h/2 + 4}px">${n}</div>`; });
   ov.innerHTML = html; }
-function resize(){ const [w, h] = canvasSize(); sendView({cw:w, ch:h}); drawOverlay(); }
+function resize(){ const [w, h] = canvasSize(); sendView({cw:w, ch:h}); drawOverlay(); drawMarks(); }
 new ResizeObserver(resize).observe($('#view'));
 let drag = null;
-cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); drag = {x:e.clientX, y:e.clientY, yaw:view.yaw, pitch:view.pitch, moved:false}; });
-cv.addEventListener('pointermove', e => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 3) drag.moved = true;
+cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); if (marking){ markStroke = {r: 0.006, pts: []}; MARKS.push(markStroke); addMark(e); return; } drag = {x:e.clientX, y:e.clientY, yaw:view.yaw, pitch:view.pitch, moved:false}; });
+cv.addEventListener('pointermove', e => { if (marking){ if (markStroke) addMark(e); return; } if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 3) drag.moved = true;
   if (view.mode === 1 && drag.moved){ const k = view.fov/cv.getBoundingClientRect().height; view.yaw = drag.yaw - dx*k; view.pitch = clamp(drag.pitch + dy*k, -1.5, 1.5); sendView(); }
   else if (view.mode !== 1 && P.mode === 'manual') placeSun(e); });
-cv.addEventListener('pointerup', e => { if (drag && !drag.moved && view.mode !== 1 && P.mode === 'manual') placeSun(e); drag = null; });
+cv.addEventListener('pointerup', e => { if (marking){ markStroke = null; return; } if (drag && !drag.moved && view.mode !== 1 && P.mode === 'manual') placeSun(e); drag = null; });
 cv.addEventListener('wheel', e => { if (view.mode !== 1) return; e.preventDefault(); view.fov = clamp(view.fov*Math.exp(e.deltaY*0.001), 10*D2R, 140*D2R); sendView(); }, {passive:false});
 function placeSun(e){ const pr = panoRect(), r = $('#view').getBoundingClientRect(); const u = (e.clientX - r.left - pr.x)/pr.w, v = (e.clientY - r.top - pr.y)/pr.h; if (u < 0 || u > 1 || v < 0 || v > 1) return;
   P.sunAz = ((((u - 0.5)*360 + P.azOff) % 360) + 360) % 360; P.sunEl = clamp((0.5 - v)*180, -20, 90); changed(); }
@@ -182,6 +187,52 @@ document.querySelectorAll('#viewSeg button').forEach(b => b.onclick = () => { do
 document.querySelectorAll('#resSeg button').forEach(b => b.onclick = () => { document.querySelectorAll('#resSeg button').forEach(x => x.classList.toggle('on', x === b)); P.previewRes = +b.dataset.r; changed(); });
 $('#autoEx').onchange = e => { view.auto = e.target.checked; sendView(); };
 $('#exSlider').oninput = e => { view.expoComp = +e.target.value; $('#exVal').textContent = `${view.expoComp >= 0 ? '+' : '−'}${Math.abs(view.expoComp).toFixed(1)} EV`; sendView(); };
+
+/* ---------- scene files and issue reports ---------- */
+const MARKS = []; let marking = false, markStroke = null;
+function toggleMarking(){ marking = !marking; $('#view').classList.toggle('marking', marking);
+  const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'Mark issues' || x.textContent === 'Done marking'); if (b) b.textContent = marking ? 'Done marking' : 'Mark issues';
+  setStatus(marking ? 'Marking: paint over the problem areas' : 'Marking off'); }
+// screen ↔ panorama (u across from the left, v down from the top), as the display shader maps them
+function lookBasis(){ const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw), cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+  const fwd = [sy*cp, sp, cy*cp], right = [cy, 0, -sy], up = [right[1]*fwd[2] - right[2]*fwd[1], right[2]*fwd[0] - right[0]*fwd[2], right[0]*fwd[1] - right[1]*fwd[0]]; return {fwd, right, up}; }
+function screenToUV(x, y){ const r = $('#view').getBoundingClientRect();
+  if (view.mode !== 1){ const pr = panoRect(); const u = (x - pr.x)/pr.w, v = (y - pr.y)/pr.h; return u >= 0 && u <= 1 && v >= 0 && v <= 1 ? [u, v] : null; }
+  const nx = x/r.width*2 - 1, ny = 1 - y/r.height*2, tf = Math.tan(view.fov/2), B = lookBasis();
+  let d = [0, 1, 2].map(i => B.fwd[i] + B.right[i]*nx*tf*r.width/r.height + B.up[i]*ny*tf); const l = Math.hypot(...d); d = d.map(c => c/l);
+  const az = Math.atan2(d[0], d[2]) - P.azOff*D2R, el = Math.asin(clamp(d[1], -1, 1)); return [((az/(2*Math.PI) + 0.5) % 1 + 1) % 1, 0.5 - el/Math.PI]; }
+function uvToScreen(u, v){ const r = $('#view').getBoundingClientRect();
+  if (view.mode !== 1){ const pr = panoRect(); return [pr.x + u*pr.w, pr.y + v*pr.h, pr.w]; }
+  const az = (u - 0.5)*2*Math.PI + P.azOff*D2R, el = (0.5 - v)*Math.PI, d = [Math.cos(el)*Math.sin(az), Math.sin(el), Math.cos(el)*Math.cos(az)], B = lookBasis();
+  const dz = d[0]*B.fwd[0] + d[1]*B.fwd[1] + d[2]*B.fwd[2]; if (dz <= 0.05) return null; const tf = Math.tan(view.fov/2);
+  const dx = (d[0]*B.right[0] + d[1]*B.right[1] + d[2]*B.right[2])/dz, dy = (d[0]*B.up[0] + d[1]*B.up[1] + d[2]*B.up[2])/dz;
+  return [(dx/(tf*r.width/r.height)*0.5 + 0.5)*r.width, (0.5 - dy/tf*0.5)*r.height, r.height/(tf*2)*2*Math.PI]; }
+function addMark(e){ const r = $('#view').getBoundingClientRect(), uv = screenToUV(e.clientX - r.left, e.clientY - r.top); if (!uv || !markStroke) return; markStroke.pts.push([+uv[0].toFixed(5), +uv[1].toFixed(5)]); drawMarks(); }
+function drawMarks(){ const c = $('#markCv'), r = $('#view').getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (c.width !== Math.round(r.width*dpr) || c.height !== Math.round(r.height*dpr)){ c.width = Math.round(r.width*dpr); c.height = Math.round(r.height*dpr); }
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height); g.fillStyle = 'rgba(255,40,80,0.45)';
+  for (const s of MARKS) for (const [u, v] of s.pts){ const p = uvToScreen(u, v); if (!p) continue; g.beginPath(); g.arc(p[0], p[1], Math.max(3, s.r*p[2]), 0, 2*Math.PI); g.fill(); } }
+async function saveFile(name, text){
+  const dl = await claudeDownloads();
+  if (dl){ try { await dl.save({filename: name, data: text}); setStatus('Saved ' + name); } catch (e){ setStatus(e && e.code === 'declined' ? 'Save declined' : `Could not save (${e && e.code || e})`); } return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type: 'application/json'})); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000); setStatus('Saved ' + name); }
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '_');
+function saveScene(){ saveFile(`sky_scene_${stamp()}.json`, JSON.stringify({kind: 'spectral-sky-scene', build: BUILD, saved: new Date().toISOString(), P, view}, null, 1)); }
+function loadScene(){ const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = async () => { const f = inp.files && inp.files[0]; if (!f) return; try { const j = JSON.parse(await f.text()); if (!j.P) throw new Error('no settings in this file');
+    Object.assign(P, j.P); if (j.view) Object.assign(view, j.view); MARKS.length = 0; if (j.marks) MARKS.push(...j.marks); sendView(); syncUI(); changed(); drawOverlay(); drawMarks(); setStatus('Loaded ' + f.name); }
+    catch (e){ setStatus('Could not read that file: ' + e.message); } };
+  inp.click(); }
+async function saveReport(){
+  if (!worker || !ready) return; setStatus('Preparing report…');
+  const m = await new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type: 'snap', id, w: 2048}); });
+  const c = document.createElement('canvas'); c.width = m.w; c.height = m.h; const g = c.getContext('2d'); const id = g.createImageData(m.w, m.h); id.data.set(m.rgba); g.putImageData(id, 0, 0);
+  g.strokeStyle = 'rgba(255,40,80,0.9)'; g.lineWidth = 3;
+  for (const s of MARKS) for (const [u, v] of s.pts){ g.beginPath(); g.arc(u*m.w, v*m.h, Math.max(4, s.r*m.w), 0, 2*Math.PI); g.stroke(); }
+  const img = c.toDataURL('image/jpeg', 0.88);
+  const rep = {kind: 'spectral-sky-report', build: BUILD, saved: new Date().toISOString(), note: $('#noteBox').value || '', P, view, marks: MARKS, status: {...(lastStatus || {}), ...(m.status || {})}, ua: navigator.userAgent, image: img};
+  await saveFile(`sky_report_${stamp()}.json`, JSON.stringify(rep));
+}
 
 /* ---------- randomize ---------- */
 // Realistic: what skies actually do. Times of day weighted by how long the sun spends there; a weather regime drawn by how
@@ -344,7 +395,7 @@ function start(){
       setStatus(m.done ? `${m.W}×${m.H} · ${m.sample} samples · ${(m.total/1000).toFixed(1)} s` : `${m.W}×${m.H} · sample ${m.sample + 1}/${m.target} · ${Math.round(m.row/(m.rows || m.H)*100)}%`); }
     else if (m.type === 'error'){ console.error(m.message); setStatus('Error'); $('#loader').classList.remove('gone'); $('#ldTitle').textContent = 'Something went wrong'; $('#ldStep').textContent = m.message.slice(0, 400); window.__sky.error = m.message; }
     else if (m.type === 'probe'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
-    else if (m.type === 'shot'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
+    else if (m.type === 'shot' || m.type === 'snap'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
     else if (m.type === 'pixels'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
     else if (m.type === 'exportChunk'){ if (EXP && EXP.W === m.W) EXP.rgb.set(m.rgb, m.y0*m.W*3); }
     else if (m.type === 'exportProgress'){ if (EXP){ const el = m.secs, eta = m.f > 0.02 ? el/m.f - el : NaN; $('#expInfo').textContent = `Rendering ${EXP.W} × ${EXP.H}: ${Math.round(m.f*100)}%` + (isFinite(eta) ? `, about ${fmtSecs(eta)} left` : ''); setStatus(`Exporting · ${Math.round(m.f*100)}%`); } }

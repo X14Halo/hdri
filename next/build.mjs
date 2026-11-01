@@ -5,7 +5,9 @@ const root = path.dirname(fileURLToPath(import.meta.url)), src = p => fs.readFil
 const shared = ['shared/core.js', 'shared/params.js', 'shared/physics.js', 'shared/clouds.js'].map(src).join('\n');
 const shaders = Object.fromEntries(fs.readdirSync(path.join(root, 'src/shaders')).filter(f => f.endsWith('.wgsl')).map(f => [f.replace('.wgsl', ''), src('shaders/' + f)]));
 const workerSrc = `${shared}\nconst WGSL = ${JSON.stringify(shaders)};\n${src('worker/main.js')}`;
-const main = `${shared}\nconst WORKER_SRC = ${JSON.stringify(workerSrc)};\n${src('ui/app.js')}`.replace(/<\/script/gi, '<\\/script');
+let head = ''; try { head = (await import('child_process')).execSync('git rev-parse --short HEAD', {cwd: root}).toString().trim(); } catch (e){}
+const BUILD = `${new Date().toISOString().slice(0, 16)}Z ${head}`;
+const main = `${shared}\nconst BUILD = ${JSON.stringify(BUILD)};\nconst WORKER_SRC = ${JSON.stringify(workerSrc)};\n${src('ui/app.js')}`.replace(/<\/script/gi, '<\\/script');
 let html = src('index.html').replace('/*@STYLE*/', () => src('ui/style.css')).replace('/*@MAIN*/', () => main);
 fs.writeFileSync(path.join(root, 'index.html'), html);
 console.log(`next/index.html: ${(html.length/1024).toFixed(0)} KB`);

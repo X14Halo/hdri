@@ -11,6 +11,7 @@
 @group(0) @binding(9) var lightTex: texture_3d<f32>;
 @group(0) @binding(10) var noiseTex: texture_3d<f32>;
 @group(0) @binding(11) var wrapSamp: sampler;
+@group(0) @binding(12) var detailTex: texture_3d<f32>;
 
 const MARIA = /*@MARIA*/;
 const CRATERS = /*@CRATERS*/;

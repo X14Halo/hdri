@@ -55,7 +55,7 @@ async function init(m){
   S.noPresent = !!m.noPresent;
   if (!S.noPresent){ gctx = canvas.getContext('webgpu'); gctx.configure({device, format: canvasFmt, alphaMode:'opaque'}); } else canvasFmt = 'rgba8unorm';
   post({type:'stage', text:'compiling shaders'});
-  const info = adapter.info || {};
+  const info = adapter.info || {}; R.adapterInfo = {vendor: info.vendor || '', arch: info.architecture || '', desc: info.description || ''};
   // atmosphere tables
   R.frame = device.createBuffer({size: FRAME_OFF._size*4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.trans = device.createTexture({size:[256, 64, 6], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});
@@ -67,25 +67,28 @@ async function init(m){
   R.wrapSamp = device.createSampler({magFilter:'linear', minFilter:'linear', addressModeU:'repeat', addressModeV:'repeat', addressModeW:'repeat'});
   R.cu = device.createBuffer({size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.noise = device.createTexture({size:[128, 128, 128], dimension:'3d', format:'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});
+  R.noise2 = device.createTexture({size:[128, 128, 128], dimension:'3d', format:'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});
   // (separate per-level uniforms for each pass kind: writeBuffer lands before the whole command buffer runs)
   R.gp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
   R.lp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
   R.ly = device.createBuffer({size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.fieldBuf = device.createBuffer({size: 256*256*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
   R.fgp = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
-  const [pT, pM, pA, pMeter, pSky, pNoise, pGen, pField, pLight] = await Promise.all([
+  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight] = await Promise.all([
     computePipe('transLUT', wgsl('common', 'atmo', 'luts'), 'transLUT', [0, 1]),
     computePipe('msLUT', wgsl('common', 'atmo', 'luts'), 'msLUTpass', [0, 2, 4, 5]),
     computePipe('ambLUT', wgsl('common', 'atmo', 'luts'), 'ambPass', [0, 2, 3, 4, 6]),
     computePipe('meter', wgsl('common', 'atmo', 'cloudu', 'cloudlit', 'meter'), 'main', [0, 1, 3, 4, 5, 6, 7]),
-    computePipe('sky', wgsl('common', 'atmo', 'cloudu', 'cloudvol', 'cloudlit', 'sky'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+    computePipe('sky', wgsl('common', 'atmo', 'cloudu', 'cloudvol', 'cloudlit', 'sky'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
     computePipe('noise', wgsl('common', 'noise'), 'main', [0]),
+    computePipe('noise2', wgsl('common', 'noise'), 'mainDetail', [0]),
     computePipe('cloudgen', wgsl('common', 'cloudu', 'cloudgen'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8]),
     computePipe('cloudfield', wgsl('common', 'cloudu', 'cloudgen'), 'fieldMain', [5, 6, 7, 8, 10]),
     computePipe('cloudlight', wgsl('common', 'cloudu', 'cloudvol', 'cloudlight'), 'main', [0, 1, 2, 3, 4, 5, 6, 7]),
   ]);
   R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField;
-  { const enc = device.createCommandEncoder(); const c = enc.beginComputePass(); c.setPipeline(pNoise); c.setBindGroup(0, bg(pNoise, [[0, R.noise.createView()]])); c.dispatchWorkgroups(32, 32, 32); c.end(); device.queue.submit([enc.finish()]); }
+  { const enc = device.createCommandEncoder(); const c = enc.beginComputePass(); c.setPipeline(pNoise); c.setBindGroup(0, bg(pNoise, [[0, R.noise.createView()]])); c.dispatchWorkgroups(32, 32, 32); c.end();
+    const c2 = enc.beginComputePass(); c2.setPipeline(pNoise2); c2.setBindGroup(0, bg(pNoise2, [[0, R.noise2.createView()]])); c2.dispatchWorkgroups(32, 32, 32); c2.end(); device.queue.submit([enc.finish()]); }
   R.pT = pT; R.pM = pM; R.pA = pA; R.pMeter = pMeter; R.pSky = pSky;
   R.bgT = bg(pT, [[0, R.frame], [1, transV]]);
   R.bgM = bg(pM, [[0, R.frame], [2, transV], [4, R.samp], [5, msV]]);
@@ -119,7 +122,7 @@ function makeSkyGroups(){ if (!R.dens) return;
   R.bgMeter = bg(R.pMeter, [[0, R.frame], [1, R.transV], [3, R.samp], [4, R.amb], [5, R.meter], [6, R.cu], [7, R.lightV]]);
   if (!R.acc) return;
   R.bgSkyAll = R.acc.map(acc => R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, acc],
-    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp]])));
+    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp], [12, R.noise2.createView()]])));
   useBuffer(S.cur || 0); }
 // the cloud volume and its light volume, sized by the quality setting
 function allocVolume(q){
@@ -273,10 +276,10 @@ function tick(){
   if (now - S.lastStatus > 200 || (submitted && S.sample === S.target && S.row === S.cr[1])){ S.lastStatus = now;
     post({type:'status', sample: S.sample, target: S.target, row: S.row - S.cr[1], rows: S.cr[3] - S.cr[1], W: S.W, H: S.H, ms: S.lastSampleMs || 0, total: now - S.t0, derived: S.derived, meter: S.meter, expo: exposure(), done: S.sample >= S.target, busy: !!(S.fieldBusy || S.paramsDirty)}); }
 }
-function display(enc){
-  const v = S.view, cw = canvas.width, ch = canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }
+function display(enc, to){
+  const v = to ? {...S.view, mode: 0} : S.view, cw = to ? to.width : canvas.width, ch = to ? to.height : canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }
   device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0]));
-  const tex = S.noPresent ? dispTarget(cw, ch) : gctx.getCurrentTexture();
+  const tex = to || (S.noPresent ? dispTarget(cw, ch) : gctx.getCurrentTexture());
   const rp = enc.beginRenderPass({colorAttachments:[{view: tex.createView(), loadOp:'clear', storeOp:'store', clearValue:{r:0.027, g:0.035, b:0.047, a:1}}]});
   rp.setPipeline(R.pDisp); rp.setBindGroup(0, R.bgDisp); rp.draw(3); rp.end();
 }
@@ -288,6 +291,15 @@ async function shot(){ { const e = device.createCommandEncoder(); display(e); de
   const enc = device.createCommandEncoder(); enc.copyTextureToBuffer({texture: t}, {buffer: rb, bytesPerRow: bpr}, [w, h]); device.queue.submit([enc.finish()]);
   await rb.mapAsync(GPUMapMode.READ); const src = new Uint8Array(rb.getMappedRange()), o = new Uint8Array(w*h*4);
   for (let y = 0; y < h; y++) o.set(src.subarray(y*bpr, y*bpr + w*4), y*w*4); rb.unmap(); rb.destroy(); return {w, h, rgba: o}; }
+// the whole panorama as displayed (exposure, tone mapping), at w × w/2: for scene reports
+async function snap(w){ const h = w/2; const t = device.createTexture({size:[w, h], format: canvasFmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC});
+  { const e = device.createCommandEncoder(); display(e, t); device.queue.submit([e.finish()]); } S.dispDirty = true;
+  const bpr = Math.ceil(w*4/256)*256, rb = device.createBuffer({size: bpr*h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
+  const enc = device.createCommandEncoder(); enc.copyTextureToBuffer({texture: t}, {buffer: rb, bytesPerRow: bpr}, [w, h]); device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ); const src = new Uint8Array(rb.getMappedRange()), o = new Uint8Array(w*h*4);
+  for (let y = 0; y < h; y++) o.set(src.subarray(y*bpr, y*bpr + w*4), y*w*4); rb.unmap(); rb.destroy(); t.destroy();
+  if (canvasFmt === 'bgra8unorm') for (let i = 0; i < o.length; i += 4){ const r = o[i]; o[i] = o[i + 2]; o[i + 2] = r; }
+  return {w, h, rgba: o}; }
 // one horizontal slice of the cloud volume (tests): level l, altitude km → RGBA8 (nx × nx), and of the light volume (4 × f16)
 async function probeVol(l, alt){ const [nx, nz, lx, lz] = R.volRes;
   const k = Math.min(nz - 1, Math.floor(altToSlice(alt, nz))), kl = Math.min(lz - 1, Math.floor(altToSlice(alt, lz)));
@@ -320,7 +332,7 @@ function startExport(m){
   const W = m.W, H = W/2, band = Math.max(8, Math.min(H, Math.floor(64*1024*1024/(W*16)/8)*8));
   const buf = device.createBuffer({size: W*band*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});
   const bgs = R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, buf],
-    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp]]));
+    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp], [12, R.noise2.createView()]]));
   S.exp = {W, H, band, spp: m.spp, k: m.units === 'watts' ? 1/683 : 1, buf, bgs, y0: 0, row: 0, s: 0, rows: 8, inFlight: 0, busy: false, t0: performance.now(), clear: true, lastPost: 0};
 }
 function cancelExport(){ const E = S.exp; if (!E) return; S.exp = null; E.cancelled = true; device.queue.onSubmittedWorkDone().then(() => E.buf.destroy()); S.paramsDirty = true; }
@@ -362,6 +374,7 @@ self.onmessage = async e => {
     else if (m.type === 'view'){ Object.assign(S.view, m.view); S.dispDirty = true; if (m.view.cw && canvas){ canvas.width = m.view.cw; canvas.height = m.view.ch; } }
     else if (m.type === 'probe'){ const r = await probeVol(m.l, m.alt); post({type:'probe', id: m.id, ...r}, [r.dens.buffer, r.light.buffer]); }
     else if (m.type === 'shot'){ const r = await shot(); post({type:'shot', id: m.id, ...(r || {})}, r ? [r.rgba.buffer] : []); }
+    else if (m.type === 'snap'){ const r = await snap(m.w); post({type:'snap', id: m.id, ...r, status: {sample: S.sample, W: S.W, H: S.H, cloud: S.cloudInfo, band: S.band, cloudMs: S.cloudMs, adapter: R.adapterInfo || null}}, [r.rgba.buffer]); }
     else if (m.type === 'export') startExport(m);
     else if (m.type === 'exportCancel') cancelExport();
     else if (m.type === 'readback'){ const r = await readback(); post({type:'pixels', id: m.id, W: r.W, H: r.H, xyz: r.xyz}, [r.xyz.buffer]); }

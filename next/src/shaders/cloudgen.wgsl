@@ -35,6 +35,10 @@ fn cuEval(p: vec3f, k: u32) -> vec2f {
   let hw = hash3(vec3u(seed, 91u, 3u));
   let wq = q0/R;
   q0 += R*0.3*vec2f(sin(wq.y*2.3 + 6.28*hw.x) + 0.5*sin(wq.x*4.1 + wq.y*1.7 + 6.28*hw.y), sin(wq.x*2.1 + 6.28*hw.z) + 0.5*sin(wq.y*3.7 - wq.x*1.3 + 6.28*hw.x));
+  // a smooth ~1.3 km warp of space that changes with height: towers and sides wander and bulge (cauliflower outlines) while the
+  // cloud stays one connected mass, rather than being a straight extrusion of its footprint
+  let hy = clamp(y/max(H, 0.05), 0.0, 1.2);
+  q0 += (vec2f(nz(vec3f(p.x/1.3, p.y*0.9, p.z/1.3) + vec3f(0.6, 0.2, 0.9)), nz(vec3f(p.x/1.3, p.y*0.9, p.z/1.3) + vec3f(0.17, 0.71, 0.37))) - 0.5)*min(R, 1.2)*(0.25 + 0.5*hy);
   // body: a half-ellipsoid on the base (R across, H up); turrets: bubbles of rising air bulging from its upper surface,
   // smaller and more numerous on tall clouds (cauliflower), a few broad lumps on flat fair-weather ones
   let tall = clamp(H/(2.0*R), 0.0, 3.0);

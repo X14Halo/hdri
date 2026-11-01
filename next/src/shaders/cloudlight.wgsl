@@ -7,6 +7,7 @@
 @group(0) @binding(5) var wrapSamp: sampler;
 @group(0) @binding(6) var lightOut: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(7) var<uniform> GP: vec4u;   // x level
+@group(0) @binding(8) var detailTex: texture_3d<f32>;   // (declared for cloudvol.wgsl; the light pass needs no fine detail)
 
 // optical depth along a straight line from p (world) toward L, through the cloud band (macro density, no erosion)
 fn tauToward(p0: vec3f, L: vec3f) -> f32 {

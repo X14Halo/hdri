@@ -37,7 +37,7 @@ fn densMacro(q: vec3f) -> f32 {
 }
 // signed distance to the nearest cloud surface (km, level 0–2 only; > 0 inside), for stepping through empty air
 // how far the fine detail can push a cumulus surface outward (km), from the cloud's size code
-fn cuPush(a: f32) -> f32 { return 0.045; }
+fn cuPush(a: f32) -> f32 { return 0.09; }
 // (the far levels hold coverage, not distances: there an empty voxel lets the ray skip half a voxel, anything else is sampled)
 fn hintL(q: vec3f, l: u32) -> f32 {
   let v = rawCloud(q.xz, q.y, l);
@@ -56,27 +56,56 @@ fn nzs(q: vec3f) -> vec4f { return textureSampleLevel(noiseTex, wrapSamp, q, 0.0
 var<private> detailLod: f32 = 1.0;
 // a smooth random vector field (from the volume's smooth Perlin channel), about −0.5…0.5
 fn wv(q: vec3f, s: f32, o: vec3f) -> vec3f { return vec3f(nzs(q/s + o).a, nzs(q/s + o + vec3f(0.37, 0.11, 0.53)).a, nzs(q/s + o + vec3f(0.71, 0.59, 0.23)).a) - 0.5; }
-// rounded bubbles about `cell` km across, with sharp creases between them
-fn bub(q: vec3f, cell: f32, o: vec3f) -> f32 { return nzs(q/(8.0*cell) + o).g; }
-// the cauliflower: domes on domes on domes. Each octave is a set of bubbles whose surface relief is in proportion to its size
-// (the self-similar, fractal surface of real cumulus, perimeter dimension ~1.35): turrets at ~0.3 of the cloud's radius,
-// sub-turrets at ~0.1, then billows at fixed sizes, ~80 m and, near the camera, ~25 m. Returns the depth the surface is cut
-// back (km) and an interior variation (0–1). Turrets are rising thermals, taller than wide, so their lumps stay coherent up
-// the cloud's side; layers get rounder, shallower lumps and no columns. The fixed-size billows are read through a broad
-// random displacement (more than their own repeat), so the noise volume's tiling never shows.
-fn cuDetail(q: vec3f, Rc: f32, A: f32, hfac: f32, lay: bool) -> vec3f {
-  let qw = q + wv(q, 2.3*Rc, vec3f(0.11, 0.53, 0.29))*0.8*Rc;   // a slow swirl, so outlines curl
-  let qt = qw*vec3f(1.0, select(0.55, 1.0, lay), 1.0);
-  let b1 = bub(qt, 0.3*Rc, vec3f(0.31, 0.17, 0.73));
-  let b2 = bub(qt, 0.1*Rc, vec3f(0.6, 0.2, 0.4));
-  let qf = qw + wv(q, 1.9, vec3f(0.83, 0.27, 0.41))*1.3;
-  let b3 = bub(qf, 0.08, vec3f(0.13, 0.71, 0.37));
-  var cut = select(A*(0.6*(1.0 - b1) + 0.3*(1.0 - b2)), A*(0.75*(1.0 - b1) + 0.15*(1.0 - b2)), lay);
-  cut += hfac*select(0.035, 0.015, lay)*(1.0 - b3);
-  if (detailLod > 0.01 && !lay) { cut += hfac*detailLod*0.012*(1.0 - bub(qf, 0.025, vec3f(0.43, 0.09, 0.61))); }
-  // (billowy noise for the cloud's mixing shell, through the same displacement)
-  let wisp = nzs(qf/0.14 + vec3f(0.27, 0.61, 0.13)).r;
-  return vec3f(cut, select(b2, b1, lay), wisp);
+fn t3D(q: vec3f) -> vec4f { return textureSampleLevel(detailTex, wrapSamp, q, 0.0); }
+fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 { return c + (v - a)/(b - a)*(d - c); }
+// the billowy shape noise: Perlin–Worley, carved by the cellular fBm (lobes with sharp creases between them)
+fn pwShape(q: vec3f) -> f32 { let s = nzs(q); return clamp(remap(s.r, s.g*0.6 + s.b*0.4 - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0); }
+// The cloud's surface, in the way the first tool built it (which read as natural): the macro shape (the volume's signed
+// distance) is carved into lobes by shape noise at two scales, puffs on puffs, then displaced by a cascade of finer octaves:
+// cellular billows (rounded, the cauliflower) and curly wisps (shredded). Each finer octave is carried round by the eddies of
+// the coarser one, so small features curl into each other instead of sitting as separate balls. Where the cloud mixes with
+// clear air (its sides, its base, small and dissolving clouds) the billows give way to wisps and the margin frays: a band of
+// partial cloud, notched and fringed. Only the tops of growing towers stay hard: the rising core pushes the surface out faster
+// than mixing can eat it. Returns (the cloud's field in km, > 0 inside; the edge softness in km; an interior variation 0–1).
+fn cuSurface(q: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, lay: bool) -> vec3f {
+  let S = mix(0.45, 1.0, clamp(Rc/1.5, 0.0, 1.0))*select(1.0, 0.7, lay);   // feature scale (km): smaller clouds, smaller lumps
+  let Hc = 2.0*Rc*mix(0.35, 0.65 + 1.6*CU.wind.w, clamp(Rc/1.5, 0.0, 1.0));
+  let topCrisp = select(smoothstep(0.45, 0.9, z/max(Hc, 0.05))*(1.0 - decay), 0.0, lay);
+  let rag = mix(1.0, 0.3, topCrisp)*(1.0 + 0.6*decay);
+  // the slow swirl: towers and sides wander and bulge, more so higher up
+  let qw = q + wv(q, 1.3*S, vec3f(0.11, 0.53, 0.29))*vec3f(0.35, 0.15, 0.35)*S*(0.5 + hfac);
+  let qv = qw*vec3f(1.0, select(0.7, 1.0, lay), 1.0);   // (convective lobes a little taller than wide)
+  // puffs on puffs: big lobes ~2.6 S, smaller lobes ~0.9 S on them
+  let B1 = pwShape(qv/(2.6*S) + vec3f(0.37, 0.11, 0.73)); let B2 = pwShape(qv/(0.9*S) + vec3f(0.83, 0.47, 0.19));
+  let big = B1*(0.35 + 0.8*B2);
+  var f = d - A*(1.0 - min(big, 1.0)) + 0.04;
+  let f0 = f;
+  // the cascade: billows (cellular fBm) and wisps (curly fBm) at 1.2, 0.4 and 0.13 S, the finer ones advected by the coarser
+  let d1 = t3D(qw/(1.2*S) + vec3f(0.0, 0.29, 0.0));
+  let d2 = t3D((qw + (d1.gba - 0.5)*0.11*S)/(0.4*S) + vec3f(0.31, 0.53, 0.17));
+  let d3 = t3D((qw + (d1.rgb - 0.5)*0.05*S + (d2.gba - 0.5)*0.035*S)/(0.13*S) + vec3f(0.71, 0.13, 0.43));
+  let W1 = d1.r*0.625 + d1.g*0.25 + d1.b*0.125; let W2 = d2.r*0.625 + d2.g*0.25 + d2.b*0.125; let W3 = d3.r*0.625 + d3.g*0.25 + d3.b*0.125;
+  var billow = (W1 - 0.56)*0.55 + (W2 - 0.56)*0.3 + (W3 - 0.56)*0.15;
+  var wisp = (d1.a - 0.5)*0.5 + (d2.a - 0.5)*0.3 + (d3.a - 0.5)*0.2;
+  if (detailLod > 0.01) {   // a ~45 m octave, close to the camera only
+    let d4 = t3D((qw + (d2.rgb - 0.5)*0.02*S)/(0.042*S) + vec3f(0.19, 0.61, 0.61));
+    billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*0.12*detailLod; wisp += (d4.a - 0.5)*0.16*detailLod; }
+  let amp = (0.09 + 0.1*S)*CU.band.w*select(1.0, 0.6, lay);
+  // margins: billows give way to wisps, so edges fray rather than ending in smooth balls
+  let edgeB = 1.0 - smoothstep(0.0, 0.07, f0);
+  let bw = clamp(hfac*(1.0 - 0.6*decay)*(1.0 - 0.45*edgeB*rag), 0.0, 1.0);
+  var disp = mix(wisp, billow, bw)*amp*(2.4 + 1.2*decay);
+  if (disp > 0.0) { disp *= 0.4*smoothstep(-0.1*amp, 0.02, f); }   // detail mostly cuts in; it pushes out only near the surface
+  f += disp;
+  f -= (0.06 + 0.1*decay)*CU.band.w*(1.0 - smoothstep(0.0, 0.25, f))*max(d2.a - 0.35, 0.0);
+  // the margin itself: fringes and notches within a band whose width follows how ragged this part is
+  let band = exp(-(f*f)/(0.0012 + 0.0024*rag));
+  f += ((d2.a - 0.5)*0.6 + (d3.a - 0.5)*0.4 + (W3 - 0.56)*0.5)*amp*rag*band*CU.band.w;
+  f -= (0.05 + 0.04*rag)*CU.band.w*(1.0 - smoothstep(0.0, 0.12, f))*max(d3.a - 0.45, 0.0)*2.0;
+  // the edge itself: hard on growing tops, a ramp of tens of metres where the cloud is mixing (liquid water fades out)
+  let soft = mix(0.11, 0.012, clamp(topCrisp*mix(0.7, 1.0, hfac), 0.0, 1.0))*(1.0 + 0.8*decay);
+  let iv = smoothstep(0.2, 0.85, W1*0.6 + B2*0.4);
+  return vec3f(f, soft, iv);
 }
 // ice fibres drawn out along the wind (crystals spread by shear into long thin strands, 0.1–1 km across)
 fn iceFib(q: vec3f) -> f32 {
@@ -102,17 +131,16 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       // (in proportion to the cloud: ~100 m on a 0.5 km cloud, 0.3 km on a 2 km one, a stratocumulus deck ~20% of its depth)
       // (layers: lumps at their cells' scale but shallow, the deck's top and base stay continuous)
       let A = CU.band.w*min(0.3*pow(Rc, 0.8), 0.45)*hfac*(1.0 + 0.5*decay)*select(1.0, 0.45, v.a >= 0.5);
-      let dd = cuDetail(q, Rc, A, hfac, v.a >= 0.5);
-      let de = d - dd.x + 0.04;
-      // inside: water content varies from turret to turret (dark folds, bright bulges)
-      let soft = (0.01 + 0.03*(1.0 - hfac))*(1.0 + 1.5*decay);
+      let su = cuSurface(q, d, z, Rc, A, decay, hfac, v.a >= 0.5);
+      let de = su.x; let soft = su.y;
       // the mixing shell: dry air is stirred into a cloud's outer part (inhomogeneous mixing: fewer droplets, the same size),
       // so its water content falls over the outer ~10–20% of its size (more on dissolving clouds), patchily: translucent,
       // ragged edges rather than a hard surface; the cores keep their full density
       let shellW = clamp(0.18*Rc, 0.04, 0.25)*(1.0 + decay)*select(1.0, 0.6, v.a >= 0.5);
       let sh = smoothstep(0.0, shellW, de);
-      let edge = (0.3 + 0.7*sh)*mix(smoothstep(0.2, 0.75, dd.z), 1.0, sh);
-      return sig*cuSigmaZ(z)*cuDil(v.a)*(0.7 + 0.6*dd.y)*edge*smoothstep(0.0, soft, de);
+      let edge = 0.45 + 0.55*sh;
+      // inside: water content varies from lobe to lobe (dark folds, bright bulges)
+      return sig*cuSigmaZ(z)*cuDil(v.a)*(0.65 + 0.7*su.z)*edge*smoothstep(0.0, soft, de);
     }
     if (v.a > 0.8) {
       // ice: fibres drawn out along the wind (crystals spread by shear into long thin strands), soft-edged and wispy

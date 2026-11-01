@@ -36,5 +36,13 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var pf = perlinFbm(p, 4.0, 5u, 3u)*0.5 + 0.5; pf = clamp(remap(pf, 0.15, 0.85, 0.0, 1.0), 0.0, 1.0);
   let w1 = worleyFbm(p, 4.0, 20u);
   let billow = clamp(remap(pf, 0.0, 1.0, w1, 1.0), 0.0, 1.0);
-  textureStore(noiseOut, id, vec4f(billow, bubbleP(p*8.0, vec3f(8.0), 30u), bubbleP(p*16.0, vec3f(16.0), 40u), clamp(0.5 + 1.3*perlinFbm(p, 4.0, 4u, 75u), 0.0, 1.0)));
+  textureStore(noiseOut, id, vec4f(billow, worleyFbm(p, 8.0, 30u), worleyFbm(p, 16.0, 40u), clamp(0.5 + 1.3*perlinFbm(p, 4.0, 4u, 75u), 0.0, 1.0)));
+}
+// the detail volume: cellular noise at 4, 8 and 16 cells per tile (summed as a cellular fBm: the billows) and a curly Perlin
+// fBm (the wisps)
+@compute @workgroup_size(4, 4, 4)
+fn mainDetail(@builtin(global_invocation_id) id: vec3u) {
+  let N = 128u; if (any(id >= vec3u(N))) { return; }
+  let p = (vec3f(id) + 0.5)/f32(N);
+  textureStore(noiseOut, id, vec4f(worleyP(p*4.0, vec3f(4.0), 51u), worleyP(p*8.0, vec3f(8.0), 52u), worleyP(p*16.0, vec3f(16.0), 53u), clamp(0.5 + 1.2*perlinFbm(p, 3.0, 5u, 91u), 0.0, 1.0)));
 }
