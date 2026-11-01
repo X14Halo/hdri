@@ -195,11 +195,35 @@ async function finishExport(secs){
   const X = EXP; if (!X) return; EXP = null;
   $('#expInfo').textContent = 'Encoding…';
   const parts = X.format === 'hdr' ? encodeHDR(X.rgb, X.W, X.H) : await encodeEXR(X.rgb, X.W, X.H, X.format === 'exr16', f => { $('#expInfo').textContent = `Encoding… ${Math.round(f*100)}%`; });
-  const blob = new Blob(parts, {type: 'application/octet-stream'}); const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = X.name + (X.format === 'hdr' ? '.hdr' : '.exr'); document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  const fname = X.name + (X.format === 'hdr' ? '.hdr' : '.exr');
+  let blob = new Blob(parts, {type: 'application/octet-stream'});
+  // inside Claude the page hands files over through its downloads capability, which takes .zip but not .exr/.hdr: the
+  // image goes inside a zip there; on its own (e.g. GitHub Pages) it is a plain download
+  const dl = await claudeDownloads();
+  if (dl){
+    $('#expInfo').textContent = 'Packing into a zip…';
+    blob = await zipStore(fname, new Uint8Array(await blob.arrayBuffer()));
+    try { await dl.save({filename: X.name + '.zip', data: blob}); }
+    catch (e){ $('#expInfo').textContent = e && e.code === 'declined' ? 'Download declined.' : `Could not save the file (${e && e.code || e}).`; return; }
+  } else {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
   let mx = 0; for (let i = 0; i < X.rgb.length; i += 3){ const y = 0.2126*X.rgb[i] + 0.7152*X.rgb[i + 1] + 0.0722*X.rgb[i + 2]; if (y > mx) mx = y; }
   $('#expInfo').textContent = `Rendered ${X.W} × ${X.H} in ${fmtSecs(secs)} and downloaded (${(blob.size/1048576).toFixed(0)} MB). Peak ${mx.toPrecision(3)} ${P.units === 'watts' ? 'W·m⁻²·sr⁻¹' : 'cd/m²'}.`;
+}
+let dlNs;
+async function claudeDownloads(){ if (dlNs !== undefined) return dlNs; try { dlNs = window.claude && window.claude.use ? await window.claude.use('downloads') : null; } catch (e){ dlNs = null; } return dlNs; }
+// a zip holding one file, stored (the EXR is compressed already)
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++){ let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8){ let c = 0xffffffff; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+async function zipStore(name, data){
+  const nm = new TextEncoder().encode(name), crc = crc32(data), n = data.length;
+  const loc = new DataView(new ArrayBuffer(30)); loc.setUint32(0, 0x04034b50, true); loc.setUint16(4, 20, true); loc.setUint32(14, crc, true); loc.setUint32(18, n, true); loc.setUint32(22, n, true); loc.setUint16(26, nm.length, true);
+  const cen = new DataView(new ArrayBuffer(46)); cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint32(16, crc, true); cen.setUint32(20, n, true); cen.setUint32(24, n, true); cen.setUint16(28, nm.length, true);
+  const cdOff = 30 + nm.length + n;
+  const end = new DataView(new ArrayBuffer(22)); end.setUint32(0, 0x06054b50, true); end.setUint16(8, 1, true); end.setUint16(10, 1, true); end.setUint32(12, 46 + nm.length, true); end.setUint32(16, cdOff, true);
+  return new Blob([loc, nm, data, cen, nm, end], {type: 'application/zip'});
 }
 // OpenEXR (scanline; ZIP compression in blocks of 16 lines; channels B, G, R) and Radiance HDR writers
 function toHalf(v){ const f = toHalf.f, u = toHalf.u; f[0] = v; const x = u[0]; const s = (x >>> 16) & 0x8000; let e = ((x >>> 23) & 0xff) - 112, m = x & 0x7fffff;
