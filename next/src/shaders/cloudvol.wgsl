@@ -14,7 +14,11 @@ fn profileOf(v: f32) -> f32 { return 0.35 + 0.65*smoothstep(0.0, 0.8, v); }   //
 const CU_BSCALE: f32 = 8.0;
 fn cuSigmaZ(z: f32) -> f32 { let zz = max(z, 0.0); return max(85.0*pow(zz/(1.0 + 0.35*zz)/0.351, 0.6667), 10.0); }
 // (all liquid clouds, cumulus and the water layers alike, from their own base; ice by height fraction)
-fn profileV(v: vec4f, alt: f32) -> f32 { return select(profileOf(v.b), cuSigmaZ(alt - v.b*CU_BSCALE), v.a < 0.8); }
+// small cumulus are diluted: a thermal entrains surrounding air at a rate ∝ 1/radius, so the small ones hold a much smaller
+// share of their adiabatic water (their mixed fraction ~R/(R + 0.25 km)); σ ∝ LWC^(2/3). A lone 200 m cloud ends up ~half as
+// dense as the core of a big one, a 100 m fragment about a third
+fn cuDil(a: f32) -> f32 { if (a >= 0.5) { return 1.0; } let R = clamp(a/0.5*2.4, 0.05, 2.4); return pow(R/(R + 0.25), 0.6667); }
+fn profileV(v: vec4f, alt: f32) -> f32 { return select(profileOf(v.b), cuSigmaZ(alt - v.b*CU_BSCALE)*cuDil(v.a), v.a < 0.8); }
 
 // position in volume coordinates: horizontal x/z, altitude above the curved ground
 // (gnomonic: the horizontal coordinates are where the point's vertical meets the tangent plane at the camera)
@@ -60,7 +64,7 @@ fn bub(q: vec3f, cell: f32, o: vec3f) -> f32 { return nzs(q/(8.0*cell) + o).g; }
 // back (km) and an interior variation (0–1). Turrets are rising thermals, taller than wide, so their lumps stay coherent up
 // the cloud's side; layers get rounder, shallower lumps and no columns. The fixed-size billows are read through a broad
 // random displacement (more than their own repeat), so the noise volume's tiling never shows.
-fn cuDetail(q: vec3f, Rc: f32, A: f32, hfac: f32, lay: bool) -> vec2f {
+fn cuDetail(q: vec3f, Rc: f32, A: f32, hfac: f32, lay: bool) -> vec3f {
   let qw = q + wv(q, 2.3*Rc, vec3f(0.11, 0.53, 0.29))*0.8*Rc;   // a slow swirl, so outlines curl
   let qt = qw*vec3f(1.0, select(0.55, 1.0, lay), 1.0);
   let b1 = bub(qt, 0.3*Rc, vec3f(0.31, 0.17, 0.73));
@@ -70,7 +74,9 @@ fn cuDetail(q: vec3f, Rc: f32, A: f32, hfac: f32, lay: bool) -> vec2f {
   var cut = select(A*(0.6*(1.0 - b1) + 0.3*(1.0 - b2)), A*(0.75*(1.0 - b1) + 0.15*(1.0 - b2)), lay);
   cut += hfac*select(0.035, 0.015, lay)*(1.0 - b3);
   if (detailLod > 0.01 && !lay) { cut += hfac*detailLod*0.012*(1.0 - bub(qf, 0.025, vec3f(0.43, 0.09, 0.61))); }
-  return vec2f(cut, select(b2, b1, lay));
+  // (billowy noise for the cloud's mixing shell, through the same displacement)
+  let wisp = nzs(qf/0.14 + vec3f(0.27, 0.61, 0.13)).r;
+  return vec3f(cut, select(b2, b1, lay), wisp);
 }
 // ice fibres drawn out along the wind (crystals spread by shear into long thin strands, 0.1–1 km across)
 fn iceFib(q: vec3f) -> f32 {
@@ -100,7 +106,13 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       let de = d - dd.x + 0.04;
       // inside: water content varies from turret to turret (dark folds, bright bulges)
       let soft = (0.01 + 0.03*(1.0 - hfac))*(1.0 + 1.5*decay);
-      return sig*cuSigmaZ(z)*(0.7 + 0.6*dd.y)*smoothstep(0.0, soft, de);
+      // the mixing shell: dry air is stirred into a cloud's outer part (inhomogeneous mixing: fewer droplets, the same size),
+      // so its water content falls over the outer ~10–20% of its size (more on dissolving clouds), patchily: translucent,
+      // ragged edges rather than a hard surface; the cores keep their full density
+      let shellW = clamp(0.18*Rc, 0.04, 0.25)*(1.0 + decay)*select(1.0, 0.6, v.a >= 0.5);
+      let sh = smoothstep(0.0, shellW, de);
+      let edge = (0.3 + 0.7*sh)*mix(smoothstep(0.2, 0.75, dd.z), 1.0, sh);
+      return sig*cuSigmaZ(z)*cuDil(v.a)*(0.7 + 0.6*dd.y)*edge*smoothstep(0.0, soft, de);
     }
     if (v.a > 0.8) {
       // ice: fibres drawn out along the wind (crystals spread by shear into long thin strands), soft-edged and wispy

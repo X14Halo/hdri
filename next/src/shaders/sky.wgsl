@@ -151,6 +151,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let ci1 = 0.5*phaseHG(cS, 0.995) + 0.5*phaseHG(cS, 0.6); let cim = 0.5*phaseHG(cM, 0.995) + 0.5*phaseHG(cM, 0.6);
   let iso = 1.0/(4.0*PI);
   var cloudSteps = 0u;
+  // (the cloud march carries on from one air segment into the next where it left off: restarting it at each segment's start
+  // double-counted or skipped the cloud around every boundary, a faint line across clouds at that distance)
+  var tCl = -1.0;
   let rj = fract(hash3(vec3u(pxX, py, 4211u)).x + f32(n)*0.7548776662);
   for (var i = 0u; i < NS; i++) {
     let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let tAir = ta + dt*jt;
@@ -158,10 +161,16 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var FgS = 0.0; var FgM = 0.0; var FgA = 0.0; var FgR = 0.0; var TcAir = Tc;
     let qa = volPos(ro + rd*ta); let qb = volPos(ro + rd*tb);
     let segLo = min(qa.y, qb.y); let segHi = max(qa.y, qb.y);
+    // the air's extinction in this segment (mean over wavelengths, at its middle): each cloud sample is attenuated by the air
+    // from the segment's start to the sample itself, not by a segment-wide average, which drew a seam across clouds wherever
+    // a segment boundary crossed them
+    var extS = 0.0;
+    if (cloudOn) { let hq = length(ro + rd*(0.5*(ta + tb)) - C0) - Rg; let dR0 = densR(hq); let dM0 = densM(hq); let dO0 = densO(hq); let dF0 = densF(hq);
+      for (var g = 0u; g < 6u; g++) { extS += dot(F.BR[g]*dR0 + (F.BMs[g] + F.BMa[g])*dM0 + F.BO[g]*dO0 + vec4f(dF0), vec4f(0.25)); } extS /= 6.0; }
     if (cloudOn && Tc > 0.0 && segHi > CU.band.x - 0.3 && segLo < CU.band.y + 0.1) {
-      var t = ta; var airDone = false;
-      let base = clamp(ta*0.005, 0.02, 1.0);
-      t += base*rj;
+      var airDone = false;
+      var t = tCl;
+      if (t < ta) { t = ta + clamp(ta*0.005, 0.02, 1.0)*rj; }
       loop {
         // practically opaque: what lies behind (the sun's disc above all, ~1e9 cd/m²) is cut off entirely rather than leaking
         // through as the last fraction of a percent
@@ -216,7 +225,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // first order: the droplets' full phase function (silver linings, the bright aureole of thin edges)
           let ice = vr.a > 0.8;
           let sunF = select(cs1, ci1, ice)*exp(-lt.x); let moonF = select(cm1, cim, ice)*exp(-lt.y);
-          let dI = Tc*(1.0 - exp(-sig*ds));
+          let dI = Tc*(1.0 - exp(-sig*ds))*exp(-extS*(t - ta));
           Fs += dI*sunF; Fm += dI*moonF;
           // sky: down through the cloud above, back up from the cloud below
           let wv = clamp(0.5 + 0.5*dot(rd, upl), 0.0, 1.0);
@@ -280,6 +289,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         t += ds;
       }
       if (!airDone) { TcAir = Tc; }
+      tCl = t;
     }
     // the light sources for this segment (spectral), at its middle
     let tm = 0.5*(ta + tb); let pm = ro + rd*tm; let rm = length(pm - C0); let hm = rm - Rg; let upm = (pm - C0)/rm;
@@ -309,7 +319,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // (light bouncing between the ground and the cloud deck above it: ×1/(1 − ρ_ground·ρ_cloud), ~2× over snow)
           Ec += F.Alb[g]*Eg/(1.0 - F.Alb[g]*FgR/Fg);
         }
-        L[g] += T[g]*sqrt(att)*Ec;
+        L[g] += T[g]*Ec*sqrt(att*exp(vec4f(extS*dt)));   // (the per-wavelength remainder of the attenuation, about the segment's middle)
       }
       T[g] *= att;
     }

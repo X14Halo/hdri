@@ -1,6 +1,8 @@
 // Spectral Sky Next — settings: defaults and the controls that edit them.
 'use strict';
 const DEFAULTS = {
+  // randomizing: 0 stays with what real skies do, 1 favours dramatic combinations
+  rndStyle:0.25,
   // sun and moon: set by hand, or from a place, date and time
   mode:'manual', sunAz:150, sunEl:35, moonAz:120, moonEl:-30, moonOverride:false, moonIllum:0.5, moonDistKm:384400, moonScale:1,
   date:'2026-06-21', time:'12:00', utc:0, lat:47.6, lon:-122.3,

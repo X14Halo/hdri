@@ -9,6 +9,10 @@ let worker = null, lastStatus = null, ready = false;
 /* ---------- panel schema ---------- */
 const fmtDeg = v => `${(+v).toFixed(1)}°`;
 const SECTIONS = [
+  {title:'Randomize', items:[
+    {k:'rndStyle', label:'Character', min:0, max:1, step:0.01, fmt:v => v < 0.15 ? 'realistic' : v < 0.5 ? 'realistic, some drama' : v < 0.85 ? 'stylized' : 'very stylized'},
+    {type:'buttons', btns:[['Everything', () => randomize('all')], ['Clouds', () => randomize('clouds')], ['Time of day', () => randomize('sun')]]},
+  ]},
   {title:'Sun & moon', items:[
     {k:'mode', label:'Position from', type:'select', opts:[['manual', 'Set by hand'], ['location', 'Place, date and time']]},
     {k:'sunEl', label:'Sun elevation', min:-20, max:90, step:0.1, fmt:fmtDeg, show:() => P.mode === 'manual'},
@@ -178,6 +182,54 @@ document.querySelectorAll('#viewSeg button').forEach(b => b.onclick = () => { do
 document.querySelectorAll('#resSeg button').forEach(b => b.onclick = () => { document.querySelectorAll('#resSeg button').forEach(x => x.classList.toggle('on', x === b)); P.previewRes = +b.dataset.r; changed(); });
 $('#autoEx').onchange = e => { view.auto = e.target.checked; sendView(); };
 $('#exSlider').oninput = e => { view.expoComp = +e.target.value; $('#exVal').textContent = `${view.expoComp >= 0 ? '+' : '−'}${Math.abs(view.expoComp).toFixed(1)} EV`; sendView(); };
+
+/* ---------- randomize ---------- */
+// Realistic: what skies actually do. Times of day weighted by how long the sun spends there; a weather regime drawn by how
+// common it is, with its layers at heights and covers that go together (cumulus bases at the condensation level from the
+// humidity, ~125 m per °C of dewpoint depression; no towering cumulus at dawn; overcast decks hiding the layers above);
+// haze from typical aerosol loads. Stylized: golden hour and twilight, layered and towering skies, unusual air, more often.
+function randomize(what){
+  const st = clamp(P.rndStyle ?? 0.25, 0, 1), R = Math.random, U = (a, b) => a + (b - a)*R(), G = () => Math.sqrt(-2*Math.log(Math.max(R(), 1e-9)))*Math.cos(2*Math.PI*R());
+  const pick = arr => { let t = R()*arr.reduce((s, a) => s + Math.max(a[0], 0), 0); for (const a of arr){ t -= Math.max(a[0], 0); if (t <= 0) return a[1]; } return arr[arr.length - 1][1]; };
+  const seed = () => 1 + Math.floor(R()*99991);
+  if (what === 'all' || what === 'sun'){
+    P.mode = 'manual';
+    const tod = pick([[1 - 0.65*st, 'day'], [0.22 + 0.5*st, 'golden'], [0.07 + 0.3*st, 'twilight'], [0.04 + 0.08*st, 'night']]);
+    P.sunEl = tod === 'day' ? 15 + 55*Math.pow(R(), 1.3) : tod === 'golden' ? U(0.5, 15) : tod === 'twilight' ? U(-6, 0.5) : U(-25, -10);
+    P.sunAz = U(0, 360); P.moonEl = U(-30, 70); P.moonAz = U(0, 360);
+  }
+  if (what === 'all'){
+    P.aerosol = pick([[5, 'continental'], [3, 'maritime'], [1 + st, 'urban'], [0.3 + 1.2*st, 'desert'], [0.2 + 1.2*st, 'smoke'], [1, 'clean']]);
+    const aodMed = {continental: 0.1, maritime: 0.08, urban: 0.25, desert: 0.35, smoke: 0.5, clean: 0.04}[P.aerosol];   // (typical loads of each)
+    P.aod = clamp(aodMed*Math.exp(G()*(0.5 + 0.4*st)), 0.02, 1.5);
+    P.humidity = Math.round(clamp(U(30, 85) + G()*8*st, 10, 95));
+    P.aerH = U(0.8, 2.2);
+    P.fogVis = R() < 0.03 + 0.12*st && P.sunEl < 20 ? Math.exp(U(Math.log(0.4), Math.log(8))) : 50; P.fogH = U(0.05, 0.4);
+    P.ozone = Math.round(U(270, 360));
+  }
+  if (what === 'all' || what === 'clouds'){
+    const hi = P.sunEl > 25;   // (deep convection builds in the afternoon heat)
+    const reg = pick([[1.2 - 0.8*st, 'clear'], [4 - 1.5*st, 'fair'], [2, 'cuci'], [(hi ? 1.2 : 0.2) + 2*st, 'congestus'], [1.5, 'ac'], [1.5, 'scbroken'], [0.9, 'overcast'], [1.3, 'ci'], [0.4 + 3*st, 'layered']]);
+    const ang = U(0, 2*Math.PI), spd = U(5, 30 + 25*st); P.windX = Math.round(spd*Math.cos(ang)); P.windZ = Math.round(spd*Math.sin(ang));
+    P.cuOn = P.scOn = P.acOn = P.ciOn = false;
+    P.cuSeed = seed(); P.scSeed = seed(); P.acSeed = seed(); P.ciSeed = seed();
+    const lcl = clamp(0.025*(100 - P.humidity) + G()*0.1, 0.4, 3.2);   // km
+    const cu = (cov, dev) => { P.cuOn = true; P.cuCover = clamp(cov, 0.03, 0.85); P.cuDev = clamp(dev, 0, 1); P.cuBase = +lcl.toFixed(2);
+      P.cuSize = clamp(U(0.8, 1.25) + G()*0.15*st, 0.5, 2); P.cuOrg = U(0.2, 0.85); P.cuStreets = R() < 0.15 + 0.15*st ? U(0.3, 0.9) : 0; P.cuShear = U(0.2, 1.1 + 0.6*st); };
+    const ci = (cov) => { P.ciOn = true; P.ciCover = clamp(cov, 0.05, 0.9); P.ciBase = U(7.5, 11); P.ciForm = U(0.2, 0.75); P.ciThick = U(0.4, 1.2); P.ciFall = U(0.5, 2.5); P.ciShear = U(0.5, 2); P.ciCell = U(0.8, 2.5); P.ciDens = U(0.7, 1.6 + st); };
+    const ac = (cov) => { P.acOn = true; P.acCover = clamp(cov, 0.1, 0.95); P.acBase = U(2.8, 6); P.acForm = U(0.4, 1); P.acThick = U(0.2, 0.6); P.acCell = U(0.3, 1.2); };
+    const sc = (cov, form) => { P.scOn = true; P.scCover = clamp(cov, 0.2, 1); P.scForm = form; P.scBase = +clamp(lcl*0.8, 0.3, 2).toFixed(2); P.scThick = U(0.25, 0.7); P.scCell = U(0.9, 2.5); };
+    if (reg === 'fair') { cu(U(0.08, 0.4), U(0, 0.3)); if (R() < 0.25) ci(U(0.05, 0.3)); }
+    else if (reg === 'cuci') { cu(U(0.1, 0.35), U(0.05, 0.4)); ci(U(0.15, 0.6)); }
+    else if (reg === 'congestus') { cu(U(0.15, 0.45), U(0.4, 0.75 + 0.25*st)); if (R() < 0.4) ci(U(0.1, 0.4)); }
+    else if (reg === 'ac') { ac(U(0.25, 0.75)); if (R() < 0.5) cu(U(0.05, 0.25), U(0, 0.25)); if (R() < 0.3) ci(U(0.1, 0.4)); }
+    else if (reg === 'scbroken') { sc(U(0.45, 0.8), U(0.35, 0.95)); if (R() < 0.3) ac(U(0.2, 0.5)); }
+    else if (reg === 'overcast') { sc(U(0.88, 1), U(0.05, 0.45)); }
+    else if (reg === 'ci') { ci(U(0.15, 0.8)); }
+    else if (reg === 'layered') { cu(U(0.1, 0.4), U(0.1, 0.6 + 0.3*st)); ac(U(0.2, 0.6)); ci(U(0.2, 0.7)); }
+  }
+  syncUI(); changed();
+}
 
 /* ---------- export ---------- */
 let EXP = null;
