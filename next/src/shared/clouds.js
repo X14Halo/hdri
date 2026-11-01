@@ -36,6 +36,7 @@ function genCumulus(P, calib){
   const b = 2.2 - 0.6*dev;                                  // shallower size spectrum as convection deepens
   const base = P.cuBase, capTop = base + 0.9 + 1.6*dev + 9*Math.pow(dev, 2.2);   // top of the convection (the inversion)
   const sig0 = P.cuDens;   // extinction factor (the profile with height above the base is in the renderer: ~60/km at 0.4 km)
+  const thermals = P.cuModel === 'thermals';   // the shapes grown from thermals (see growThermals), else the rule-and-noise turrets
   const half = VOL.DOMAIN/2, A = VOL.DOMAIN*VOL.DOMAIN;
   const cover = clamp(P.cuCover, 0, 0.95);
   const org = clamp(P.cuOrg, 0, 1), streets = clamp(P.cuStreets, 0, 1);
@@ -73,8 +74,10 @@ function genCumulus(P, calib){
     const aspect = (0.28 + 0.34*Math.sqrt(s) + 2.2*dev*Math.pow(s, 1.2))*(1 + 0.15*gaussR(r))*hmul*flatK;
     const bz = cBase + 0.012*gaussR(r);
     const H = clamp(aspect*D, 0.07, capTop - bz);
-    out.clouds.push({x, z, R, base: bz, H, seed: (r()*1e6) | 0, sx: shear[0], sz: shear[1], sig: sig0*(r() < pDecay ? 0.35 + 0.35*r() : 0.85 + 0.3*r()), dev, el, ang});
-    out.top = Math.max(out.top, bz + H*1.2); out.base = Math.min(out.base, bz);
+    const c = {x, z, R, base: bz, H, seed: (r()*1e6) | 0, sx: shear[0], sz: shear[1], sig: sig0*(r() < pDecay ? 0.35 + 0.35*r() : 0.85 + 0.3*r()), dev, el, ang};
+    if (thermals) growThermals(c, capTop, dev);
+    out.clouds.push(c);
+    out.top = Math.max(out.top, bz + c.H*1.2); out.base = Math.min(out.base, bz);
     return Math.PI*R*R*el; };
   // calib: footprint area placed per unit of cover actually seen from below (measured on the GPU, see the worker)
   // (overlapping clouds hide each other: cover = 1 − e^(−footprint/area), so the footprint asked for is −ln(1 − cover))
@@ -109,13 +112,54 @@ function genCumulus(P, calib){
   return out;
 }
 
+// ---------- cumulus grown from thermals ----------
+// A cumulus is a chain of thermals: bubbles of warm moist air, each a vortex ring, rising one after another from the
+// condensation level (the flat base). Each rises until it is no longer buoyant: it entrains the air around it as it goes,
+// widening (radius ≈ R₀ + 0.15·height) and losing buoyancy, so it stops at its neutral level. Later thermals rise through the
+// moist wake of earlier ones and get higher, the newest still rising (a hard, rounded cap). Older ones have stopped and spread;
+// the oldest are dissolving (mixed with dry air: fewer droplets, softer, ragged), their wakes detached from the base. An
+// inversion caps them all: a thermal reaching it flattens and spreads sideways. Wind shear drifts each one downwind in
+// proportion to its height, so the towers lean. Each thermal is stored as a blob (its cap, its wake down to the base); the
+// GPU adds the smaller vortex lumps on each cap and the fine detail.
+function growThermals(c, capTop, dev){
+  const tr = rng32(c.seed*31 + 7), D = 2*c.R, ca = Math.cos(c.ang), sa = Math.sin(c.ang), el = c.el || 1;
+  const fade = c.sig < 0.75;   // a dissolving cloud: all its thermals are old
+  const N = clamp(1 + Math.round(D/0.4*(0.5 + dev)), 1, 12);
+  const Hpot = c.H;            // how deep the convection here can go (from the observed size–depth relation for the stage)
+  const blobs = []; let ext = 0, top = 0;
+  for (let k = 0; k < N; k++){
+    const f = (k + 1)/N, age = N > 1 ? (N - 1 - k)/(N - 1) : 0.3*tr();
+    // where it rose from: within the cloud's footprint (elongated and turned like the cloud)
+    const rr = c.R*0.55*Math.sqrt(tr()), th = 2*Math.PI*tr(); let u = rr*Math.cos(th)*el, v = rr*Math.sin(th);
+    // neutral level above the base: the first thermals stop lower, later ones climb higher through their moist wakes
+    let hn = Math.min(Hpot*(0.5 + 0.5*f)*(0.85 + 0.3*tr()), capTop - c.base);
+    const R0 = c.R*(0.26 + 0.2*tr())*(N > 1 ? 1 : 1.6);
+    let rh = R0 + 0.15*hn, rv = rh*(0.8 - 0.25*age);   // (vortex-ring heads are a little flatter than round)
+    // the newest is still on its way up
+    const prog = k === N - 1 && N > 1 ? 0.65 + 0.35*tr() : 1;
+    // capped by the inversion: flattened and spread
+    if (c.base + hn > capTop - 0.03){ rh *= 1.3; rv *= 0.55; }
+    let stage = clamp((age - 0.55)/0.45, 0, 1); if (fade) stage = Math.min(1, stage + 0.5);
+    rh *= 1 + 0.25*stage;
+    const hc = Math.max(hn*prog - rv*0.9, rv*0.4);               // cap centre height above the base (its top at hn)
+    const wake = c.base + hc*stage*0.85;                          // a dissolving thermal's wake has detached from the base
+    const cx = c.x + u*ca - v*sa + c.sx*hc, cz = c.z + u*sa + v*ca + c.sz*hc;
+    blobs.push(cx, c.base + hc, cz, rh, rv, (tr()*1e6) | 0, stage, wake);
+    ext = Math.max(ext, Math.hypot(cx - c.x, cz - c.z) + rh*1.45); top = Math.max(top, hc + rv*1.35);
+  }
+  c.blobs = blobs; c.ext = ext + 0.05; c.H = Math.max(top, 0.07);
+}
+
 // ---------- packing for the GPU: cloud records and a 2 km grid of which clouds reach each cell ----------
 function packCumulus(cu){
-  const n = cu.clouds.length, recs = new Float32Array(Math.max(n, 1)*12);
-  cu.clouds.forEach((c, i) => { recs.set([c.x, c.z, c.R, c.base, c.H, c.seed, c.sx, c.sz, c.sig, c.dev, c.el || 1, c.ang || 0], i*12); });
+  const n = cu.clouds.length, recs = new Float32Array(Math.max(n, 1)*16);
+  let nb = 0; for (const c of cu.clouds) if (c.blobs) nb += c.blobs.length/8;
+  const blobs = new Float32Array(Math.max(nb, 1)*8); let bi = 0;
+  cu.clouds.forEach((c, i) => { const b0 = bi, cnt = c.blobs ? c.blobs.length/8 : 0; if (cnt){ blobs.set(c.blobs, bi*8); bi += cnt; }
+    recs.set([c.x, c.z, c.R, c.base, c.H, c.seed, c.sx, c.sz, c.sig, c.dev, c.el || 1, c.ang || 0, b0, cnt, cnt ? 1 : 0, c.ext || 0], i*16); });
   const G = VOL.GRID, NC = VOL.DOMAIN/G, half = VOL.DOMAIN/2;
   const counts = new Uint32Array(NC*NC);
-  const cellsOf = (c, fn) => { const ext = c.R*1.3*(c.el || 1) + Math.hypot(c.sx, c.sz)*c.H*1.2 + 0.05;
+  const cellsOf = (c, fn) => { const ext = c.ext || (c.R*1.3*(c.el || 1) + Math.hypot(c.sx, c.sz)*c.H*1.2 + 0.05);
     const x0 = Math.max(0, Math.floor((c.x - ext + half)/G)), x1 = Math.min(NC - 1, Math.floor((c.x + ext + half)/G));
     const z0 = Math.max(0, Math.floor((c.z - ext + half)/G)), z1 = Math.min(NC - 1, Math.floor((c.z + ext + half)/G));
     for (let j = z0; j <= z1; j++) for (let i = x0; i <= x1; i++) fn(j*NC + i); };
@@ -124,7 +168,7 @@ function packCumulus(cu){
   const idx = new Uint32Array(Math.max(start[NC*NC], 1)), fill = start.slice(0, NC*NC);
   cells.forEach((a, i) => { for (const k of a) idx[fill[k]++] = i; });
   let maxPer = 0; for (let k = 0; k < NC*NC; k++) maxPer = Math.max(maxPer, counts[k]);
-  return {recs, start, idx, n, maxPer};
+  return {recs, blobs, start, idx, n, maxPer};
 }
 
 // ---------- the layered cloud types: the uniform block for the generator (struct Layers in cloudgen.wgsl) ----------

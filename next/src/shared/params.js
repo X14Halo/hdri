@@ -15,7 +15,7 @@ const DEFAULTS = {
   // wind (km/h at cloud level; clouds lean and line up with it)
   windX:15, windZ:6,
   // cumulus layer
-  cuOn:true, cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuErode:1, cuAmb:1, cuDrop:14,
+  cuOn:true, cuModel:'rules', cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuErode:1, cuAmb:1, cuDrop:14,
   // stratocumulus / stratus deck
   scOn:false, scCover:0.6, scBase:0.9, scThick:0.5, scForm:0.35, scCell:1.4, scSeed:1, scDens:1,
   // altocumulus / altostratus

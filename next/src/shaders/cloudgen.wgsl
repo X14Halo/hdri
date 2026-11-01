@@ -1,7 +1,8 @@
 // ---------- building the cloud volume: every enabled layer evaluated at each voxel ----------
 @group(0) @binding(0) var<uniform> CU: Cloud;
 @group(0) @binding(1) var densOut: texture_storage_3d<rgba8unorm, write>;
-@group(0) @binding(2) var<storage, read> cuRec: array<vec4f>;     // 3 per cloud: (x, z, R, base) (H, seed, shear x, shear z) (sigma, dev, -, -)
+@group(0) @binding(2) var<storage, read> cuRec: array<vec4f>;     // 4 per cloud: (x, z, R, base) (H, seed, shear x, shear z) (sigma, dev, elong, angle)
+                                                                  // (first blob, blobs, grown from thermals?, reach)
 @group(0) @binding(3) var<storage, read> cuStart: array<u32>;     // grid cell → first index (cells of GRID km over DOMAIN km)
 @group(0) @binding(4) var<storage, read> cuIdx: array<u32>;
 @group(0) @binding(5) var<uniform> GP: vec4u;                     // x level, y first voxel row (altitude), z rows, w number of clouds
@@ -10,6 +11,7 @@
 @group(0) @binding(8) var wrapSamp: sampler;
 @group(0) @binding(9) var<uniform> F: Frame;                      // (declared for common.wgsl; unused here)
 @group(0) @binding(10) var<storage, read_write> fieldOut: array<f32>;   // (coverage field samples, for calibrating cover)
+@group(0) @binding(11) var<storage, read> cuBlob: array<vec4f>;   // thermals, 2 per blob: (centre xyz, radius across) (radius up, seed, stage, wake bottom)
 
 // the layered (field) cloud types. x cover, y base km, z thickness km, w form; second: x cell size km, y seed, z extinction /km,
 // w wind direction (rad); thr: the coverage threshold of each layer, found so its cover matches the setting
@@ -23,10 +25,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = clamp(0.5 + 0.5*(b - a)/k, 0.0,
 // one cumulus: turrets (bubbles of rising air) stacked over a flat base, leaning downwind with the shear.
 // returns (signed distance km, height within the cloud 0…1); distance < -0.5 when far outside
 fn cuEval(p: vec3f, k: u32) -> vec2f {
-  let a = cuRec[3u*k]; let b = cuRec[3u*k + 1u];
+  let a = cuRec[4u*k]; let b = cuRec[4u*k + 1u];
   let base = a.w; let H = b.x; let R = a.z; let y = p.y - base;
   if (y < -0.4 || y > H*1.35 + 0.1) { return vec2f(-1.0, 0.0); }
-  let c2 = cuRec[3u*k + 2u]; let el = max(c2.z, 1.0);
+  let c2 = cuRec[4u*k + 2u]; let el = max(c2.z, 1.0);
   var q0 = p.xz - a.xy - b.zw*max(y, 0.0);
   if (dot(q0, q0) > (R*1.45*el + 0.3)*(R*1.45*el + 0.3)) { return vec2f(-1.0, 0.0); }
   let seed = u32(b.y); let dev = c2.y;
@@ -59,6 +61,45 @@ fn cuEval(p: vec3f, k: u32) -> vec2f {
   let bn = (hash3(vec3u(u32(floor(q0.x*4.0) + 4096.0), u32(floor(q0.y*4.0) + 4096.0), seed)).x - 0.5)*0.0;
   d = min(d, y + bn);
   return vec2f(d, clamp(base/8.0, 0.0, 1.0));   // (this cloud's base altitude, for the extinction profile with height above it)
+}
+
+// one cumulus grown from thermals (the blobs made by growThermals in clouds.js): each thermal's cap is a vortex-ring head,
+// rounded and a little flattened, with the smaller rings that form on its rim as lumps over its upper half; its wake is a
+// column down to the base (detached for a dissolving thermal), leaning with the shear; neighbouring thermals merge smoothly.
+// returns (signed distance km, base altitude / 8 km, extinction factor from the thermals' stage)
+fn cuEvalThermal(p: vec3f, k: u32) -> vec3f {
+  let a = cuRec[4u*k]; let b = cuRec[4u*k + 1u]; let c3 = cuRec[4u*k + 3u];
+  let base = a.w; let y = p.y - base;
+  if (y < -0.4 || y > b.x + 0.1) { return vec3f(-1.0, 0.0, 1.0); }
+  let dq = p.xz - a.xy; if (dot(dq, dq) > c3.w*c3.w) { return vec3f(-1.0, 0.0, 1.0); }
+  let sh = b.zw;
+  var d = -1.0; var bestB = -1e3; var sf = 1.0;
+  let j0 = u32(c3.x); let nb = u32(c3.y);
+  for (var j = 0u; j < nb; j++) {
+    let B0 = cuBlob[2u*(j0 + j)]; let B1 = cuBlob[2u*(j0 + j) + 1u];
+    let c = B0.xyz; let rh = B0.w; let rv = B1.x; let seed = u32(B1.y); let stage = B1.z; let wb = B1.w;
+    // the cap
+    let e = (p - c)/vec3f(rh, rv, rh); var db = (1.0 - length(e))*min(rh, rv);
+    // the wake: a column from the base (or where it detached) up to the cap, narrower below, leaning with the shear
+    if (wb < c.y) {
+      let t = clamp(p.y, wb, c.y); let ft = (t - wb)/max(c.y - wb, 1e-3);
+      let axis = vec3f(c.x - sh.x*(c.y - t), t, c.z - sh.y*(c.y - t));
+      let rw = rh*(0.55 + 0.3*ft);
+      db = smax(db, rw - length(p - axis), 0.05 + 0.15*rh);
+    }
+    // the smaller vortex rings on the cap's upper half
+    for (var i = 0u; i < 5u; i++) {
+      let h = hash3(vec3u(seed, i, 29u));
+      let az = 6.2831853*h.x; let elv = mix(0.15, 1.35, h.y);
+      let dir = vec3f(cos(az)*cos(elv), sin(elv), sin(az)*cos(elv));
+      let lc = c + dir*vec3f(rh, rv, rh)*0.78; let lr = min(rh, rv)*(0.3 + 0.18*h.z);
+      db = smax(db, lr - length(p - lc), 0.02 + 0.04*lr);
+    }
+    if (db > bestB) { bestB = db; sf = 1.0 - 0.55*stage; }
+    d = smax(d, db, 0.04 + 0.08*rh);
+  }
+  d = min(d, y);   // the flat base (the condensation level)
+  return vec3f(d, clamp(base/8.0, 0.0, 1.0), sf);
 }
 
 // ---------- noise for the layer fields: the tileable noise volume read at incommensurate scales (nothing repeats) ----------
@@ -176,8 +217,10 @@ fn evalAt(p: vec3f) -> Hit {
     let c = vec2i(floor((p.xz + 0.5*DOMAIN)/GRID));
     if (c.x >= 0 && c.y >= 0 && c.x < i32(NC) && c.y < i32(NC)) {
       let cell = u32(c.y)*NC + u32(c.x); let s0 = cuStart[cell]; let s1 = cuStart[cell + 1u];
-      for (var j = s0; j < s1; j++) { let k = cuIdx[j]; let r = cuEval(p, k);
-        if (r.x > best.d) { best = Hit(r.x, cuRec[3u*k + 2u].x, r.y, 0.5*clamp(cuRec[3u*k].z/2.4, 0.0, 1.0)); } }
+      for (var j = s0; j < s1; j++) { let k = cuIdx[j];
+        var r = vec3f(-1.0, 0.0, 1.0);
+        if (cuRec[4u*k + 3u].z > 0.5) { r = cuEvalThermal(p, k); } else { let r2 = cuEval(p, k); r = vec3f(r2, 1.0); }
+        if (r.x > best.d) { best = Hit(r.x, cuRec[4u*k + 2u].x*r.z, r.y, 0.5*clamp(cuRec[4u*k].z/2.4, 0.0, 1.0)); } }
     }
   }
   return best;
