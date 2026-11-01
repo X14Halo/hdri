@@ -33,7 +33,7 @@ fn densMacro(q: vec3f) -> f32 {
 }
 // signed distance to the nearest cloud surface (km, level 0–2 only; > 0 inside), for stepping through empty air
 // how far the fine detail can push a cumulus surface outward (km), from the cloud's size code
-fn cuPush(a: f32) -> f32 { return 0.03; }
+fn cuPush(a: f32) -> f32 { return 0.045; }
 // (the far levels hold coverage, not distances: there an empty voxel lets the ray skip half a voxel, anything else is sampled)
 fn hintL(q: vec3f, l: u32) -> f32 {
   let v = rawCloud(q.xz, q.y, l);
@@ -48,23 +48,29 @@ fn distHint(q: vec3f) -> f32 {
   return h;
 }
 fn nzs(q: vec3f) -> vec4f { return textureSampleLevel(noiseTex, wrapSamp, q, 0.0); }
-// puffs on puffs: billows at a third and a ninth of the cloud's own size (each cloud is lumpy in proportion to itself, so the
-// lumps are self-similar and never tile) and at a fixed ~70 m, read through a slow swirl so outlines curl
-fn cuDetail(q: vec3f, Rc: f32, lay: bool) -> vec2f {
-  let w = (nzs(q/(2.3*Rc) + vec3f(0.11, 0.53, 0.29)).gba - 0.5)*0.4*Rc;
-  let qw = q + w;
-  // rounded bulges with sharp creases between them: turrets at ~0.3 R, sub-turrets at ~0.1 R (observed thermal sizes: a third
-  // to a half of the cloud's width), and fine billows at a fixed scale
-  // (the turrets are rising thermals: taller than wide, so the lumps stay coherent up the cloud's side and its outline is
-  // lumpy from every direction, from below too)
-  // (layers: rounded lumps, no columns; their surfaces are softer, so less of the small sub-lumps)
+// how much of the finest detail this sample can show (1 near, fading where a pixel spans more than ~15 m; the sky sets it)
+var<private> detailLod: f32 = 1.0;
+// a smooth random vector field (from the volume's smooth Perlin channel), about −0.5…0.5
+fn wv(q: vec3f, s: f32, o: vec3f) -> vec3f { return vec3f(nzs(q/s + o).a, nzs(q/s + o + vec3f(0.37, 0.11, 0.53)).a, nzs(q/s + o + vec3f(0.71, 0.59, 0.23)).a) - 0.5; }
+// rounded bubbles about `cell` km across, with sharp creases between them
+fn bub(q: vec3f, cell: f32, o: vec3f) -> f32 { return nzs(q/(8.0*cell) + o).g; }
+// the cauliflower: domes on domes on domes. Each octave is a set of bubbles whose surface relief is in proportion to its size
+// (the self-similar, fractal surface of real cumulus, perimeter dimension ~1.35): turrets at ~0.3 of the cloud's radius,
+// sub-turrets at ~0.1, then billows at fixed sizes, ~80 m and, near the camera, ~25 m. Returns the depth the surface is cut
+// back (km) and an interior variation (0–1). Turrets are rising thermals, taller than wide, so their lumps stay coherent up
+// the cloud's side; layers get rounder, shallower lumps and no columns. The fixed-size billows are read through a broad
+// random displacement (more than their own repeat), so the noise volume's tiling never shows.
+fn cuDetail(q: vec3f, Rc: f32, A: f32, hfac: f32, lay: bool) -> vec2f {
+  let qw = q + wv(q, 2.3*Rc, vec3f(0.11, 0.53, 0.29))*0.8*Rc;   // a slow swirl, so outlines curl
   let qt = qw*vec3f(1.0, select(0.55, 1.0, lay), 1.0);
-  let t1 = nzs(qt/(8.0*0.3*Rc) + vec3f(0.31, 0.17, 0.73)).g;
-  let t2 = nzs(qt/(8.0*0.1*Rc) + vec3f(0.6, 0.2, 0.4)).g;
-  let f1 = nzs(qw/0.237 + vec3f(0.6, 0.2, 0.4)).r;
-  // (t1, t2: rounded bubbles with sharp creases; the cloud's surface is cut back in the creases, so it reads as domes on domes;
-  // the ~240 m billows only roughen the domes a little, so the outline stays crisp rather than fuzzy)
-  return select(vec2f(0.55*t1 + 0.3*t2 + 0.15*f1, t2), vec2f(0.7*t1 + 0.15*t2 + 0.15*f1, t1), lay);
+  let b1 = bub(qt, 0.3*Rc, vec3f(0.31, 0.17, 0.73));
+  let b2 = bub(qt, 0.1*Rc, vec3f(0.6, 0.2, 0.4));
+  let qf = qw + wv(q, 1.9, vec3f(0.83, 0.27, 0.41))*1.3;
+  let b3 = bub(qf, 0.08, vec3f(0.13, 0.71, 0.37));
+  var cut = select(A*(0.6*(1.0 - b1) + 0.3*(1.0 - b2)), A*(0.75*(1.0 - b1) + 0.15*(1.0 - b2)), lay);
+  cut += hfac*select(0.035, 0.015, lay)*(1.0 - b3);
+  if (detailLod > 0.01 && !lay) { cut += hfac*detailLod*0.012*(1.0 - bub(qf, 0.025, vec3f(0.43, 0.09, 0.61))); }
+  return vec2f(cut, select(b2, b1, lay));
 }
 // ice fibres drawn out along the wind (crystals spread by shear into long thin strands, 0.1–1 km across)
 fn iceFib(q: vec3f) -> f32 {
@@ -90,10 +96,10 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       // (in proportion to the cloud: ~100 m on a 0.5 km cloud, 0.3 km on a 2 km one, a stratocumulus deck ~20% of its depth)
       // (layers: lumps at their cells' scale but shallow, the deck's top and base stay continuous)
       let A = CU.band.w*min(0.3*pow(Rc, 0.8), 0.45)*hfac*(1.0 + 0.5*decay)*select(1.0, 0.45, v.a >= 0.5);
-      let dd = cuDetail(q, Rc, v.a >= 0.5);
-      let de = d - A*(1.0 - dd.x) + 0.03;
+      let dd = cuDetail(q, Rc, A, hfac, v.a >= 0.5);
+      let de = d - dd.x + 0.04;
       // inside: water content varies from turret to turret (dark folds, bright bulges)
-      let soft = (0.015 + 0.03*(1.0 - hfac))*(1.0 + 1.5*decay);
+      let soft = (0.01 + 0.03*(1.0 - hfac))*(1.0 + 1.5*decay);
       return sig*cuSigmaZ(z)*(0.7 + 0.6*dd.y)*smoothstep(0.0, soft, de);
     }
     if (v.a > 0.8) {

@@ -24,4 +24,5 @@ const DEFAULTS = {
   ciOn:false, ciCover:0.25, ciBase:9.0, ciThick:0.7, ciForm:0.5, ciCell:1.5, ciSeed:1, ciDens:1, ciShear:1, ciFall:1.2,
   // rendering
   previewRes:1024, atmSteps:32, volQ:1,
+  outRes:4096, outSpp:64, format:'exr32', units:'nits',
 };

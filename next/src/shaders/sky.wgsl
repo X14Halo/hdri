@@ -172,6 +172,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         // past the fine-step budget (long grazing rays through distant cloud fields) the march carries on with coarse steps
         // through the macro density, so far cloud banks still block what is behind them
         let coarse = cloudSteps >= 640u;
+        detailLod = 1.0 - smoothstep(0.008, 0.02, t*PI/fH);   // (the ~25 m billows only where a pixel is finer than ~15 m)
         var ds = clamp(t*0.005, 0.02, 1.0);
         var sig = 0.0;
         if (coarse) { ds = max(ds, dt*0.125); sig = densMacro(q); }
@@ -338,6 +339,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let Lg = L[g] + T[g]*Tc*bg;
     xyz += vec3f(dot(Lg, F.CMFx[g]), dot(Lg, F.CMFy[g]), dot(Lg, F.CMFz[g]));
   }
-  let idx = py*W + pxX;
+  let idx = (py - PS.pad)*W + pxX;   // (pad: the first row the buffer holds; exports render in bands)
   accum[idx] += vec4f(select(vec3f(0.0), xyz, all(xyz == xyz)), 1.0);
 }

@@ -241,6 +241,7 @@ function exposure(){ const v = S.view; if (v.auto){ const E = Math.max(S.meter.E
 function tick(){
   requestAnimationFrame(tick);
   if (S.error || !S.P) return;
+  if (S.exp){ exportTick(); return; }   // (an export holds the scene still until it is done)
   if (S.paramsDirty) applyParams();
   if (!R.accum) return;
   const enc = device.createCommandEncoder(); let used = false;
@@ -311,6 +312,48 @@ async function readback(){
   return {xyz: o, W: w, H: h};
 }
 
+// ---------- export: the full panorama at the output size, in bands of rows rendered into a band-sized buffer ----------
+// (an 8K panorama's accumulation would need over 500 MB at once; a band of ~64 MB is rendered to all its samples, read back,
+// converted to linear Rec.709 RGB and handed to the page, then the next band)
+function startExport(m){
+  if (S.exp || !R.accum) return;
+  const W = m.W, H = W/2, band = Math.max(8, Math.min(H, Math.floor(64*1024*1024/(W*16)/8)*8));
+  const buf = device.createBuffer({size: W*band*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});
+  const bgs = R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, buf],
+    [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp]]));
+  S.exp = {W, H, band, spp: m.spp, k: m.units === 'watts' ? 1/683 : 1, buf, bgs, y0: 0, row: 0, s: 0, rows: 8, inFlight: 0, busy: false, t0: performance.now(), clear: true, lastPost: 0};
+}
+function cancelExport(){ const E = S.exp; if (!E) return; S.exp = null; E.cancelled = true; device.queue.onSubmittedWorkDone().then(() => E.buf.destroy()); S.paramsDirty = true; }
+function exportTick(){
+  const E = S.exp; if (E.busy || E.inFlight >= 2) return;
+  const enc = device.createCommandEncoder();
+  if (E.clear){ enc.clearBuffer(E.buf); E.clear = false; }
+  const rowsB = Math.min(E.band, E.H - E.y0); let budget = Math.max(8, E.rows), k = 0, sub = 0;
+  while (budget > 0 && k < R.passBufs.length && E.s < E.spp){
+    const rows = Math.min(budget, rowsB - E.row);
+    device.queue.writeBuffer(R.passBufs[k], 0, new Uint32Array([E.y0 + E.row, E.s, E.W, E.H, 0, E.W, E.y0 + rowsB, E.y0]));
+    const c = enc.beginComputePass(); c.setPipeline(R.pSky); c.setBindGroup(0, E.bgs[k]); c.dispatchWorkgroups(Math.ceil(E.W/8), Math.ceil(rows/8)); c.end();
+    E.row += Math.ceil(rows/8)*8; budget -= rows; sub += rows; k++;
+    if (E.row >= rowsB){ E.row = 0; E.s++; }
+  }
+  let rb = null;
+  if (E.s >= E.spp){ rb = device.createBuffer({size: E.W*rowsB*16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST}); enc.copyBufferToBuffer(E.buf, 0, rb, 0, E.W*rowsB*16); E.busy = true; }
+  const t0 = performance.now(); device.queue.submit([enc.finish()]); E.inFlight++;
+  device.queue.onSubmittedWorkDone().then(() => { E.inFlight--; const dt = performance.now() - t0; if (sub) E.rows = Math.round(clamp(sub*12/Math.max(dt, 0.5), 8, rowsB)); });
+  const now = performance.now(); if (now - E.lastPost > 250){ E.lastPost = now; post({type:'exportProgress', f: (E.y0 + (E.s + E.row/rowsB)/E.spp*rowsB)/E.H, secs: (now - E.t0)/1000}); }
+  if (rb) rb.mapAsync(GPUMapMode.READ).then(() => {
+    if (E.cancelled){ rb.unmap(); rb.destroy(); return; }
+    const a = new Float32Array(rb.getMappedRange()), n = E.W*rowsB, o = new Float32Array(n*3), kk = E.k;
+    for (let i = 0; i < n; i++){ const w = Math.max(a[4*i + 3], 1e-6), X = a[4*i]/w, Y = a[4*i + 1]/w, Z = a[4*i + 2]/w;
+      let r = (3.2404542*X - 1.5371385*Y - 0.4985314*Z)*kk, g = (-0.9692660*X + 1.8760108*Y + 0.0415560*Z)*kk, b = (0.0556434*X - 0.2040259*Y + 1.0572252*Z)*kk;
+      o[3*i] = r > 0 && r < 3e38 ? r : 0; o[3*i + 1] = g > 0 && g < 3e38 ? g : 0; o[3*i + 2] = b > 0 && b < 3e38 ? b : 0; }
+    rb.unmap(); rb.destroy();
+    post({type:'exportChunk', y0: E.y0, rows: rowsB, W: E.W, H: E.H, rgb: o}, [o.buffer]);
+    E.y0 += rowsB; E.s = 0; E.row = 0; E.clear = true; E.busy = false;
+    if (E.y0 >= E.H){ E.buf.destroy(); S.exp = null; S.paramsDirty = true; post({type:'exportDone', secs: (performance.now() - E.t0)/1000}); }
+  });
+}
+
 self.onmessage = async e => {
   const m = e.data;
   try {
@@ -319,6 +362,8 @@ self.onmessage = async e => {
     else if (m.type === 'view'){ Object.assign(S.view, m.view); S.dispDirty = true; if (m.view.cw && canvas){ canvas.width = m.view.cw; canvas.height = m.view.ch; } }
     else if (m.type === 'probe'){ const r = await probeVol(m.l, m.alt); post({type:'probe', id: m.id, ...r}, [r.dens.buffer, r.light.buffer]); }
     else if (m.type === 'shot'){ const r = await shot(); post({type:'shot', id: m.id, ...(r || {})}, r ? [r.rgba.buffer] : []); }
+    else if (m.type === 'export') startExport(m);
+    else if (m.type === 'exportCancel') cancelExport();
     else if (m.type === 'readback'){ const r = await readback(); post({type:'pixels', id: m.id, W: r.W, H: r.H, xyz: r.xyz}, [r.xyz.buffer]); }
   } catch (err){ fail(err && err.message || err); }
 };
