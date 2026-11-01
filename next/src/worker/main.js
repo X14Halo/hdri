@@ -80,7 +80,7 @@ async function init(m){
     computePipe('meter', wgsl('common', 'atmo', 'cloudu', 'cloudlit', 'meter'), 'main', [0, 1, 3, 4, 5, 6, 7]),
     computePipe('sky', wgsl('common', 'atmo', 'cloudu', 'cloudvol', 'cloudlit', 'sky'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
     computePipe('noise', wgsl('common', 'noise'), 'main', [0]),
-    computePipe('cloudgen', wgsl('common', 'cloudu', 'cloudgen'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 11]),
+    computePipe('cloudgen', wgsl('common', 'cloudu', 'cloudgen'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8]),
     computePipe('cloudfield', wgsl('common', 'cloudu', 'cloudgen'), 'fieldMain', [5, 6, 7, 8, 10]),
     computePipe('cloudlight', wgsl('common', 'cloudu', 'cloudvol', 'cloudlight'), 'main', [0, 1, 2, 3, 4, 5, 6, 7]),
   ]);
@@ -142,8 +142,8 @@ function buildClouds(P, enc){
   const alone = !layerBand(P) && P.cuOn && P.cuCover > 0.001;
   S.measure = (cal && cal.done) || !alone ? null : {sk, k: cal ? cal.k : 2.2, target: P.cuCover, n: cal ? cal.n : 0};
   const mk = (arr) => { const b = device.createBuffer({size: Math.max(arr.byteLength, 16), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST}); device.queue.writeBuffer(b, 0, arr); return b; };
-  for (const k of ['cuRec', 'cuStart', 'cuIdx', 'cuBlob']) if (R[k]) R[k].destroy();
-  R.cuRec = mk(pk.recs); R.cuStart = mk(pk.start); R.cuIdx = mk(pk.idx); R.cuBlob = mk(pk.blobs);
+  for (const k of ['cuRec', 'cuStart', 'cuIdx']) if (R[k]) R[k].destroy();
+  R.cuRec = mk(pk.recs); R.cuStart = mk(pk.start); R.cuIdx = mk(pk.idx);
   const [nx, nz] = R.volRes;
   // the layered types: their thresholds from the measured distributions of their fields
   const thr = {}; for (const k of ['sc', 'ac', 'ci']){ const d = S.fieldDist && S.fieldDist[k + layerKey(P, k)]; if (d) thr[k] = d[Math.min(d.length - 1, Math.max(0, Math.floor((1 - P[k + 'Cover'])*d.length)))]; }
@@ -159,7 +159,7 @@ function buildClouds(P, enc){
   if (r1 > r0) for (let l = 0; l < VOL.NLEV; l++){
     device.queue.writeBuffer(R.gp[l], 0, new Uint32Array([l, r0, r1 - r0, on ? pk.n : 0]));
     const c = enc.beginComputePass(); c.setPipeline(R.pGen);
-    c.setBindGroup(0, bg(R.pGen, [[0, R.cu], [1, R.densV], [2, R.cuRec], [3, R.cuStart], [4, R.cuIdx], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp], [11, R.cuBlob]]));
+    c.setBindGroup(0, bg(R.pGen, [[0, R.cu], [1, R.densV], [2, R.cuRec], [3, R.cuStart], [4, R.cuIdx], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp]]));
     c.dispatchWorkgroups(nx/4, nx/4, Math.ceil((r1 - r0)/4)); c.end(); }
   S.cloudInfo = {n: pk.n, maxPer: pk.maxPer, base: cu.base, top: cu.top};
 }

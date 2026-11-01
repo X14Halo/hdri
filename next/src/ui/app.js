@@ -48,7 +48,6 @@ const SECTIONS = [
   ]},
   {title:'Cumulus', layer:'cuOn', items:[
     {k:'cuOn', label:'Cumulus layer', type:'check'},
-    {k:'cuModel', label:'Shape model', type:'select', opts:[['rules', 'Rules + noise turrets'], ['thermals', 'Grown from rising thermals']], show:() => P.cuOn},
     {k:'cuCover', label:'Cloud cover', min:0, max:0.9, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.cuOn},
     {k:'cuDev', label:'Development', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'fair weather' : v < 0.45 ? 'moderate (mediocris)' : v < 0.75 ? 'towering (congestus)' : 'deep convection', show:() => P.cuOn},
     {k:'cuBase', label:'Cloud base', min:0.3, max:3.5, step:0.05, fmt:v => `${Math.round(v*1000)} m`, show:() => P.cuOn},
