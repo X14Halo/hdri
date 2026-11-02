@@ -117,3 +117,20 @@ function moonDiskMean(md, ml, pole){
     const m0 = x*l[0]+y*l[1]+z*l[2]; if (m0>0) s += moonAlbedoJS([x,y,z])*m0/(m0+z); }
   return Math.max(s/n, 1e-6); }
 const X2R = (X,Y,Z) => [3.2404542*X - 1.5371385*Y - 0.4985314*Z, -0.9692660*X + 1.8760108*Y + 0.0415560*Z, 0.0556434*X - 0.2040259*Y + 1.0572252*Z];
+
+// XYZ (D65) to the export's colour space: linear Rec.709, ACEScg (AP1) or ACES2065-1 (AP0) — both D60, via a Bradford
+// adaptation — or XYZ itself
+const M3 = (a, b) => a.map(r => [0, 1, 2].map(j => r[0]*b[0][j] + r[1]*b[1][j] + r[2]*b[2][j]));
+const CAT_D65_D60 = [[1.01303, 0.00610531, -0.014971], [0.00769823, 0.998165, -0.00503203], [-0.00284131, 0.00468516, 0.924507]];
+const CSPACE = {rec709: [[3.2404542, -1.5371385, -0.4985314], [-0.9692660, 1.8760108, 0.0415560], [0.0556434, -0.2040259, 1.0572252]],
+  acescg: M3([[1.6410234, -0.3248033, -0.2364247], [-0.6636629, 1.6153316, 0.0167563], [0.0117219, -0.0082844, 0.9883949]], CAT_D65_D60),
+  aces2065: M3([[1.0498110175, 0, -0.0000974845], [-0.4959030231, 1.3733130458, 0.0982400361], [0, 0, 0.9912520182]], CAT_D65_D60),
+  xyz: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]};
+// the primaries and white of each (as an OpenEXR 'chromaticities' attribute and Radiance PRIMARIES line: red, green, blue,
+// white xy)
+const CSPACE_XY = {rec709: [0.64, 0.33, 0.30, 0.60, 0.15, 0.06, 0.3127, 0.3290], acescg: [0.713, 0.293, 0.165, 0.830, 0.128, 0.044, 0.32168, 0.33767],
+  aces2065: [0.7347, 0.2653, 0, 1, 0.0001, -0.077, 0.32168, 0.33767], xyz: [1, 0, 0, 1, 0, 0, 1/3, 1/3]};
+const CSPACE_NAME = {rec709: 'Linear Rec.709 (sRGB primaries)', acescg: 'ACEScg (AP1)', aces2065: 'ACES2065-1 (AP0)', xyz: 'CIE XYZ'};
+const inv3 = m => { const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2], A = e*i - f*h, B = f*g - d*i, C = d*h - e*g, det = a*A + b*B + c*C;
+  return [[A/det, (c*h - b*i)/det, (b*f - c*e)/det], [B/det, (a*i - c*g)/det, (c*d - a*f)/det], [C/det, (b*g - a*h)/det, (a*e - b*d)/det]]; };
+const mul3 = (m, v) => [m[0][0]*v[0] + m[0][1]*v[1] + m[0][2]*v[2], m[1][0]*v[0] + m[1][1]*v[1] + m[1][2]*v[2], m[2][0]*v[0] + m[2][1]*v[1] + m[2][2]*v[2]];

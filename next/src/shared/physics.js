@@ -6,7 +6,7 @@ const FRAME_LAYOUT = [
   ['CMFx', 6], ['CMFy', 6], ['CMFz', 6], ['Star', 96],
   ['atm', 1], ['atm2', 1], ['fogPh', 1], ['sunDir', 1], ['moonDir', 1], ['moonLight', 1], ['pole', 1], ['eqX', 1], ['eqY', 1], ['eqZ', 1],
   ['galX', 1], ['galY', 1], ['galZ', 1], ['opts', 1], ['terr', 1], ['terr2', 1], ['terr3', 1],
-  ['TownS', 6], ['Town', 8], ['townO', 1],
+  ['TownS', 6], ['Town', 8], ['townO', 1], ['LeafS', 6], ['optic', 1],
 ];
 const FRAME_OFF = (() => { const o = {}; let n = 0; for (const [k, len] of FRAME_LAYOUT){ o[k] = n; n += len*4; } o._size = n; return o; })();
 
@@ -74,6 +74,7 @@ function computeFrame(P){
     put('Air', i, ag*P.airglow);
     put('CMFx', i, CMFX[i]); put('CMFy', i, CMFY[i]); put('CMFz', i, CMFZ[i]);
     put('TownS', i, townSpec[i]);
+    put('LeafS', i, lerpT(SURFACES.grass.t, l));   // (foliage: reflects and, about as much, transmits — green and the red edge)
   }
   F.set(STAR_SPEC, FRAME_OFF.Star);
   const sunOn = sunEl > -14 ? 1 : 0, moonOn = (moonEl > -2 && sunEl < 2) ? 1 : 0;
@@ -90,9 +91,11 @@ function computeFrame(P){
   v4('terr', P.hillsOn ? P.hillH : 0, P.hillDist, P.hillRough, P.hillSeed);
   v4('terr2', P.treesOn ? P.treeH/1000 : 0, P.treeDist, P.treeCover, P.treeSeed);
   v4('terr3', P.hillAlb, P.treeAlb, 0, 0);
+  // ice halos (22° and 46°), sundogs (plate crystals lying flat), rainbows in rain
+  v4('optic', clamp(P.ciHalo ?? 0.6, 0, 2), clamp(P.ciDogs ?? 0.4, 0, 2), clamp(P.rainBow ?? 1, 0, 2), 0);
   // the tables depend only on the air and the ground, not on the sun (except the sky irradiance table, rebuilt per change)
   const atmKey = [aodE, HM, alphaE, fogS, fogH, P.aerosol, P.ozone, P.surface, P.albedo, RH, P.siteAlt || 0].map(v => typeof v === 'number' ? v.toPrecision(5) : v).join('|');
   const i550 = 11, h = P.camH, b550 = BETA_R[i550]*altK*Math.exp(-h/8) + (F[FRAME_OFF.BMs + i550] + F[FRAME_OFF.BMa + i550])*Math.exp(-h/HM) + fogS*Math.exp(-h/fogH);
-  const derived = {sunAz, sunEl, moonAz, moonEl, vis:3.912/b550, aodE, illum:(1 + Math.cos(phase))/2, phaseDeg, RHp, dawn, dusk, mistVis:mistS ? 3.912/mistS : 0};
+  const derived = {sunAz, sunEl, sunRad, moonAz, moonEl, vis:3.912/b550, aodE, illum:(1 + Math.cos(phase))/2, phaseDeg, RHp, dawn, dusk, mistVis:mistS ? 3.912/mistS : 0};
   return {frame:F, atmKey, derived};
 }

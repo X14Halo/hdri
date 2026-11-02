@@ -13,7 +13,7 @@ const DEFAULTS = {
   // the horizon: distant hills and a tree line
   hillsOn:false, hillH:0.6, hillDist:25, hillRough:0.5, hillSeed:1, hillAlb:0.7,
   // painted cloud: more or less cloud by direction (base64 of a 128 × 32 map over the upper half of the panorama)
-  paint:'', paintStr:1, brushSize:6,
+  paint:'', paintStr:1, brushSize:6, brushSoft:0.5, brushLayer:'all',
   // town lights (night): towns round the horizon light the ground, the air above them and the clouds' bases
   townsOn:false, townN:3, townDist:15, townSize:1, townBright:1, townLED:0.5, townSeed:1,
   treesOn:false, treeH:18, treeDist:0.8, treeCover:0.6, treeSeed:1, treeAlb:0.35,
@@ -23,16 +23,23 @@ const DEFAULTS = {
   camH:0.002, azOff:0,
   // wind (km/h at cloud level; clouds lean and line up with it)
   windX:15, windZ:6,
+  // upper wind (~10 km): stronger, and veered (turned clockwise) from the low wind
+  windUpX:40, windUpZ:-6,
   // cumulus layer
-  cuOn:true, cuModel:'field', cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuRain:1, cuAnvil:1, cuClear:0, cuErode:1, cuAmb:1, cuDrop:14,
+  cuOn:true, cuModel:'field', cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuRain:1, cuAnvil:1, cuMamma:0.5, cuClear:0, cuErode:1, cuAmb:1, cuDrop:14,
   // stratocumulus / stratus deck
   scOn:false, scCover:0.6, scBase:0.9, scThick:0.5, scForm:0.35, scCell:1.4, scSeed:1, scDens:1,
   // altocumulus / altostratus
   acOn:false, acCover:0.45, acBase:4.0, acThick:0.35, acForm:0.8, acCell:0.6, acSeed:1, acDens:1,
   // cirrus / cirrostratus / cirrocumulus
+  ciHalo:0.6, ciDogs:0.4, rainBow:1,
   ciOn:false, ciCover:0.25, ciBase:9.0, ciThick:0.7, ciForm:0.5, ciCell:1.5, ciSeed:1, ciDens:1, ciShear:1, ciFall:1.2,
   // rendering
   previewRes:1024, atmSteps:32, volQ:1,
   tlFrames:24, tlSpan:30, tlRes:1024, tlHours:0,
   outRes:4096, outSpp:64, smKm:5, smRes:2048, format:'exr32', layers:'beauty', cloudLight:'fast', units:'nits',
+  plateHfov:60, plateOp:0.6, plateKeepSun:false,
+  ldMat:'grey', ldSpin:0, ldSize:1,
+  vxKm:10, vxRes:256,
+  expSpace:'rec709', expAlpha:false, sunLight:'dome', expRig:false, hazeRes:1024, hazeShafts:false,
 };

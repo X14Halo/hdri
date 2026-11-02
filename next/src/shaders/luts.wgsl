@@ -8,6 +8,17 @@
 @group(0) @binding(5) var msOut: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(6) var<storage, read_write> ambOut: array<vec4f>;
 @group(0) @binding(7) var<storage, read> amb: array<vec4f>;   // (unused here; atmo.wgsl names it)
+@group(0) @binding(8) var<uniform> CU: Cloud;
+@group(0) @binding(9) var lightTex: texture_3d<f32>;
+// how much of the air at height h is in the clouds' shadow, over the sky around the camera (±30 km): under a wide deck the air
+// is not lit by the sun, so the sky dome it makes is dimmer and greyer, not clear-sky blue; x sun, y moon
+fn cloudShade(h: f32) -> vec2f {
+  if (CU.band.z < 0.5 || h > CU.band.y + 0.1) { return vec2f(1.0); }
+  var s = vec2f(0.0);
+  for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { let xz = (vec2f(f32(i), f32(j)) - 1.0)*20.0; let l = u32(levelOf(xz).x);
+    let v = textureSampleLevel(lightTex, linSamp, volUVW(xz, max(h, 0.0), l, CU.res.z, CU.res.w), 0.0); s += exp(-v.xy); } }
+  return s/9.0;
+}
 
 @compute @workgroup_size(8, 8, 1)
 fn transLUT(@builtin(global_invocation_id) id: vec3u) {
@@ -68,9 +79,9 @@ fn ambPass(@builtin(global_invocation_id) id: vec3u) {
       let f0 = f32(k)/f32(N); let f1 = f32(k + 1)/f32(N); let ta = tmax*f0*f0; let tb = tmax*f1*f1; let dt = tb - ta;
       let p = pos + rd*(ta + 0.5*dt); let rp = length(p); let hp = rp - Rg; let up = p/rp;
       let dF = densF(hp); let sR = F.BR[g]*densR(hp); let sM = F.BMs[g]*densM(hp); let ext = extinctionAt(g, hp); let sT = sR + sM + vec4f(dF);
-      let muS = dot(up, Ls); let muM = dot(up, Lm); var S = vec4f(0.0);
-      if (F.sunDir.w > 0.5) { S += F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, rp, muS) + sT*msLUT(g, hp, muS)); }
-      if (F.moonDir.w > 0.5) { S += F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, rp, muM) + sT*msLUT(g, hp, muM)); }
+      let muS = dot(up, Ls); let muM = dot(up, Lm); var S = vec4f(0.0); let cs = cloudShade(hp);
+      if (F.sunDir.w > 0.5) { S += cs.x*F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, rp, muS) + sT*msLUT(g, hp, muS)); }
+      if (F.moonDir.w > 0.5) { S += cs.y*F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, rp, muM) + sT*msLUT(g, hp, muM)); }
       let att = exp(-ext*dt); L += T*(S - S*att)/max(ext, vec4f(1e-9)); T *= att;
     }
     E += L;

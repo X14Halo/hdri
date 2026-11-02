@@ -35,6 +35,8 @@ struct Frame {
   TownS: array<vec4f, 6>,   // town lights' spectrum (1 cd/m² per unit)
   Town: array<vec4f, 8>,    // towns: x, z km, radius km, mean upward luminance cd/m²
   townO: vec4f,             // x number of towns
+  LeafS: array<vec4f, 6>,   // foliage reflectance (≈ its transmittance): the tree line
+  optic: vec4f,             // x ice halos, y sundogs, z rainbows (strengths)
 }
 
 struct Pass { rowOff: u32, frame: u32, W: u32, H: u32, colOff: u32, colEnd: u32, rowEnd: u32, pad: u32, mask: vec4f, opt: vec4f }   // (a crop window renders part of the panorama;

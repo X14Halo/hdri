@@ -101,4 +101,57 @@ fn lookdev(fc: vec2f) -> vec4f {
   let lin = max(X2R*xyz, vec3f(0.0))*D.ex.x;
   return vec4f(agx(lin), 1.0);
 }
+// ---------- look-dev model: a dropped mesh, in front of the look-around camera, lit by the sky as it stands ----------
+// Diffuse from the panorama's harmonics; specular by GGX importance samples of the panorama itself, with the split-sum
+// environment BRDF (Karis's fit). No shadowing of the model by itself.
+struct Mesh {
+  rot: vec4f,       // x cos spin, y sin spin, z distance from the camera, w scale
+  alb: vec4f,       // albedo (linear Rec.709), w roughness
+  spec: vec4f,      // F0 (linear Rec.709), w samples
+}
+@group(0) @binding(4) var<uniform> MS: Mesh;
+struct MVO { @builtin(position) pos: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f }
+fn camBasis() -> mat3x3f {
+  let cy = cos(D.view.y); let sy = sin(D.view.y); let cp = cos(D.view.z); let sp = sin(D.view.z);
+  let fwd = vec3f(sy*cp, sp, cy*cp); let right = normalize(vec3f(cy, 0.0, -sy)); let up = cross(fwd, right);
+  return mat3x3f(right, up, fwd);
+}
+@vertex fn vsMesh(@location(0) p: vec3f, @location(1) n: vec3f) -> MVO {
+  // the model turns about the world's vertical, then stands at the centre of the view, its own "front" toward the camera
+  let B = camBasis(); let c = MS.rot.x; let s = MS.rot.y;
+  let yawF = normalize(vec3f(B[2].x, 0.0, B[2].z) + vec3f(0.0, 0.0, 1e-6)); let yawR = vec3f(yawF.z, 0.0, -yawF.x);
+  let ps = vec3f(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); let ns = vec3f(c*n.x + s*n.z, n.y, -s*n.x + c*n.z);
+  // (model space: +z toward the camera, +x to its right as seen, +y up)
+  let wp = B[2]*MS.rot.z + (yawR*ps.x + vec3f(0.0, ps.y, 0.0) - yawF*ps.z)*MS.rot.w;
+  let wn = yawR*ns.x + vec3f(0.0, ns.y, 0.0) - yawF*ns.z;
+  let v = vec3f(dot(wp, B[0]), dot(wp, B[1]), dot(wp, B[2])); let tf = tan(D.view.w*0.5); let asp = D.canvas.x/D.canvas.y;
+  var o: MVO; let nr = 0.01; let fr = 1000.0;
+  o.pos = vec4f(v.x/(tf*asp), v.y/tf, (v.z - nr)/(fr - nr)*v.z, v.z); o.wp = wp; o.n = wn; return o;
+}
+fn hashF(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233)))*43758.5453); }
+@fragment fn fsMesh(v: MVO, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
+  var n = normalize(v.n); let V = normalize(-v.wp); if (dot(n, V) < 0.0) { n = -n; }
+  let X2R = mat3x3f(3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314, 0.0415560, 1.0572252);
+  let a = max(MS.alb.w*MS.alb.w, 0.002); let NoV = max(dot(n, V), 1e-4);
+  // GGX samples about the reflection (Hammersley, turned per pixel), weighted by N·L
+  let t = normalize(select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.9)); let tx = normalize(cross(t, n)); let ty = cross(n, tx);
+  let rot = hashF(v.pos.xy)*6.2831853; let N = u32(MS.spec.w);
+  var acc = vec3f(0.0); var wsum = 0.0;
+  for (var i = 0u; i < N; i++) {
+    let u1 = (f32(i) + 0.5)/f32(N); let u2 = fract(f32(reverseBits(i))*2.3283064e-10 + rot/6.2831853);
+    let ph = 6.2831853*u2; let ct = sqrt((1.0 - u1)/(1.0 + (a*a - 1.0)*u1)); let st = sqrt(1.0 - ct*ct);
+    let H = normalize(tx*(st*cos(ph)) + ty*(st*sin(ph)) + n*ct); let L = reflect(-V, H); let NoL = dot(n, L);
+    if (NoL > 0.0) { acc += max(X2R*panoDir(L), vec3f(0.0))*NoL; wsum += NoL; }
+  }
+  let pre = acc/max(wsum, 1e-6);
+  // (Karis's analytic fit of the environment BRDF)
+  let c0 = vec4f(-1.0, -0.0275, -0.572, 0.022); let c1 = vec4f(1.0, 0.0425, 1.04, -0.04);
+  let r = c0*MS.alb.w + c1; let a004 = min(r.x*r.x, exp2(-9.28*NoV))*r.x + r.y; let AB = vec2f(-1.04, 1.04)*a004 + r.zw;
+  let spec = pre*(MS.spec.xyz*AB.x + AB.y);
+  let diff = MS.alb.xyz/PI*max(X2R*irradiance(n), vec3f(0.0))*(1.0 - (MS.spec.xyz*AB.x + AB.y));
+  let lin = max(diff + spec, vec3f(0.0))*D.ex.x;
+  if (i32(D.view.x) == 2) { let R2X = mat3x3f(0.4124564, 0.2126729, 0.0193339, 0.3575761, 0.7151522, 0.1191920, 0.1804375, 0.0721750, 0.9503041);
+    let y = (R2X*(lin/D.ex.x)).y; let l = (log(max(y, 1e-7))/log(10.0) + 4.0)/13.0; return vec4f(turbo(clamp(l, 0.0, 1.0)), 1.0); }
+  return vec4f(agx(lin), 1.0);
+}
 const PI: f32 = 3.14159265358979;

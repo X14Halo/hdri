@@ -18,11 +18,13 @@ fn cuSigmaZ(z: f32) -> f32 { let zz = max(z, 0.0); return max(85.0*pow(zz/(1.0 +
 // share of their adiabatic water (their mixed fraction ~R/(R + 0.25 km)); σ ∝ LWC^(2/3). A lone 200 m cloud ends up ~half as
 // dense as the core of a big one, a 100 m fragment about a third
 fn cuDil(a: f32) -> f32 { if (a >= 0.5) { return 1.0; } let R = clamp(a/0.5*2.4, 0.05, 2.4); return pow(R/(R + 0.25), 0.6667); }
+// a point in the clouds' own drifting coordinates (timelapses): the low wind's drift below ~1 km, the upper wind's above ~9 km
+fn cloudQ(q: vec3f) -> vec3f { let d = mix(CU.ms.xy, CU.up.xy, smoothstep(1.0, 9.0, q.y)); return q - vec3f(d.x, 0.0, d.y); }
 fn isRain(a: f32) -> bool { return a > 0.72 && a < 0.78; }
 fn profileV(v: vec4f, alt: f32) -> f32 { if (isRain(v.a)) { return 1.0; } return select(profileOf(v.b), cuSigmaZ(alt - v.b*CU_BSCALE)*cuDil(v.a), v.a < 0.8); }
 // rain falls in curtains: streaks stretched down the fall, a few hundred metres across, with gaps between
 fn rainStreak(q0: vec3f) -> f32 {
-  let q = q0 - vec3f(CU.ms.x, 0.0, CU.ms.y);
+  let q = cloudQ(q0) + vec3f(0.0, 25.0*CU.up.z, 0.0);   // (and falling: the streaks move down through a timelapse)
   let n1 = nzs(RM1*vec3f(q.x/0.53, q.y/3.7, q.z/0.53) + vec3f(0.21, 0.66, 0.42)).a;
   let n2 = nzs(RM2*vec3f(q.x/0.17, q.y/1.9, q.z/0.17) + vec3f(0.84, 0.31, 0.15)).a;
   return clamp(0.15 + 1.2*smoothstep(0.3, 0.75, 0.65*n1 + 0.35*n2), 0.0, 1.35);
@@ -76,7 +78,9 @@ fn pwShape(q: vec3f) -> f32 { let s = nzs(q); return clamp(remap(s.r, s.g*0.6 + 
 // partial cloud, notched and fringed. Only the tops of growing towers stay hard: the rising core pushes the surface out faster
 // than mixing can eat it. Returns (the cloud's field in km, > 0 inside; the edge softness in km; an interior variation 0–1).
 fn cuSurface(q0: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, lay: bool) -> vec3f {
-  let q = q0 - vec3f(CU.ms.x, 0.0, CU.ms.y);   // (noise in the clouds' own coordinates, drifting with them)
+  // (noise in the clouds' own coordinates, drifting with the wind at their height; cumulus detail also rises with the
+  // thermals through a timelapse, so turrets boil upward)
+  let q = cloudQ(q0) - vec3f(0.0, select(CU.up.w*CU.up.z, 0.0, lay), 0.0);
   let S = mix(0.45, 1.0, clamp(Rc/1.5, 0.0, 1.0))*select(1.0, 0.7, lay);   // feature scale (km): smaller clouds, smaller lumps
   let Hc = 2.0*Rc*mix(0.35, 0.65 + 1.6*CU.wind.w, clamp(Rc/1.5, 0.0, 1.0));
   let topCrisp = select(smoothstep(0.45, 0.9, z/max(Hc, 0.05))*(1.0 - decay), 0.0, lay);
@@ -122,7 +126,7 @@ fn cuSurface(q0: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, 
 // wander (a slow warp across the wind), come in bundles that fade in and out, and are sampled through slanted rotations of the
 // noise volume, so the field never repeats
 fn iceFib(q0: vec3f) -> f32 {
-  let q = q0 - vec3f(CU.ms.x, 0.0, CU.ms.y);
+  let q = cloudQ(q0);
   let wd = CU.wind.xy; var al = dot(q.xz, wd); var ac = dot(q.xz, vec2f(-wd.y, wd.x)); let L = CU.wind.z;
   let w0 = nzs(RM2*vec3f(al/(9.1*L), q.y/2.3, ac/(6.7*L)) + vec3f(0.29, 0.61, 0.13)).a - 0.5;
   let w1 = nzs(RM1*vec3f(al/(3.3*L), q.y/1.1, ac/(2.6*L)) + vec3f(0.83, 0.07, 0.47)).a - 0.5;
@@ -165,7 +169,7 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       // condensing patchily), from just below the base to ~150 m under it, beside and under the cloud only; darker than the base
       // (less light reaches under it), they give a base seen from below its texture and break up its edge
       if (v.a < 0.5 && z < 0.05 && z > -0.17 && d > -0.15) {
-        let qs = (q - vec3f(CU.ms.x, 0.0, CU.ms.y))*vec3f(1.0, 1.7, 1.0);
+        let qs = cloudQ(q)*vec3f(1.0, 1.7, 1.0);
         let sn = t3D(RM1*qs/0.19 + vec3f(0.27, 0.61, 0.09)).a; let sb = t3D(RM2*qs/0.071 + vec3f(0.55, 0.13, 0.81));
         let hang = smoothstep(-0.17, -0.05, z)*(1.0 - smoothstep(0.0, 0.05, z))*smoothstep(-0.15, -0.03, d);
         let scud = sig*30.0*smoothstep(0.56, 0.8, 0.7*sn + 0.3*(sb.r*0.625 + sb.g*0.375))*hang*CU.band.w;
@@ -181,7 +185,7 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
     if (isRain(v.a)) { return sig*smoothstep(-0.03, 0.2, d)*rainStreak(q); }
     // water sheets (stratus, altostratus): fine and shallow detail (their texture is in their fields)
     let e = CU.band.w*0.04;
-    let qd = q - vec3f(CU.ms.x, 0.0, CU.ms.y);
+    let qd = cloudQ(q);
     let n = nzs(qd/0.237 + vec3f(0.6, 0.2, 0.4)).r*0.6 + nzs(qd/0.071 + vec3f(0.1, 0.5, 0.9)).r*0.4;
     return sig*cuSigmaZ(q.y - v.b*CU_BSCALE)*smoothstep(0.0, 0.035, d - e*(1.0 - n) + 0.02);
   }

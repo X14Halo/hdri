@@ -39,9 +39,9 @@ function genCumulus(P, calib){
   const half = VOL.DOMAIN/2, A = VOL.DOMAIN*VOL.DOMAIN;
   const cover = clamp(P.cuCover, 0, 0.95);
   const org = clamp(P.cuOrg, 0, 1), streets = clamp(P.cuStreets, 0, 1);
-  const wind = [P.windX || 5, P.windZ || 0], wl = Math.hypot(wind[0], wind[1]) || 1, wd = [wind[0]/wl, wind[1]/wl];
+  const wind = [P.windX || 5, P.windZ || 0], wl = Math.hypot(wind[0], wind[1]) || 1, wd = [wind[0]/wl, wind[1]/wl], sd = shearDir(P);
   // km of drift per km of height: tops lean downwind, ~10° from vertical at the default, ~20° in strong shear (observed 10–30°)
-  const shear = [wd[0]*0.35*P.cuShear, wd[1]*0.35*P.cuShear];
+  const shear = [sd[0]*0.35*P.cuShear, sd[1]*0.35*P.cuShear];   // (along the shear: upper minus low wind)
   const seedM = (P.cuSeed*31 + 5) | 0;
   // where clouds may form: mesoscale moisture (clustered fields have clear gaps and dense patches)
   // (tabulated on a 1 km grid: the placement loop looks it up hundreds of thousands of times)
@@ -145,28 +145,39 @@ function cuFieldParams(P){
   const rh = clamp(P.humidity ?? 50, 0, 100)/100, fallLen = base*(0.4 + 1.4*rh*rh);
   // anvils on deep convection, drawn out downwind by the upper winds
   const anvil = clamp(P.cuAnvil ?? 1, 0, 1)*ss((dev - 0.65)/0.25);
-  const anvilLen = (6 + 0.6*Math.hypot(P.windX || 0, P.windZ || 0))*(0.5 + 0.5*anvil);
+  const anvilLen = (6 + 0.6*Math.hypot(...windUp(P)))*(0.5 + 0.5*anvil);   // (carried by the upper winds)
   return {dev, base, Hm, L, shear, Rc, margin, rollSp: 2.6*(0.5 + base), rain, fallLen, anvil, anvilLen};
 }
+// ---------- wind by height: the low wind (the boundary layer's) turning and strengthening toward the upper wind (~10 km): in the
+// northern hemisphere it veers (turns clockwise) with height, from friction near the ground and the thermal wind above ----------
+const sstep = x => x <= 0 ? 0 : x >= 1 ? 1 : x*x*(3 - 2*x);
+const windUp = P => [P.windUpX ?? 2*(P.windX || 0), P.windUpZ ?? 2*(P.windZ || 0)];
+function windAt(P, h){ const t = sstep((h - 1)/8), lo = [P.windX || 0, P.windZ || 0], up = windUp(P); return [lo[0] + (up[0] - lo[0])*t, lo[1] + (up[1] - lo[1])*t]; }
+const unit = (v, fb) => { const l = Math.hypot(v[0], v[1]); return l > 0.5 ? [v[0]/l, v[1]/l] : fb || [1, 0]; };
+// the shear (upper minus low wind): towers lean and anvils stream along it
+function shearDir(P){ const lo = [P.windX || 0, P.windZ || 0], up = windUp(P); return unit([up[0] - lo[0], up[1] - lo[1]], unit(lo)); }
 function layerUniforms(P, thr){
-  const wl = Math.hypot(P.windX, P.windZ) || 1, wang = Math.atan2(P.windZ, P.windX);
+  const ang = h => { const w = windAt(P, h); return Math.atan2(w[1], w[0]); };
+  const ciD = unit(windAt(P, P.ciBase)), loD = unit([P.windX || 0, P.windZ || 0]), shD = shearDir(P);
   const on = (k) => P[k + 'On'] && P[k + 'Cover'] > 0.001;
   const sigAc = 0.3 + 0.25*clamp(P.acForm, 0, 1);   // (altocumulus: thin, τ ~3–10, lower water content than adiabatic)   // (factors on the adiabatic liquid-water profile from each layer's base)
   return new Float32Array([
-    on('sc') ? P.scCover : 0, P.scBase, P.scThick, P.scForm,   P.scCell, P.scSeed, (0.6 + 0.3*clamp(P.scForm, 0, 1))*P.scDens, wang,
-    on('ac') ? P.acCover : 0, P.acBase, P.acThick, P.acForm,   P.acCell, P.acSeed + 101, sigAc*P.acDens, wang,
-    on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 0.6*P.ciDens, wang,
-    P.windX/wl, P.windZ/wl, 1.8*P.ciShear, P.ciFall,
+    on('sc') ? P.scCover : 0, P.scBase, P.scThick, P.scForm,   P.scCell, P.scSeed, (0.6 + 0.3*clamp(P.scForm, 0, 1))*P.scDens, ang(P.scBase + 0.5*P.scThick),
+    on('ac') ? P.acCover : 0, P.acBase, P.acThick, P.acForm,   P.acCell, P.acSeed + 101, sigAc*P.acDens, ang(P.acBase),
+    on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 0.6*P.ciDens, ang(P.ciBase),
+    ciD[0], ciD[1], 1.8*P.ciShear, P.ciFall,
     thr.sc ?? 0.5, thr.ac ?? 0.5, thr.ci ?? 0.5, thr.cu ?? 0.2,
     ...(() => { const f = cuFieldParams(P), on = cuIsField(P) && thr.cuHi !== undefined;
       return [on ? P.cuCover : 0, f.base, f.Hm, f.dev,   f.L, P.cuSeed, P.cuDens, f.margin,
         clamp(P.cuOrg, 0, 1), clamp(P.cuStreets, 0, 1), f.rollSp, thr.cuHi ?? 0.5,   f.shear, f.Rc, clamp(P.cuClear || 0, 0, 1), 0.9*(f.base + 0.4*f.Hm),
         f.rain, f.fallLen, f.anvil, f.anvilLen]; })(),
-    P.paint ? 1 : 0, clamp(P.paintStr ?? 1, 0, 2), (P.azOff || 0)*Math.PI/180, 0,
-    ...cloudDrift(P), 0, 0]);
+    P.paint ? 1 : 0, clamp(P.paintStr ?? 1, 0, 2), (P.azOff || 0)*Math.PI/180, P.tlHours || 0,
+    ...cloudDrift(P),   loD[0], loD[1], shD[0], shD[1],
+    cuIsField(P) ? clamp(P.cuMamma ?? 0.5, 0, 1)*cuFieldParams(P).anvil : 0, 0, 0, 0]);
 }
 // how far the clouds have moved with the wind (km): the wind (km/h) over the timelapse's elapsed hours
-function cloudDrift(P){ const h = P.tlHours || 0; return [(P.windX || 0)*h, (P.windZ || 0)*h];
+// (low wind and upper wind, each over the elapsed hours; layers in between drift with the wind at their height)
+function cloudDrift(P){ const h = P.tlHours || 0, up = windUp(P); return [(P.windX || 0)*h, (P.windZ || 0)*h, up[0]*h, up[1]*h];
 }
 // altitude range a layer can occupy (for the build slab and the renderer's cloud band)
 function layerBand(P){

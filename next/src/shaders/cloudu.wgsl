@@ -10,7 +10,8 @@ struct Cloud {
   band: vec4f,   // x lowest cloud base, y highest cloud top (km), z cloud on, w erosion strength
   cph: vec4f,    // cloud droplet phase (gHG, gD, alpha, wD)
   ms: vec4f,     // x, y how far the clouds have drifted with the wind (km), z unused, w ambient strength
-  wind: vec4f,   // x/y wind direction (x, z), z ice-fibre length km, w unused
+  wind: vec4f,   // x/y wind direction at the cirrus level (x, z), z ice-fibre length km, w development
+  up: vec4f,     // xy the upper wind's drift (km), z timelapse hours, w thermals' rise (km/h)
 }
 
 fn levelE(l: u32) -> f32 { return CU.vol.x*exp2(f32(l)); }

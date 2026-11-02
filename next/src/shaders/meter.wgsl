@@ -29,5 +29,12 @@ fn main() {
     if (F.moonDir.w > 0.5) { dir += F.MoonE[g]*transmittance(g, r, F.moonDir.y)*max(F.moonDir.y, 0.0)*shM; }
     Ed += dot(dir, F.CMFy[g]);
   }
-  meterOut[0] = Ed + Esky; meterOut[1] = Ed; meterOut[2] = Esky; meterOut[3] = 0.0;
+  meterOut[0] = Ed + Esky; meterOut[1] = Ed; meterOut[2] = Esky;
+  // the sun's beam at the camera itself (for a separate sun light in a renderer): its direct normal irradiance as XYZ (Y in
+  // lux) through the air alone, and the clouds' transmission of it right over the camera (kept apart: a renderer shadows the
+  // light with the shadow matte or its own clouds)
+  var dni = vec3f(0.0); var tc = 1.0;
+  if (CU.band.z > 0.5) { tc = exp(-lightAt(vec3f(0.0, max(h, 0.0), 0.0)).x); }
+  if (F.sunDir.w > 0.5) { for (var g = 0u; g < 6u; g++) { let e = F.SunE[g]*transmittance(g, r, F.sunDir.y); dni += vec3f(dot(e, F.CMFx[g]), dot(e, F.CMFy[g]), dot(e, F.CMFz[g])); } }
+  meterOut[3] = tc; meterOut[4] = dni.x; meterOut[5] = dni.y; meterOut[6] = dni.z; meterOut[7] = 0.0;
 }

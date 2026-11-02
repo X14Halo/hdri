@@ -22,7 +22,11 @@
       <div class="seg" id="viewSeg" role="group" aria-label="View">
         <button data-v="0" class="on">Panorama</button><button data-v="1">Look around</button><button data-v="2">Luminance</button>
       </div>
+      <div class="seg" id="toolSeg" role="group" aria-label="Tool">
+        <button data-t="view" class="on" title="Drag to look around; click does nothing">Inspect</button><button data-t="sun" title="Click or drag to place the sun (when set by hand)">Sun</button><button data-t="moon" title="Click or drag to place the moon (when set by hand)">Moon</button><button data-t="wind" title="Drag from the camera's point of view: the clouds move toward where you drag">Wind</button><button data-t="crop" title="Drag a box to render only that region (fast checks); click once to clear">Crop</button>
+      </div>
       <button class="btn" id="ldBtn" title="Chrome ball, 18% grey ball and colour chart, lit by this sky">Look-dev</button>
+      <button class="btn" id="ptBtn" title="Path-traced light in the clouds in the view (slow, noisy at first: use with Crop)">Path-traced</button>
       <div class="expo"><label><input type="checkbox" id="autoEx" checked> Auto</label><input type="range" id="exSlider" min="-8" max="8" step="0.1" value="0" aria-label="Exposure"><span class="v" id="exVal">±0.0 EV</span></div>
       <div class="seg" id="resSeg" role="group" aria-label="Preview resolution">
         <button data-r="1024" class="on">1K</button><button data-r="2048">2K</button><button data-r="4096">4K</button>
@@ -39,6 +43,11 @@
           <div class="ld-hint" id="ldHint">Needs a browser with WebGPU (Chrome, Edge, Safari 26 or newer).</div></div></div>
       <div class="legend" id="legend" hidden><span>10⁻⁴</span><i></i><span>10⁹ cd/m²</span></div>
       <div class="status" id="status">Starting…</div>
+      <div class="brush" id="brush" hidden></div>
+      <div class="cropbox" id="cropBox" hidden></div>
+      <div class="pick" id="pick" hidden></div>
+      <img class="plate" id="plateImg" alt="" hidden>
+      <div class="pmarks" id="plateMarks"></div>
     </div>
     <footer class="readouts" id="readouts"></footer>
   </section>
