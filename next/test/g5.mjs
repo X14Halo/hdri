@@ -20,8 +20,9 @@ const waitIdle = async () => { await new Promise(r => setTimeout(r, 3000)); for 
 const saveShot = async nm => { const sh = await p.evaluate(async () => { const m = await window.__sky.shot(); const u8 = m.rgba; let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return {w: m.w, h: m.h, d: btoa(s)}; });
   fs.writeFileSync(path.join(outDir, nm + `_${sh.w}x${sh.h}.rgba`), Buffer.from(sh.d, 'base64')); console.log('shot', nm, sh.w, sh.h); };
 for (const c of cases){ const t1 = Date.now();
-  if (c === 'mesh' || c.startsWith('glb=')){
-    const b64 = c === 'mesh' ? null : fs.readFileSync(c.slice(4)).toString('base64');
+  if (c === 'meshback'){ await p.evaluate(() => { window.__yaw = 20; }); }
+  if (c === 'mesh' || c === 'meshback' || c.startsWith('glb=')){
+    const b64 = !c.startsWith('glb=') ? null : fs.readFileSync(c.slice(4)).toString('base64');
     const info = await p.evaluate(async b64 => {
       let f;
       if (b64){ const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); f = new File([u8], 'model.glb'); }
@@ -31,9 +32,9 @@ for (const c of cases){ const t1 = Date.now();
         for (let i = 0; i < U; i++) for (let j = 0; j < V; j++){ const a = i*V + j + 1, b = ((i + 1) % U)*V + j + 1, c2 = ((i + 1) % U)*V + (j + 1) % V + 1, d = i*V + (j + 1) % V + 1; t += `f ${a} ${b} ${c2} ${d}\n`; }
         f = new File([t], 'ring.obj'); }
       window.__sky.set({cuOn: false, sunEl: 25, sunAz: 200, ldMat: 'grey'});
-      view.yaw = 200*Math.PI/180 - 0.6; view.pitch = 0.05; await loadModelFile(f); return document.querySelector('#ldInfo').textContent; }, b64);
-    console.log(c.slice(0, 20), info); await waitIdle(); await saveShot(c === 'mesh' ? 'mesh_grey' : 'glb');
-    if (c === 'mesh'){ await p.evaluate(() => { window.__sky.P.ldMat = 'chrome'; sendView(); }); await new Promise(r => setTimeout(r, 1500)); await saveShot('mesh_chrome'); }
+      view.yaw = (window.__yaw ?? 200)*Math.PI/180 - 0.6; view.pitch = 0.05; await loadModelFile(f); return document.querySelector('#ldInfo').textContent; }, b64);
+    console.log(c.slice(0, 20), info); await waitIdle(); await saveShot(c.startsWith('glb=') ? 'glb' : c + '_grey');
+    if (!c.startsWith('glb=')){ await p.evaluate(() => { window.__sky.P.ldMat = 'chrome'; sendView(); }); await new Promise(r => setTimeout(r, 1500)); await saveShot(c + '_chrome'); }
   } else if (c === 'volume'){
     await p.evaluate(() => window.__sky.set({cuOn: true, cuCover: 0.35, sunEl: 30})); await waitIdle();
     const files = await p.evaluate(() => window.__sky.volume(128, 8));

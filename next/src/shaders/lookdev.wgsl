@@ -1,6 +1,6 @@
 // ---------- look-dev: the panorama's lighting projected onto spherical harmonics (order 2), for the grey ball and the chart ----------
 // (diffuse lighting needs only the low orders: irradiance from 9 coefficients is within a few percent of the full integral)
-struct Disp { canvas: vec2f, pano: vec2f, rect: vec4f, view: vec4f, ex: vec4f, ld: vec4f }
+struct Disp { canvas: vec2f, pano: vec2f, rect: vec4f, view: vec4f, ex: vec4f, ld: vec4f, sunD: vec4f, sunE: vec4f }
 @group(0) @binding(0) var<uniform> D: Disp;
 @group(0) @binding(1) var<storage, read> accum: array<vec4f>;
 @group(0) @binding(2) var<storage, read> accPrev: array<vec4f>;
@@ -24,7 +24,8 @@ fn main(@builtin(local_invocation_id) lid: vec3u) {
     let u = (f32(s % NU) + 0.5)/f32(NU); let v = (f32(s / NU) + 0.5)/f32(NV);
     let az = (u - 0.5)*2.0*PI + D.ex.y; let el = (0.5 - v)*PI;
     let d = vec3f(cos(el)*sin(az), sin(el), cos(el)*cos(az));
-    let L = texel(i32(u*D.pano.x), i32(v*D.pano.y));
+    var L = texel(i32(u*D.pano.x), i32(v*D.pano.y));
+    if (D.sunD.w > 0.5 && dot(d, D.sunD.xyz) > D.sunE.w) { L = vec3f(0.0); }   // (the disc: added as a light instead)
     let dw = (2.0*PI/f32(NU))*(PI/f32(NV))*cos(el);
     let b = shBasis(d);
     for (var i = 0u; i < 9u; i++) { acc[i] += L*b[i]*dw; }

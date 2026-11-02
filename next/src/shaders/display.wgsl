@@ -5,6 +5,8 @@ struct Disp {
   view: vec4f,                     // x mode (0 panorama, 1 look around, 2 luminance), y yaw, z pitch, w vertical fov
   ex: vec4f,                       // x exposure (multiplies cd/m²), y azimuth offset
   ld: vec4f,                       // look-dev references: x on, y ball radius px
+  sunD: vec4f,                     // the sun's direction (world), w 1 when up
+  sunE: vec4f,                     // its direct normal illuminance (XYZ) at the camera, through the clouds; w cos of the disc's exclusion angle
 }
 @group(0) @binding(0) var<uniform> D: Disp;
 @group(0) @binding(1) var<storage, read> accum: array<vec4f>;
@@ -49,6 +51,9 @@ fn irradiance(d: vec3f) -> vec3f {
   return A0*0.282095*sh[0].xyz + A1*0.488603*(sh[1].xyz*d.y + sh[2].xyz*d.z + sh[3].xyz*d.x)
        + A2*(1.092548*(sh[4].xyz*d.x*d.y + sh[5].xyz*d.y*d.z + sh[7].xyz*d.x*d.z) + 0.315392*sh[6].xyz*(3.0*d.z*d.z - 1.0) + 0.546274*sh[8].xyz*(d.x*d.x - d.y*d.y));
 }
+// the sun's direct light on a surface facing n (the panorama's disc is too small for the harmonics or a few samples to find, so
+// it is added as a light: the look-dev passes leave the disc itself out of their sampling)
+fn sunIrr(n: vec3f) -> vec3f { return D.sunE.xyz*max(dot(n, D.sunD.xyz), 0.0)*D.sunD.w; }
 fn panoDir(d: vec3f) -> vec3f { let az = atan2(d.x, d.z) - D.ex.y; let el = asin(clamp(d.y, -1.0, 1.0)); return samplePano(vec2f(fract(az/(2.0*PI) + 0.5), 0.5 - el/PI)); }
 // (XYZ of the look-dev element under the pixel, or w = 0 where there is none)
 fn lookdev(fc: vec2f) -> vec4f {
@@ -60,7 +65,7 @@ fn lookdev(fc: vec2f) -> vec4f {
     if (r2 <= 1.0) {
       let n = normalize(right*s.x - up*s.y - fwd*sqrt(1.0 - r2));
       if (b == 0) { return vec4f(0.6*panoDir(reflect(fwd, n)), 1.0); }
-      return vec4f(0.18/PI*max(irradiance(n), vec3f(0.0)), 1.0);
+      return vec4f(0.18/PI*(max(irradiance(n), vec3f(0.0)) + sunIrr(n)), 1.0);
     }
   }
   // the chart: 6 × 4 patches, facing the camera
@@ -71,7 +76,7 @@ fn lookdev(fc: vec2f) -> vec4f {
     let k = u32(q.y)*6u + u32(q.x);
     let X2R = mat3x3f(3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314, 0.0415560, 1.0572252);
     let R2X = mat3x3f(0.4124564, 0.2126729, 0.0193339, 0.3575761, 0.7151522, 0.1191920, 0.1804375, 0.0721750, 0.9503041);
-    let e = max(X2R*irradiance(-fwd), vec3f(0.0));
+    let e = max(X2R*(irradiance(-fwd) + sunIrr(-fwd)), vec3f(0.0));
     var chart = CHART;   // (a function-scope copy: indexed at run time)
     return vec4f(R2X*(chart[k]*e/PI), 1.0);
   }
@@ -141,15 +146,22 @@ fn hashF(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233)))*437
     let u1 = (f32(i) + 0.5)/f32(N); let u2 = fract(f32(reverseBits(i))*2.3283064e-10 + rot/6.2831853);
     let ph = 6.2831853*u2; let ct = sqrt((1.0 - u1)/(1.0 + (a*a - 1.0)*u1)); let st = sqrt(1.0 - ct*ct);
     let H = normalize(tx*(st*cos(ph)) + ty*(st*sin(ph)) + n*ct); let L = reflect(-V, H); let NoL = dot(n, L);
-    if (NoL > 0.0) { acc += max(X2R*panoDir(L), vec3f(0.0))*NoL; wsum += NoL; }
+    if (NoL > 0.0) { if (dot(L, D.sunD.xyz) < D.sunE.w || D.sunD.w < 0.5) { acc += max(X2R*panoDir(L), vec3f(0.0))*NoL; } wsum += NoL; }
   }
   let pre = acc/max(wsum, 1e-6);
   // (Karis's analytic fit of the environment BRDF)
   let c0 = vec4f(-1.0, -0.0275, -0.572, 0.022); let c1 = vec4f(1.0, 0.0425, 1.04, -0.04);
   let r = c0*MS.alb.w + c1; let a004 = min(r.x*r.x, exp2(-9.28*NoV))*r.x + r.y; let AB = vec2f(-1.04, 1.04)*a004 + r.zw;
   let spec = pre*(MS.spec.xyz*AB.x + AB.y);
-  let diff = MS.alb.xyz/PI*max(X2R*irradiance(n), vec3f(0.0))*(1.0 - (MS.spec.xyz*AB.x + AB.y));
-  let lin = max(diff + spec, vec3f(0.0))*D.ex.x;
+  let diff = MS.alb.xyz/PI*max(X2R*(irradiance(n) + sunIrr(n)), vec3f(0.0))*(1.0 - (MS.spec.xyz*AB.x + AB.y));
+  // (the sun as a small light: GGX with Smith visibility and Schlick's Fresnel; the roughness kept above the disc's own size)
+  var sunS = vec3f(0.0); let Ls = D.sunD.xyz; let NoL = dot(n, Ls);
+  if (D.sunD.w > 0.5 && NoL > 0.0) { let aS = max(a, 0.005); let Hs = normalize(V + Ls); let NoH = max(dot(n, Hs), 0.0); let a2 = aS*aS;
+    let dd = NoH*NoH*(a2 - 1.0) + 1.0; let Dg = a2/(PI*dd*dd);
+    let Vis = 0.5/(NoL*sqrt(NoV*NoV*(1.0 - a2) + a2) + NoV*sqrt(NoL*NoL*(1.0 - a2) + a2));
+    let Fs = MS.spec.xyz + (1.0 - MS.spec.xyz)*pow(1.0 - max(dot(V, Hs), 0.0), 5.0);
+    sunS = Dg*Vis*Fs*max(X2R*D.sunE.xyz, vec3f(0.0))*NoL; }
+  let lin = max(diff + spec + sunS, vec3f(0.0))*D.ex.x;
   if (i32(D.view.x) == 2) { let R2X = mat3x3f(0.4124564, 0.2126729, 0.0193339, 0.3575761, 0.7151522, 0.1191920, 0.1804375, 0.0721750, 0.9503041);
     let y = (R2X*(lin/D.ex.x)).y; let l = (log(max(y, 1e-7))/log(10.0) + 4.0)/13.0; return vec4f(turbo(clamp(l, 0.0, 1.0)), 1.0); }
   return vec4f(agx(lin), 1.0);

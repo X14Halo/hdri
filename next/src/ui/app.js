@@ -508,7 +508,7 @@ function randomize(what){
   syncUI(); changed();
 }
 
-/* ---------- match a plate: a photograph laid over the view, the sun, haze and aerosol fitted to patches of its clear sky ----------
+/* ---------- match a plate: a photograph laid over the view, the sun, haze and aerosol fitted to patches of its clear sky ---------- */
 // The plate is shown over Look around, scaled so its field of view matches the camera's; the person lines its horizon up by
 // dragging, then clicks patches of clear sky (and shift-clicks the sun if it is in frame). The fit compares the patches'
 // colours and their brightness relative to one another (the plate's exposure drops out) with the clear sky this tool renders
@@ -1099,7 +1099,7 @@ function exrWriter(W, H, half, chans, attrs){
 }
 function hdrWriter(W, H, space){
   const xy = CSPACE_XY[space] || CSPACE_XY.rec709;
-  const parts = [new TextEncoder().encode(`#?RADIANCE\n# Spectral Sky Next: linear ${CSPACE_NAME[space]}\nFORMAT=32-bit_rle_rgbe\nPRIMARIES= ${xy.join(' ')}\nEXPOSURE=1.0\n\n-Y ${H} +X ${W}\n`)];
+  const parts = [new TextEncoder().encode(`#?RADIANCE\n# Spectral Sky Next: ${CSPACE_NAME[space]}, linear\nFORMAT=32-bit_rle_rgbe\nPRIMARIES= ${xy.join(' ')}\nEXPOSURE=1.0\n\n-Y ${H} +X ${W}\n`)];
   const ch = [new Uint8Array(W), new Uint8Array(W), new Uint8Array(W), new Uint8Array(W)];
   return {
     async add(b){ const rgb = b.L[0], out = [];

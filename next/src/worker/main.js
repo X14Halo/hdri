@@ -111,7 +111,7 @@ async function init(m){
   R.meshU = device.createBuffer({size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.shBuf = device.createBuffer({size: 9*16, usage: GPUBufferUsage.STORAGE});
   R.pLd = await computePipe('lookdev', wgsl('lookdev'), 'main', [0, 1, 2, 3]);
-  R.disp = device.createBuffer({size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+  R.disp = device.createBuffer({size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   // per-band pass uniforms: a small pool, one per band submitted in a frame
   R.alphaDummy = device.createBuffer({size: 16, usage: GPUBufferUsage.STORAGE});   // (the preview writes no cloud alpha)
   R.passBufs = Array.from({length: 64}, () => device.createBuffer({size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
@@ -309,9 +309,13 @@ function tick(){
   if (now - S.lastStatus > 200 || (submitted && S.sample === S.target && S.row === S.cr[1])){ S.lastStatus = now;
     post({type:'status', sample: S.sample, target: S.target, row: S.row - S.cr[1], rows: S.cr[3] - S.cr[1], W: S.W, H: S.H, ms: S.lastSampleMs || 0, total: now - S.t0, derived: S.derived, meter: S.meter, expo: exposure(), done: S.sample >= S.target, busy: !!(S.fieldBusy || S.paramsDirty)}); }
 }
+// the sun for the look-dev references: direction, and its direct normal illuminance through the clouds over the camera
+function lookSun(){ const d = S.derived, m = S.meter; if (!d || !m || !m.dni || d.sunEl < -1) return [0, 1, 0, 0, 0, 0, 0, 1];
+  const az = d.sunAz*D2R, el = d.sunEl*D2R, t = m.sunT ?? 1, r = d.sunRad || 0.0047;
+  return [Math.cos(el)*Math.sin(az), Math.sin(el), Math.cos(el)*Math.cos(az), 1, m.dni[0]*t, m.dni[1]*t, m.dni[2]*t, Math.cos(Math.max(2.5*r, 1.5*D2R))]; }   // (the disc and its brightest aureole left out of the sampling: a few samples landing there are what sparkles)
 function display(enc, to){
   const v = to ? {...S.view, mode: 0} : S.view, cw = to ? to.width : canvas.width, ch = to ? to.height : canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }
-  device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0, v.lookdev && !to ? 1 : 0, Math.round(Math.min(ch*0.09, 70)), 0, 0]));
+  device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0, v.lookdev && !to ? 1 : 0, Math.round(Math.min(ch*0.09, 70)), 0, 0, ...lookSun()]));
   // (look-dev: the panorama's lighting into spherical harmonics first, for the grey ball and the chart)
   if (v.lookdev && !to){ const c = enc.beginComputePass(); c.setPipeline(R.pLd); c.setBindGroup(0, R.bgLdAll[S.cur]); c.dispatchWorkgroups(1); c.end(); }
   const tex = to || (S.noPresent ? dispTarget(cw, ch) : gctx.getCurrentTexture());
