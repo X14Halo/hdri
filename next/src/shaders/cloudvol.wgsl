@@ -18,7 +18,14 @@ fn cuSigmaZ(z: f32) -> f32 { let zz = max(z, 0.0); return max(85.0*pow(zz/(1.0 +
 // share of their adiabatic water (their mixed fraction ~R/(R + 0.25 km)); σ ∝ LWC^(2/3). A lone 200 m cloud ends up ~half as
 // dense as the core of a big one, a 100 m fragment about a third
 fn cuDil(a: f32) -> f32 { if (a >= 0.5) { return 1.0; } let R = clamp(a/0.5*2.4, 0.05, 2.4); return pow(R/(R + 0.25), 0.6667); }
-fn profileV(v: vec4f, alt: f32) -> f32 { return select(profileOf(v.b), cuSigmaZ(alt - v.b*CU_BSCALE)*cuDil(v.a), v.a < 0.8); }
+fn isRain(a: f32) -> bool { return a > 0.72 && a < 0.78; }
+fn profileV(v: vec4f, alt: f32) -> f32 { if (isRain(v.a)) { return 1.0; } return select(profileOf(v.b), cuSigmaZ(alt - v.b*CU_BSCALE)*cuDil(v.a), v.a < 0.8); }
+// rain falls in curtains: streaks stretched down the fall, a few hundred metres across, with gaps between
+fn rainStreak(q: vec3f) -> f32 {
+  let n1 = nzs(RM1*vec3f(q.x/0.53, q.y/3.7, q.z/0.53) + vec3f(0.21, 0.66, 0.42)).a;
+  let n2 = nzs(RM2*vec3f(q.x/0.17, q.y/1.9, q.z/0.17) + vec3f(0.84, 0.31, 0.15)).a;
+  return clamp(0.15 + 1.2*smoothstep(0.3, 0.75, 0.65*n1 + 0.35*n2), 0.0, 1.35);
+}
 
 // position in volume coordinates: horizontal x/z, altitude above the curved ground
 // (gnomonic: the horizontal coordinates are where the point's vertical meets the tangent plane at the camera)
@@ -165,15 +172,17 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
     }
     if (v.a > 0.8) {
       // ice: fibres drawn out along the wind (crystals spread by shear into long thin strands), soft-edged and wispy
-      return sig*profileOf(v.b)*smoothstep(0.0, 0.12, d + 0.06)*iceFib(q)*1.6;
+      // (thick ice — an anvil — is a continuous sheet with fibrous edges, not separate strands)
+      return sig*profileOf(v.b)*smoothstep(0.0, 0.12, d + 0.06)*mix(iceFib(q)*1.6, 0.75 + 0.5*iceFib(q), smoothstep(1.5, 4.0, sig));
     }
+    if (isRain(v.a)) { return sig*smoothstep(-0.03, 0.2, d)*rainStreak(q); }
     // water sheets (stratus, altostratus): fine and shallow detail (their texture is in their fields)
     let e = CU.band.w*0.04;
     let n = nzs(q/0.237 + vec3f(0.6, 0.2, 0.4)).r*0.6 + nzs(q/0.071 + vec3f(0.1, 0.5, 0.9)).r*0.4;
     return sig*cuSigmaZ(q.y - v.b*CU_BSCALE)*smoothstep(0.0, 0.035, d - e*(1.0 - n) + 0.02);
   }
   var far = sig*profileV(v, q.y)*v.r;
-  if (v.a > 0.8) { far *= iceFib(q)*1.6; }   // (ice keeps its fibres at every distance: they are what makes cirrus read)
+  if (v.a > 0.8) { far *= mix(iceFib(q)*1.6, 0.75 + 0.5*iceFib(q), smoothstep(1.5, 4.0, sig)); } else if (isRain(v.a)) { far *= rainStreak(q); }   // (ice keeps its fibres at every distance: they are what makes cirrus read)
   return far;
 }
 fn densFull(q: vec3f) -> f32 {

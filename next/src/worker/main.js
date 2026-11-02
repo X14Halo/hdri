@@ -71,13 +71,15 @@ async function init(m){
   // (separate per-level uniforms for each pass kind: writeBuffer lands before the whole command buffer runs)
   R.gp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
   R.lp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
-  R.ly = device.createBuffer({size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+  R.ly = device.createBuffer({size: 224, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.fieldBuf = device.createBuffer({size: 256*256*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
   R.fgp = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   // the cumulus field, mapped once per level (640² texels over the level and a margin)
   R.cuMap = device.createTexture({size:[640, 640, VOL.NLEV], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});
   R.cuMapW = R.cuMap.createView({dimension:'2d-array'});
-  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight, pCuMap] = await Promise.all([
+  R.paintTex = device.createTexture({size:[128, 32], format:'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST});
+  device.queue.writeTexture({texture: R.paintTex}, new Uint8Array(128*32).fill(128), {bytesPerRow: 128}, [128, 32]);
+  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight, pCuMap, pShadow] = await Promise.all([
     computePipe('transLUT', wgsl('common', 'atmo', 'luts'), 'transLUT', [0, 1]),
     computePipe('msLUT', wgsl('common', 'atmo', 'luts'), 'msLUTpass', [0, 2, 4, 5]),
     computePipe('ambLUT', wgsl('common', 'atmo', 'luts'), 'ambPass', [0, 2, 3, 4, 6]),
@@ -85,12 +87,13 @@ async function init(m){
     computePipe('sky', wgsl('common', 'atmo', 'cloudu', 'cloudvol', 'cloudlit', 'sky'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
     computePipe('noise', wgsl('common', 'noise'), 'main', [0]),
     computePipe('noise2', wgsl('common', 'noise'), 'mainDetail', [0]),
-    computePipe('cloudgen', wgsl('common', 'cloudu', 'cloudgen'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13]),
+    computePipe('cloudgen', wgsl('common', 'cloudu', 'cloudgen'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14]),
     computePipe('cloudfield', wgsl('common', 'cloudu', 'cloudgen'), 'fieldMain', [5, 6, 7, 8, 10]),
     computePipe('cloudlight', wgsl('common', 'cloudu', 'cloudvol', 'cloudlight'), 'main', [0, 1, 2, 3, 4, 5, 6, 7]),
     computePipe('cumap', wgsl('common', 'cloudu', 'cloudgen'), 'cuMapMain', [0, 5, 6, 7, 8, 11]),
+    computePipe('shadowmap', wgsl('common', 'cloudu', 'cloudvol', 'cloudlit', 'shadowmap'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
   ]);
-  R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField; R.pCuMap = pCuMap;
+  R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField; R.pCuMap = pCuMap; R.pShadow = pShadow;
   { const enc = device.createCommandEncoder(); const c = enc.beginComputePass(); c.setPipeline(pNoise); c.setBindGroup(0, bg(pNoise, [[0, R.noise.createView()]])); c.dispatchWorkgroups(32, 32, 32); c.end();
     const c2 = enc.beginComputePass(); c2.setPipeline(pNoise2); c2.setBindGroup(0, bg(pNoise2, [[0, R.noise2.createView()]])); c2.dispatchWorkgroups(32, 32, 32); c2.end(); device.queue.submit([enc.finish()]); }
   R.pT = pT; R.pM = pM; R.pA = pA; R.pMeter = pMeter; R.pSky = pSky;
@@ -101,9 +104,11 @@ async function init(m){
   // display
   const dm = await module('display', WGSL.display);
   R.pDisp = device.createRenderPipeline({label:'display', layout:'auto', vertex:{module: dm, entryPoint:'vs'}, fragment:{module: dm, entryPoint:'fs', targets:[{format: canvasFmt}]}, primitive:{topology:'triangle-list'}});
-  R.disp = device.createBuffer({size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+  R.shBuf = device.createBuffer({size: 9*16, usage: GPUBufferUsage.STORAGE});
+  R.pLd = await computePipe('lookdev', wgsl('lookdev'), 'main', [0, 1, 2, 3]);
+  R.disp = device.createBuffer({size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   // per-band pass uniforms: a small pool, one per band submitted in a frame
-  R.passBufs = Array.from({length: 64}, () => device.createBuffer({size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
+  R.passBufs = Array.from({length: 64}, () => device.createBuffer({size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
   post({type:'ready', adapter: {vendor: info.vendor || '', arch: info.architecture || '', desc: info.description || ''}});
   requestAnimationFrame(tick);
 }
@@ -116,7 +121,8 @@ function allocPanorama(W, H){
   S.W = W; S.H = H; S.cur = 0; S.sample = 0;
   R.acc = [0, 1].map(() => device.createBuffer({size: W*H*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST}));
   R.accum = R.acc[0];
-  R.bgDispAll = [0, 1].map(i => bg(R.pDisp, [[0, R.disp], [1, R.acc[i]], [2, R.acc[1 - i]]]));
+  R.bgDispAll = [0, 1].map(i => bg(R.pDisp, [[0, R.disp], [1, R.acc[i]], [2, R.acc[1 - i]], [3, R.shBuf]]));
+  R.bgLdAll = [0, 1].map(i => bg(R.pLd, [[0, R.disp], [1, R.acc[i]], [2, R.acc[1 - i]], [3, R.shBuf]]));
   S.clearBoth = true;
   makeSkyGroups();
   resetAccum();
@@ -159,9 +165,13 @@ function buildClouds(P, enc){
     // (cumulus: the field's strong cores, where the convection reaches its full depth)
     if (d && k === 'cu') thr.cuHi = Math.max(q(d, 0.998), thr.cu + 0.02); }
   device.queue.writeBuffer(R.ly, 0, layerUniforms(P, thr));
+  // painted cloud: the paint map (128 × 32 over the upper half of the panorama, 128 = unpainted)
+  if (P.paint !== S.paintKey){ S.paintKey = P.paint; let a = new Uint8Array(128*32).fill(128);
+    if (P.paint){ try { const b = atob(P.paint); if (b.length === a.length) a = Uint8Array.from(b, c => c.charCodeAt(0)); } catch (e){} }
+    device.queue.writeTexture({texture: R.paintTex}, a, {bytesPerRow: 128}, [128, 32]); }
   const lb = layerBand(P);
   const fOn = fieldCu && thr.cuHi !== undefined, fp = cuFieldParams(P);
-  if (fOn){ cu.base = fp.base - 0.05; cu.top = fp.base + fp.Hm + 0.3; }
+  if (fOn){ cu.base = fp.rain > 0 ? 0 : fp.base - 0.05; cu.top = fp.base + fp.Hm + 0.3; }
   const onC = cu.clouds.length > 0 || fOn, on = onC || !!lb;
   let lo = onC ? cu.base : 1e9, hi = onC ? cu.top : 0; if (lb){ lo = Math.min(lo, lb[0]); hi = Math.max(hi, lb[1]); }
   S.band = on ? [lo, hi] : [0, 0]; S.cloudOn = on;
@@ -176,7 +186,7 @@ function buildClouds(P, enc){
     c.dispatchWorkgroups(80, 80); c.end(); }
   if (r1 > r0) for (let l = 0; l < VOL.NLEV; l++){
     const c = enc.beginComputePass(); c.setPipeline(R.pGen);
-    c.setBindGroup(0, bg(R.pGen, [[0, R.cu], [1, R.densV], [2, R.cuRec], [3, R.cuStart], [4, R.cuIdx], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp], [12, R.cuMapW], [13, R.samp]]));
+    c.setBindGroup(0, bg(R.pGen, [[0, R.cu], [1, R.densV], [2, R.cuRec], [3, R.cuStart], [4, R.cuIdx], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp], [12, R.cuMapW], [13, R.samp], [14, R.paintTex.createView()]]));
     c.dispatchWorkgroups(nx/4, nx/4, Math.ceil((r1 - r0)/4)); c.end(); }
   S.cloudInfo = {n: pk.n, maxPer: pk.maxPer, base: cu.base, top: cu.top};
 }
@@ -234,7 +244,7 @@ function applyParams(){
   device.queue.writeBuffer(R.frame, 0, fr.frame);
   const enc = device.createCommandEncoder();
   // clouds: rebuild the volume when a cloud setting changed; relight it when the clouds or the sun or moon moved
-  const cuKey = JSON.stringify(Object.keys(P).filter(k => /^(cu|wind|sc|ac|ci)/.test(k)).map(k => P[k])) + R.volQ;
+  const cuKey = JSON.stringify(Object.keys(P).filter(k => /^(cu|wind|sc|ac|ci|paint|humidity$|azOff$)/.test(k)).map(k => P[k])) + R.volQ;
   const nf = needFields(P); if (nf.length && !S.fieldBusy) measureFields(P, nf);
   const t0 = performance.now(); let rebuilt = false;
   if (cuKey !== S.cuKey && !S.fieldBusy){ S.cuKey = cuKey; buildClouds(P, enc); rebuilt = true; } else writeCU(P);
@@ -270,7 +280,7 @@ function tick(){
     let budgetRows = Math.max(8, S.rows); let k = 0;
     while (budgetRows > 0 && k < R.passBufs.length && S.sample < S.target){
       const [cx0, cy0, cx1, cy1] = S.cr; const rows = Math.min(budgetRows, cy1 - S.row);
-      device.queue.writeBuffer(R.passBufs[k], 0, new Uint32Array([S.row, S.sample, S.W, S.H, cx0, cx1, cy1, 0]));
+      device.queue.writeBuffer(R.passBufs[k], 0, passData([S.row, S.sample, S.W, S.H, cx0, cx1, cy1, 0], [1, 1, 1, 1], S.P.ptPreview));
       const c = enc.beginComputePass(); c.setPipeline(R.pSky); c.setBindGroup(0, R.bgSky[k]); c.dispatchWorkgroups(Math.ceil((cx1 - cx0)/8), Math.ceil(rows/8)); c.end();
       const fr = (cx1 - cx0)/S.W; S.row += Math.ceil(rows/8)*8; budgetRows -= Math.max(rows*fr, 1); submitted += rows*fr; k++;
       if (S.row >= cy1){ S.row = cy0; S.sample++; const now = performance.now(); S.lastSampleMs = now - S.sampleT; S.sampleT = now; }
@@ -292,7 +302,9 @@ function tick(){
 }
 function display(enc, to){
   const v = to ? {...S.view, mode: 0} : S.view, cw = to ? to.width : canvas.width, ch = to ? to.height : canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }
-  device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0]));
+  device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0, v.lookdev && !to ? 1 : 0, Math.round(Math.min(ch*0.09, 70)), 0, 0]));
+  // (look-dev: the panorama's lighting into spherical harmonics first, for the grey ball and the chart)
+  if (v.lookdev && !to){ const c = enc.beginComputePass(); c.setPipeline(R.pLd); c.setBindGroup(0, R.bgLdAll[S.cur]); c.dispatchWorkgroups(1); c.end(); }
   const tex = to || (S.noPresent ? dispTarget(cw, ch) : gctx.getCurrentTexture());
   const rp = enc.beginRenderPass({colorAttachments:[{view: tex.createView(), loadOp:'clear', storeOp:'store', clearValue:{r:0.027, g:0.035, b:0.047, a:1}}]});
   rp.setPipeline(R.pDisp); rp.setBindGroup(0, R.bgDisp); rp.draw(3); rp.end();
@@ -341,13 +353,47 @@ async function readback(){
 // ---------- export: the full panorama at the output size, in bands of rows rendered into a band-sized buffer ----------
 // (an 8K panorama's accumulation would need over 500 MB at once; a band of ~64 MB is rendered to all its samples, read back,
 // converted to linear Rec.709 RGB and handed to the page, then the next band)
+// a pass's uniforms: eight integers (rows, sample, size, crop, buffer offset) and the light-layer weights
+function passData(u, mask, pt, haze){ const b = new ArrayBuffer(64); new Uint32Array(b, 0, 8).set(u); new Float32Array(b, 32, 8).set([...mask, pt ? 1 : 0, haze ? haze[0] : 0, haze ? haze[1] : 0, 0]); return b; }
 function startExport(m){
   if (S.exp || !R.accum) return;
   const W = m.W, H = W/2, band = Math.max(8, Math.min(H, Math.floor(64*1024*1024/(W*16)/8)*8));
   const buf = device.createBuffer({size: W*band*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});
   const bgs = R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, buf],
     [7, R.cu], [8, R.densV], [9, R.lightV], [10, R.noise.createView()], [11, R.wrapSamp], [12, R.noise2.createView()]]));
-  S.exp = {W, H, band, spp: m.spp, k: m.units === 'watts' ? 1/683 : 1, buf, bgs, y0: 0, row: 0, s: 0, rows: 8, inFlight: 0, busy: false, t0: performance.now(), clear: true, lastPost: 0};
+  // light layers: the image rendered once per light — sun, sky, moon, night sky — each with only that light on; they sum to the
+  // full image exactly (the light is linear), so the page writes them as layers and their sum as the main image
+  // (or, for haze for comp, the air's light and its transmission out to each of a list of distances)
+  const masks = m.haze ? m.haze.flatMap(() => [[1, 1, 1, 1], [1, 1, 1, 1]]) : m.layers ? [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] : [[1, 1, 1, 1]];
+  const hz = m.haze ? m.haze.flatMap(d => [[d, 1], [d, 2]]) : null;
+  S.exp = {W, H, band, spp: m.spp, k: m.units === 'watts' ? 1/683 : 1, buf, bgs, y0: 0, row: 0, s: 0, li: 0, masks, rows: 8, inFlight: 0, busy: false, t0: performance.now(), clear: true, lastPost: 0, pt: !!m.pt, hz};
+}
+// ---------- the shot's shadow matte: cloud shadow on the ground around the camera, top-down, in bands of rows ----------
+async function shadowMatte(m){
+  if (S.sm || !R.dens) return;
+  const N = m.N, km = m.km, band = Math.max(8, Math.min(N, Math.floor(16*1024*1024/(N*16)/8)*8)), SMs = S.sm = {cancelled: false};
+  const buf = device.createBuffer({size: N*band*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
+  const ub = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+  const g = bg(R.pShadow, [[0, R.frame], [1, R.cu], [2, R.densV], [3, R.noise.createView()], [4, R.samp], [5, R.wrapSamp], [6, buf], [7, ub], [8, R.noise2.createView()], [9, R.lightV]]);
+  const t0 = performance.now();
+  try {
+    for (let y0 = 0; y0 < N; y0 += band){
+      if (SMs.cancelled) break;
+      const rows = Math.min(band, N - y0);
+      // (eight rows per dispatch, each waited for: a long dispatch can trip the GPU watchdog)
+      for (let r = 0; r < rows; r += 8){
+        device.queue.writeBuffer(ub, 0, new Float32Array([km, N, y0 + r, y0]));
+        const enc = device.createCommandEncoder(); const c = enc.beginComputePass(); c.setPipeline(R.pShadow); c.setBindGroup(0, g);
+        c.dispatchWorkgroups(Math.ceil(N/8), 1); c.end(); device.queue.submit([enc.finish()]);
+        await device.queue.onSubmittedWorkDone(); if (SMs.cancelled) break; }
+      const rb = device.createBuffer({size: N*rows*16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
+      const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(buf, 0, rb, 0, N*rows*16); device.queue.submit([enc.finish()]);
+      await rb.mapAsync(GPUMapMode.READ); const a = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); rb.destroy();
+      post({type:'smChunk', y0, rows, N, data: a}, [a.buffer]);
+      post({type:'smProgress', f: (y0 + rows)/N, secs: (performance.now() - t0)/1000});
+    }
+    if (!SMs.cancelled) post({type:'smDone', secs: (performance.now() - t0)/1000});
+  } finally { buf.destroy(); ub.destroy(); S.sm = null; }
 }
 function cancelExport(){ const E = S.exp; if (!E) return; S.exp = null; E.cancelled = true; device.queue.onSubmittedWorkDone().then(() => E.buf.destroy()); S.paramsDirty = true; }
 function exportTick(){
@@ -357,7 +403,7 @@ function exportTick(){
   const rowsB = Math.min(E.band, E.H - E.y0); let budget = Math.max(8, E.rows), k = 0, sub = 0;
   while (budget > 0 && k < R.passBufs.length && E.s < E.spp){
     const rows = Math.min(budget, rowsB - E.row);
-    device.queue.writeBuffer(R.passBufs[k], 0, new Uint32Array([E.y0 + E.row, E.s, E.W, E.H, 0, E.W, E.y0 + rowsB, E.y0]));
+    device.queue.writeBuffer(R.passBufs[k], 0, passData([E.y0 + E.row, E.s, E.W, E.H, 0, E.W, E.y0 + rowsB, E.y0], E.masks[E.li], E.pt, E.hz && E.hz[E.li]));
     const c = enc.beginComputePass(); c.setPipeline(R.pSky); c.setBindGroup(0, E.bgs[k]); c.dispatchWorkgroups(Math.ceil(E.W/8), Math.ceil(rows/8)); c.end();
     E.row += Math.ceil(rows/8)*8; budget -= rows; sub += rows; k++;
     if (E.row >= rowsB){ E.row = 0; E.s++; }
@@ -366,16 +412,18 @@ function exportTick(){
   if (E.s >= E.spp){ rb = device.createBuffer({size: E.W*rowsB*16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST}); enc.copyBufferToBuffer(E.buf, 0, rb, 0, E.W*rowsB*16); E.busy = true; }
   const t0 = performance.now(); device.queue.submit([enc.finish()]); E.inFlight++;
   device.queue.onSubmittedWorkDone().then(() => { E.inFlight--; const dt = performance.now() - t0; if (sub) E.rows = Math.round(clamp(sub*12/Math.max(dt, 0.5), 8, rowsB)); });
-  const now = performance.now(); if (now - E.lastPost > 250){ E.lastPost = now; post({type:'exportProgress', f: (E.y0 + (E.s + E.row/rowsB)/E.spp*rowsB)/E.H, secs: (now - E.t0)/1000}); }
+  const now = performance.now(); if (now - E.lastPost > 250){ E.lastPost = now; post({type:'exportProgress', f: (E.y0 + (E.li + (E.s + E.row/rowsB)/E.spp)/E.masks.length*rowsB)/E.H, secs: (now - E.t0)/1000}); }
   if (rb) rb.mapAsync(GPUMapMode.READ).then(() => {
     if (E.cancelled){ rb.unmap(); rb.destroy(); return; }
     const a = new Float32Array(rb.getMappedRange()), n = E.W*rowsB, o = new Float32Array(n*3), kk = E.k;
+    if (E.hz && E.hz[E.li][1] === 2){ for (let i = 0; i < n; i++){ const w = Math.max(a[4*i + 3], 1e-6); o[3*i] = a[4*i]/w; o[3*i + 1] = a[4*i + 1]/w; o[3*i + 2] = a[4*i + 2]/w; } } else
     for (let i = 0; i < n; i++){ const w = Math.max(a[4*i + 3], 1e-6), X = a[4*i]/w, Y = a[4*i + 1]/w, Z = a[4*i + 2]/w;
       let r = (3.2404542*X - 1.5371385*Y - 0.4985314*Z)*kk, g = (-0.9692660*X + 1.8760108*Y + 0.0415560*Z)*kk, b = (0.0556434*X - 0.2040259*Y + 1.0572252*Z)*kk;
       o[3*i] = r > 0 && r < 3e38 ? r : 0; o[3*i + 1] = g > 0 && g < 3e38 ? g : 0; o[3*i + 2] = b > 0 && b < 3e38 ? b : 0; }
     rb.unmap(); rb.destroy();
-    post({type:'exportChunk', y0: E.y0, rows: rowsB, W: E.W, H: E.H, rgb: o}, [o.buffer]);
-    E.y0 += rowsB; E.s = 0; E.row = 0; E.clear = true; E.busy = false;
+    post({type:'exportChunk', y0: E.y0, rows: rowsB, W: E.W, H: E.H, layer: E.li, rgb: o}, [o.buffer]);
+    E.s = 0; E.row = 0; E.clear = true; E.busy = false;
+    if (++E.li >= E.masks.length){ E.li = 0; E.y0 += rowsB; }
     if (E.y0 >= E.H){ E.buf.destroy(); S.exp = null; S.paramsDirty = true; post({type:'exportDone', secs: (performance.now() - E.t0)/1000}); }
   });
 }
@@ -391,6 +439,8 @@ self.onmessage = async e => {
     else if (m.type === 'snap'){ const r = await snap(m.w); post({type:'snap', id: m.id, ...r, status: {sample: S.sample, W: S.W, H: S.H, cloud: S.cloudInfo, band: S.band, cloudMs: S.cloudMs, adapter: R.adapterInfo || null}}, [r.rgba.buffer]); }
     else if (m.type === 'export') startExport(m);
     else if (m.type === 'exportCancel') cancelExport();
+    else if (m.type === 'shadowMatte') shadowMatte(m);
+    else if (m.type === 'smCancel'){ if (S.sm) S.sm.cancelled = true; }
     else if (m.type === 'readback'){ const r = await readback(); post({type:'pixels', id: m.id, W: r.W, H: r.H, xyz: r.xyz}, [r.xyz.buffer]); }
   } catch (err){ fail(err && err.message || err); }
 };

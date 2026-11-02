@@ -18,6 +18,7 @@ for (let k = 0; ; k++){ const st = await p.evaluate(() => window.__sky ? [window
 const err = await p.evaluate(() => window.__sky.error); if (err){ console.log('FAILED:', err); await b.close(); srv.close(); process.exit(1); }
 console.log(`ready in ${((Date.now() - t0)/1000).toFixed(1)} s`, JSON.stringify(await p.evaluate(() => window.__sky.adapter)));
 for (const c of cases){ const i = c.indexOf('='); const nm = c.slice(0, i), o = JSON.parse(c.slice(i + 1)); const t1 = Date.now();
+  if (o._view){ await p.evaluate(v => window.__sky.setView(v), o._view); delete o._view; }
   await p.evaluate(o => { window.__sky.set(o); }, o);
   await new Promise(r => setTimeout(r, 3000));   // (let the worker take the new settings before polling: the last case's finished status would pass)
   for (let k = 0; ; k++){ const st = await p.evaluate(n => { const s = window.__sky.status(); return [!!(window.__sky.error || (s && s.sample >= n && s.row === 0 && !s.busy && s.W === (window.__sky.P.previewRes|0))), s ? `${s.W}x${s.H} sample ${s.sample} row ${s.row}` : 'no status']; }, +spp);
@@ -30,6 +31,9 @@ for (const c of cases){ const i = c.indexOf('='); const nm = c.slice(0, i), o = 
   fs.writeFileSync(`${pre}${nm}_${r.W}x${r.H}.f32`, Buffer.from(r.d, 'base64'));
   const sh = await p.evaluate(async () => { const m = await window.__sky.shot(); if (!m || !m.rgba) return null; const u8 = m.rgba; let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return {w:m.w, h:m.h, d:btoa(s)}; });
   if (sh) fs.writeFileSync(`${pre}${nm}_view_${sh.w}x${sh.h}.rgba`, Buffer.from(sh.d, 'base64'));
+  if (process.env.MATTE){ const [N, km] = JSON.parse(process.env.MATTE);
+    const mt = await p.evaluate(async ([N, km]) => { const m = await window.__sky.matte(N, km); if (!m) return null; const u8 = new Uint8Array(m.rgb.buffer); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return {N: m.N, d: btoa(s)}; }, [N, km]);
+    if (mt) fs.writeFileSync(`${pre}${nm}_matte_${mt.N}x${mt.N}.f32`, Buffer.from(mt.d, 'base64')); console.log('matte', mt ? mt.N : 'failed'); }
   if (process.env.PROBE){ for (const [l, alt] of JSON.parse(process.env.PROBE)){ const pr = await p.evaluate(async ([l, alt]) => { const m = await window.__sky.probe(l, alt);
       const enc = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
       return {nx: m.nx, lx: m.lx, d: enc(m.dens), li: enc(new Uint8Array(m.light.buffer)), info: m.info}; }, [l, alt]);

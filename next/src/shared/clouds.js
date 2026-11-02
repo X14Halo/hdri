@@ -55,6 +55,7 @@ function genCumulus(P, calib){
   const rollSp = 2.6*(0.5 + base);                          // roll spacing ≈ 2–3 × the boundary-layer depth
   const accept = (x, z) => { let p = Math.exp(3.2*org*moist(x, z));
     if (streets > 0){ const c = x*(-wd[1]) + z*wd[0]; p *= 1 - streets*0.85*(0.5 - 0.5*Math.cos(2*Math.PI*c/rollSp + 1.3*lk(st, x, z))); }
+    if (P.cuClear > 0){ const R = 0.9*(base + 0.4*capTop - 0.4*base); p *= 1 - clamp(P.cuClear, 0, 1)*Math.exp(-(x*x + z*z)/(2*R*R)); }
     return p; };
   const pMax = Math.exp(3.2*org);
   // Complexes: a cumulus field is mostly complexes of a few cells side by side (growing, mature and decaying turret groups that
@@ -138,7 +139,14 @@ function cuFieldParams(P){
   const shear = 0.35*(P.cuShear ?? 0.5);
   const Rc = clamp(0.4*L*(1 + dev), 0.3, 2.4);               // the scale of the surface detail (lumps, billows)
   const margin = 0.6*L + shear*Hm + 0.5;
-  return {dev, base, Hm, L, shear, Rc, margin, rollSp: 2.6*(0.5 + base)};
+  // showers from congestus onward; rain evaporates on its way down in dry air (virga), reaches the ground in moist air
+  const ss = x => x <= 0 ? 0 : x >= 1 ? 1 : x*x*(3 - 2*x);
+  const rain = clamp(P.cuRain ?? 1, 0, 1)*ss((dev - 0.4)/0.3);
+  const rh = clamp(P.humidity ?? 50, 0, 100)/100, fallLen = base*(0.4 + 1.4*rh*rh);
+  // anvils on deep convection, drawn out downwind by the upper winds
+  const anvil = clamp(P.cuAnvil ?? 1, 0, 1)*ss((dev - 0.65)/0.25);
+  const anvilLen = (6 + 0.6*Math.hypot(P.windX || 0, P.windZ || 0))*(0.5 + 0.5*anvil);
+  return {dev, base, Hm, L, shear, Rc, margin, rollSp: 2.6*(0.5 + base), rain, fallLen, anvil, anvilLen};
 }
 function layerUniforms(P, thr){
   const wl = Math.hypot(P.windX, P.windZ) || 1, wang = Math.atan2(P.windZ, P.windX);
@@ -152,7 +160,9 @@ function layerUniforms(P, thr){
     thr.sc ?? 0.5, thr.ac ?? 0.5, thr.ci ?? 0.5, thr.cu ?? 0.2,
     ...(() => { const f = cuFieldParams(P), on = cuIsField(P) && thr.cuHi !== undefined;
       return [on ? P.cuCover : 0, f.base, f.Hm, f.dev,   f.L, P.cuSeed, P.cuDens, f.margin,
-        clamp(P.cuOrg, 0, 1), clamp(P.cuStreets, 0, 1), f.rollSp, thr.cuHi ?? 0.5,   f.shear, f.Rc, 0, 0]; })()]);
+        clamp(P.cuOrg, 0, 1), clamp(P.cuStreets, 0, 1), f.rollSp, thr.cuHi ?? 0.5,   f.shear, f.Rc, clamp(P.cuClear || 0, 0, 1), 0.9*(f.base + 0.4*f.Hm),
+        f.rain, f.fallLen, f.anvil, f.anvilLen]; })(),
+    P.paint ? 1 : 0, clamp(P.paintStr ?? 1, 0, 2), (P.azOff || 0)*Math.PI/180, 0]);
 }
 // altitude range a layer can occupy (for the build slab and the renderer's cloud band)
 function layerBand(P){

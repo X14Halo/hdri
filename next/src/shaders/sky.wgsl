@@ -51,6 +51,148 @@ fn rDiff(tau: f32) -> f32 { return rDir(tau, 0.5); }
 // stars found near this direction (at most 9), their weights and blackbody index, gathered once per pixel
 struct Stars { w: array<f32, 9>, t: array<u32, 9>, n: u32 }
 
+
+// ---------- path-traced light inside the clouds (the slow reference for final renders) ----------
+// From a point where the view ray scatters, a random walk through the cloud: free flights drawn from its extinction, new
+// directions from the droplets' (or crystals') phase function, the sun and moon added at every scattering (next-event
+// estimation through the light volume), the sky or the ground where the walk leaves the cloud. Clouds absorb almost nothing,
+// so the walk is ended only by leaving or by a bounce cap. It replaces the two-stream estimates of all orders beyond the
+// first; everything else (the first order, the air, the background) is the same as the fast model.
+// ---------- town lights ----------
+// mean upward luminance of the ground at xz (cd/m²): each town a bright centre falling off into its suburbs
+fn townLum(xz: vec2f) -> f32 {
+  var s = 0.0; let n = u32(F.townO.x);
+  for (var k = 0u; k < n; k++) { let t = F.Town[k]; let r = length(xz - t.xy)/max(t.z, 0.05); s += t.w*exp(-1.5*r*r)*(1.0 + 2.0*exp(-8.0*r*r)); }
+  return s;
+}
+// seen directly, the lit ground is a scatter of separate lights (streets, windows, yards): ~50 m cells of very uneven
+// brightness, averaging to 1
+// the towns' light falling on a point above the ground (illuminance from below, per unit of their spectrum): each a Lambertian
+// disc, at its distance and angle, through the air between (mean extinction ext)
+fn townE(p: vec3f, ext: f32) -> f32 {
+  var e = 0.0; let n = u32(F.townO.x);
+  for (var k = 0u; k < n; k++) { let tw = F.Town[k]; let tp = C0 + normalize(vec3f(tw.x, Rg, tw.y))*Rg;
+    let v = p - tp; let dd = length(v); let cz = max(dot(v/dd, normalize(tp - C0)), 0.0);
+    e += tw.w*PI*tw.z*tw.z*cz*cz/(dd*dd + tw.z*tw.z)*exp(-ext*dd); }
+  return e;
+}
+fn townSparkle(xz: vec2f) -> f32 { let c = vec2i(floor(xz/0.05)); let h = hash3(vec3u(bitcast<u32>(c.x), bitcast<u32>(c.y), 515u)).x; return 0.15 + 4.25*h*h*h*h; }
+var<private> rs: vec3u;
+fn rnd() -> f32 { rs.z += 0x9E3779B9u; return hash3(rs).x; }
+fn sampleHG(d: vec3f, g: f32) -> vec3f {
+  let xi = rnd(); let s = (1.0 - g*g)/(1.0 - g + 2.0*g*xi);
+  let ct = clamp((1.0 + g*g - s*s)/(2.0*g), -1.0, 1.0); let st = sqrt(max(1.0 - ct*ct, 0.0)); let ph = 6.2831853*rnd();
+  let a = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(d.x) > 0.9); let u = normalize(cross(a, d)); let v = cross(d, u);
+  return normalize(u*(st*cos(ph)) + v*(st*sin(ph)) + d*ct);
+}
+struct Walk { sun: f32, moon: f32, sky: f32, g: f32, gS: f32, gM: f32, gA: f32, gT: f32 }
+// (the droplets' narrow diffraction peak — half the scattering, within a degree or two of straight on — is folded into the
+// beam, δ-scaling: the walk sees the cloud's extinction times the broad part's weight, scatters by the broad part alone
+// (sampled from a Henyey–Greenstein of about its asymmetry, weighted by the ratio), and the sun's beam reaching each
+// scattering is likewise attenuated by the scaled depth. Same transport, without the spike that made every path a firefly)
+fn phaseBroad(c: f32, ice: bool) -> f32 {
+  if (ice) { return phaseHG(c, 0.6); }
+  let gd = CU.cph.y; let gd2 = gd*gd; let al = CU.cph.z;
+  return (1.0 - gd2)*(1.0 + al*c*c)/(4.0*PI*(1.0 + al*(1.0 + 2.0*gd2)/3.0)*pow(max(1.0 + gd2 - 2.0*gd*c, 1e-7), 1.5));
+}
+fn ptWalk(p0: vec3f, d0: vec3f, ice: bool) -> Walk {
+  var w = Walk(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  let Ls = F.sunDir.xyz; let Lm = F.moonDir.xyz;
+  let gS = select(0.75, 0.6, ice); let kS = select(CU.cph.w, 0.5, ice);   // (sampling asymmetry; the broad part's share of σ)
+  var p = p0; var thr = 1.0;
+  var d = sampleHG(d0, gS); thr *= phaseBroad(dot(d0, d), ice)/phaseHG(dot(d0, d), gS);
+  // (no absorption in cloud: a walk ends when it leaves, or after enough scatterings that what is left is negligible —
+  // deep in a thick cloud that takes hundreds)
+  for (var b = 0; b < 192; b++) {
+    // free flight: march until the optical depth drawn (−ln ξ) is used up, skipping empty air
+    let tgt = -log(max(rnd(), 1e-7)); var tau = 0.0; var hit = false;
+    for (var k = 0; k < 320; k++) {
+      let q = volPos(p);
+      if (q.y > CU.band.y + 0.1 || q.y < max(CU.band.x - 0.35, 0.0) || max(abs(q.x), abs(q.z)) > 0.45*levelE(u32(CU.vol.z) - 1u)) { break; }
+      let dh = distHint(q);
+      if (dh < -0.06) { p += d*max(0.7*(-dh) - 0.03, 0.02); continue; }
+      let sg = kS*densMacro(q); let ds = clamp(0.35/max(sg, 1e-3), 0.004, 0.04);
+      if (tau + sg*ds >= tgt) { p += d*((tgt - tau)/max(sg, 1e-6)); hit = true; break; }
+      tau += sg*ds; p += d*ds;
+    }
+    if (!hit) {
+      let up = normalize(p - C0);
+      if (dot(d, up) > 0.0) { w.sky += thr/PI; }
+      else {   // down to the ground, lit through the clouds' shadows
+        let qg = volPos(p); let tg = qg.y/max(-dot(d, up), 0.05); let gx = volPos(p + d*tg);
+        let gl = lightAt(gx*vec3f(1.0, 0.0, 1.0));
+        w.g += thr/PI; w.gS += thr*exp(-gl.x)/PI; w.gM += thr*exp(-gl.y)/PI; w.gA += thr/(1.0 + 0.105*gl.z)/PI;
+        if (F.townO.x > 0.0) { w.gT += thr*townLum(gx.xz); }
+      }
+      break;
+    }
+    // a scattering: the sun and moon from here, through the (δ-scaled) cloud toward them
+    let lt = lightAt(volPos(p));
+    if (F.sunDir.w > 0.5) { w.sun += thr*phaseBroad(dot(d, Ls), ice)*exp(-kS*lt.x); }
+    if (F.moonDir.w > 0.5) { w.moon += thr*phaseBroad(dot(d, Lm), ice)*exp(-kS*lt.y); }
+    let dn = sampleHG(d, gS); thr *= phaseBroad(dot(d, dn), ice)/phaseHG(dot(d, dn), gS); d = dn;
+  }
+  return w;
+}
+
+
+// ---------- the horizon: distant hills and a tree line ----------
+// Silhouettes standing on the ground at a distance, as heights by azimuth (so they wrap round the panorama seamlessly). The ray
+// ends on them, so the air in front gives them their aerial perspective, and they are lit like the ground: sun (with the
+// clouds' shadows), sky, by the slope of their faces.
+fn h1(x: f32) -> f32 { return fract(sin(x*12.9898 + 4.1414)*43758.5453); }
+// a range's height (0…1) and its slope along the horizon, from octaves at whole-number frequencies (periodic in azimuth)
+fn ridge(az: f32, seed: f32, rough: f32) -> vec2f {
+  var h = 0.0; var dh = 0.0; var n = 0.0; var f = 1.0;
+  for (var j = 0; j < 10; j++) {
+    let fk = round(f); let a = pow(fk, -mix(1.5, 0.95, rough)); let ph = 6.2831853*h1(fk + 17.0*seed + f32(j));
+    let s = sin(fk*az + ph);
+    // (ridged above the middle octaves: sharper crests than a sine)
+    let v = select(0.5 + 0.5*s, 1.0 - abs(s), j >= 3); let dv = select(0.5*fk*cos(fk*az + ph), -sign(s)*fk*cos(fk*az + ph), j >= 3);
+    h += a*v; dh += a*dv; n += a; f *= 1.7;
+  }
+  return vec2f(h/n, dh/n);
+}
+struct Terr { t: f32, n: vec3f, alb: f32 }
+fn terrainHit(rd: vec3f, camH: f32) -> Terr {
+  var r = Terr(-1.0, vec3f(0.0, 1.0, 0.0), 1.0);
+  let hl = length(rd.xz); if (hl < 1e-4) { return r; }
+  let az = atan2(rd.x, rd.z); let hd = rd.xz/hl; let el = atan2(rd.y, hl);
+  let tg = vec2f(hd.y, -hd.x);   // (along the horizon, toward increasing azimuth)
+  // tree line: crowns of ~8 m along a band that comes and goes with the cover
+  if (F.terr2.x > 0.0) {
+    let D = F.terr2.y; let Ht = F.terr2.x;
+    let cv = 0.5 + 0.25*sin(3.0*az + 6.28*h1(F.terr2.w)) + 0.15*sin(7.0*az + 6.28*h1(F.terr2.w + 3.1)) + 0.1*sin(13.0*az + 6.28*h1(F.terr2.w + 7.7));
+    let m = smoothstep(1.0 - F.terr2.z - 0.04, 1.0 - F.terr2.z + 0.04, cv);
+    if (m > 0.0) {
+      let u = (az + 3.1415927)*D/0.008; let i = floor(u); let fu = u - i;
+      var top = 0.0;
+      for (var k = -1; k <= 1; k++) { let c = i + f32(k); let ht = 0.55 + 0.45*h1(c + 91.0*F.terr2.w); let w = 0.6 + 0.6*h1(c + 7.0);
+        let x = (fu - f32(k) - 0.5)/w; top = max(top, ht*sqrt(max(1.0 - x*x, 0.0))); }
+      let elT = atan2(Ht*m*top - camH - D*D/(2.0*Rg), D);
+      if (el < elT && el > -0.2) { r.t = D/max(cos(el), 0.05); r.n = normalize(vec3f(-hd.x, 0.45, -hd.y)); r.alb = F.terr3.y; return r; }
+    }
+  }
+  // two ranges of hills: a farther, higher one and a nearer, lower one in front of it
+  if (F.terr.x > 0.0) {
+    for (var k = 0; k < 2; k++) {
+      let near = k == 1; let D = F.terr.y*select(1.0, 0.55, near); let H = F.terr.x*select(1.0, 0.55, near);
+      let rg = ridge(az, F.terr.w + select(0.0, 13.0, near), F.terr.z);
+      let hp = smoothstep(0.2, 0.85, rg.x); let dhp = rg.y*select(0.0, 1.0/0.65, rg.x > 0.2 && rg.x < 0.85);
+      let elH = atan2(H*hp - camH - D*D/(2.0*Rg), D);
+      if (el < elH && el > -0.2) {
+        let t = D/max(cos(el), 0.05);
+        if (r.t < 0.0 || t < r.t) {
+          // the face toward the camera, tilted left or right by the ridge's slope along the horizon
+          let lat = -H*dhp/D*2.0;
+          r.t = t; r.n = normalize(vec3f(0.0, 1.0, 0.0) - vec3f(hd.x, 0.0, hd.y)*0.7*(0.4 + hp) + vec3f(tg.x, 0.0, tg.y)*lat); r.alb = F.terr3.x;
+        }
+      }
+    }
+  }
+  return r;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let W = PS.W; let H = PS.H; let py = id.y + PS.rowOff; let pxX = id.x + PS.colOff;
@@ -61,8 +203,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let px = vec2f(f32(pxX), f32(py)) + 0.5 + jit;
   let rd = dirFromPixel(px, fW, fH);
   let camH = F.atm2.y; let ro = vec3f(0.0, camH, 0.0); let r0 = Rg + camH; let mu = rd.y;
-  let gN = groundHit(r0, mu); let hitG = gN > 0.0 && F.opts.y < 0.5;
-  let tEnd = select(distToTop(r0, mu), gN, gN > 0.0);
+  var gN = groundHit(r0, mu);
+  // (hills and trees on the horizon: the ray ends on them where they stand above the ground it would reach)
+  var gNrm = vec3f(0.0); var gAlb = 1.0; var onTerr = false;
+  if (F.opts.y < 0.5 && (F.terr.x > 0.0 || F.terr2.x > 0.0)) { let tr = terrainHit(rd, camH); if (tr.t > 0.0 && (gN <= 0.0 || tr.t < gN)) { gN = tr.t; gNrm = tr.n; gAlb = tr.alb; onTerr = true; } }
+  let hitG = gN > 0.0 && F.opts.y < 0.5;
+  // (haze for comp: the air alone, out to a set distance: what lies between the camera and a CG element there)
+  let hazeD = PS.opt.y; let hazeM = u32(PS.opt.z);
+  let tEnd = select(select(distToTop(r0, mu), gN, gN > 0.0), min(select(distToTop(r0, mu), gN, gN > 0.0), hazeD), hazeD > 0.0);
   let Ls = F.sunDir.xyz; let Lm = F.moonDir.xyz; let cS = dot(rd, Ls); let cM = dot(rd, Lm);
   let pRs = phaseR(cS); let pMs = phaseCS(cS, F.atm2.x); let pFs = phaseFog(cS);
   let pRm = phaseR(cM); let pMm = phaseCS(cM, F.atm2.x); let pFm = phaseFog(cM);
@@ -75,7 +223,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var sunSm: array<f32, 16>; var sunN = 0u;
   var moonAcc = 0.0; var inMoon = false; var mwL = 0.0; var st: Stars; st.n = 0u;
   let vr = 1.0/sqrt(max(1.0 - pow(Rg/(Rg + 95.0), 2.0)*(1.0 - mu*mu), 1e-4));   // airglow: van Rhijn brightening toward the horizon
-  if (hitG) { let pg = ro + rd*gN; let up = normalize(pg - C0); ground = vec4f(dot(up, Ls), dot(up, Lm), 0.0, 0.0); }
+  // (z, w: the sun's and moon's incidence on the surface — the ground's own μ, or a hill face's)
+  var gUp = 1.0; var gR = Rg; var gTown = 0.0;
+  if (hitG) { let pg = ro + rd*gN; let up = normalize(pg - C0); gR = length(pg - C0);
+    if (F.townO.x > 0.0 && !onTerr) { let gx = volPos(pg).xz; gTown = townLum(gx)*townSparkle(gx); }
+    ground = vec4f(dot(up, Ls), dot(up, Lm), dot(up, Ls), dot(up, Lm));
+    if (onTerr) { let nw = normalize(gNrm + up - vec3f(0.0, 1.0, 0.0)); ground.z = dot(nw, Ls); ground.w = dot(nw, Lm); gUp = 0.5 + 0.5*dot(nw, up); } }
   else if (gN <= 0.0) {
     let pa = PI/fH; let sunRad = F.atm2.w; let squash = F.pole.w;
     if (F.opts.z > 0.5 && length(rd - Ls) < sunRad/squash + 3.0*pa) {
@@ -146,7 +299,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var L: array<vec4f, 6>; var T: array<vec4f, 6>;
   for (var g = 0u; g < 6u; g++) { L[g] = vec4f(0.0); T[g] = vec4f(1.0); }
   var Tc = 1.0;                                   // transmittance through the clouds so far
-  let cloudOn = CU.band.z > 0.5;
+  let cloudOn = CU.band.z > 0.5 && hazeD <= 0.0;
   let cs1 = phaseCloud(cS); let cm1 = phaseCloud(cM);
   // ice crystals (cirrus, 20–100 µm): a narrower diffraction peak and a broad body, asymmetry ≈ 0.8 (halos are separate)
   let ci1 = 0.5*phaseHG(cS, 0.995) + 0.5*phaseHG(cS, 0.6); let cim = 0.5*phaseHG(cM, 0.995) + 0.5*phaseHG(cM, 0.6);
@@ -156,10 +309,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   // double-counted or skipped the cloud around every boundary, a faint line across clouds at that distance)
   var tCl = -1.0;
   let rj = fract(hash3(vec3u(pxX, py, 4211u)).x + f32(n)*0.7548776662);
+  let ptOn = PS.opt.x > 0.5; rs = vec3u(pxX, py, n*7919u + 13u);
   for (var i = 0u; i < NS; i++) {
     let f0 = f32(i)/f32(NS); let f1 = f32(i + 1u)/f32(NS); let ta = tEnd*f0*f0; let tb = tEnd*f1*f1; let dt = tb - ta; let tAir = ta + dt*jt;
     // clouds in this segment
-    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var FgS = 0.0; var FgM = 0.0; var FgA = 0.0; var FgR = 0.0; var TcAir = Tc;
+    var Fs = 0.0; var Fm = 0.0; var Fa = 0.0; var Fg = 0.0; var Fd = 0.0; var FgS = 0.0; var FgM = 0.0; var FgA = 0.0; var FgR = 0.0; var FgT = 0.0; var TcAir = Tc;
+    var pW = 0.0; var pP = vec3f(0.0); var pIce = false;
     let qa = volPos(ro + rd*ta); let qb = volPos(ro + rd*tb);
     let segLo = min(qa.y, qb.y); let segHi = max(qa.y, qb.y);
     // the air's extinction in this segment (mean over wavelengths, at its middle): each cloud sample is attenuated by the air
@@ -233,6 +388,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           let sunF = select(cs1, ci1, ice)*exp(-lt.x); let moonF = select(cm1, cim, ice)*exp(-lt.y);
           let dI = Tc*(1.0 - exp(-sig*ds))*exp(-extS*(t - ta));
           Fs += dI*sunF; Fm += dI*moonF;
+          if (ptOn) {
+            // (one point per segment, drawn in proportion to how much it scatters toward the viewer; the walk starts there)
+            pW += dI; if (rnd()*pW < dI) { pP = p; pIce = ice; }
+          } else {
           // sky: down through the cloud above, back up from the cloud below
           let wv = clamp(0.5 + 0.5*dot(rd, upl), 0.0, 1.0);
           let Rau = rDiff(lt.z); let Rbd = rDiff(lt.w);
@@ -297,12 +456,19 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           var gl = rawLight(q.xz, 0.0, u32(lg0));
           if (gwt > 0.001) { gl = mix(gl, rawLight(q.xz, 0.0, u32(lg0) + 1u), gwt); }
           Fg += kg; FgS += kg*exp(-gl.x); FgM += kg*exp(-gl.y); FgA += kg/(1.0 + 0.105*gl.z); FgR += kg*rDiff(gl.z);
+          if (F.townO.x > 0.0) { FgT += kg*townE(p, extS); }   // (cloud bases near towns: lit from below by their lights)
+          }
           Tc *= exp(-sig*ds);
         }
         t += ds;
       }
       if (!airDone) { TcAir = Tc; }
       tCl = t;
+      if (ptOn && pW > 0.0) {
+        let wk = ptWalk(pP, rd, pIce);
+        Fd += pW*wk.sun; Fm += pW*wk.moon; Fa += pW*CU.ms.w*wk.sky;
+        Fg += pW*wk.g; FgS += pW*wk.gS; FgM += pW*wk.gM; FgA += pW*wk.gA; FgT += pW*wk.gT;
+      }
     }
     // the light sources for this segment (spectral), at its middle
     let tm = 0.5*(ta + tb); let pm = ro + rd*tm; let rm = length(pm - C0); let hm = rm - Rg; let upm = (pm - C0)/rm;
@@ -313,24 +479,33 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     var shS = 1.0; var shM = 1.0; var shA = 1.0;
     if (cloudOn) { let la = lightAt(volPos(p)); shS = exp(-la.x); shM = exp(-la.y); shA = 1.0/(1.0 + 0.18*la.z); }
     let dM = densM(h); let dF = densF(h); let dR = densR(h); let dO = densO(h);
+    // the towns' light scattered by the air (their glow over the horizon): each town a Lambertian disc on the ground, lighting
+    // this point at its distance and angle, through the air between (mean extinction), scattered toward the camera
+    var tA = vec3f(0.0);
+    if (F.townO.x > 0.0) { for (var k = 0u; k < u32(F.townO.x); k++) { let tw = F.Town[k]; let tp = C0 + normalize(vec3f(tw.x, Rg, tw.y))*Rg;
+      let v = p - tp; let dd = length(v); let u = v/dd; let cz = max(dot(u, normalize(tp - C0)), 0.0);
+      let E = tw.w*3.0*PI*tw.z*tw.z*cz/(dd*dd + tw.z*tw.z)*exp(-extS*dd); let c = -dot(u, rd);
+      tA += E*vec3f(phaseR(c), phaseCS(c, F.atm2.x), phaseFog(c)); } }
     for (var g = 0u; g < 6u; g++) {
       let sR = F.BR[g]*dR; let sM = F.BMs[g]*dM; let ext = sR + sM + F.BMa[g]*dM + F.BO[g]*dO + vec4f(dF); let sT = sR + sM + vec4f(dF);
       var S = vec4f(0.0);
-      if (F.sunDir.w > 0.5) { S += F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, r, muS)*shS + sT*msLUT(g, h, muS)*shA); }
-      if (F.moonDir.w > 0.5) { S += F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, r, muM)*shM + sT*msLUT(g, h, muM)*shA); }
+      if (F.sunDir.w > 0.5) { S += PS.mask.x*F.SunE[g]*((sR*pRs + sM*pMs + dF*pFs)*transmittance(g, r, muS)*shS + sT*msLUT(g, h, muS)*shA); }
+      if (F.moonDir.w > 0.5) { S += PS.mask.z*F.MoonE[g]*((sR*pRm + sM*pMm + dF*pFm)*transmittance(g, r, muM)*shM + sT*msLUT(g, h, muM)*shA); }
+      if (F.townO.x > 0.0) { S += PS.mask.w*F.TownS[g]*(sR*tA.x + sM*tA.y + dF*tA.z); }
       let att = exp(-ext*dt);
-      L[g] += T[g]*TcAir*(S - S*att)/max(ext, vec4f(1e-9));
+      if (hazeM != 2u) { L[g] += T[g]*TcAir*(S - S*att)/max(ext, vec4f(1e-9)); }
       if (Fs + Fm + Fa + Fg + Fd > 0.0) {
         var Ec = vec4f(0.0);
-        if (F.sunDir.w > 0.5) { let Te = F.SunE[g]*transmittance(g, rm, muSm); Ec += Te*(Fs + Fd); }
-        if (F.moonDir.w > 0.5) { Ec += F.MoonE[g]*transmittance(g, rm, muMm)*Fm; }
-        Ec += ambE(g, hm)*Fa;
+        if (F.sunDir.w > 0.5) { let Te = F.SunE[g]*transmittance(g, rm, muSm); Ec += PS.mask.x*Te*(Fs + Fd); }
+        if (F.moonDir.w > 0.5) { Ec += PS.mask.z*F.MoonE[g]*transmittance(g, rm, muMm)*Fm; }
+        Ec += PS.mask.y*ambE(g, hm)*Fa;
         if (Fg > 0.0) {
-          var Eg = ambE(g, 0.0)*FgA;
-          if (F.sunDir.w > 0.5) { Eg += F.SunE[g]*transmittance(g, Rg, Ls.y)*max(Ls.y, 0.0)*FgS; }
-          if (F.moonDir.w > 0.5) { Eg += F.MoonE[g]*transmittance(g, Rg, Lm.y)*max(Lm.y, 0.0)*FgM; }
+          var Eg = PS.mask.y*ambE(g, 0.0)*FgA;
+          if (F.sunDir.w > 0.5) { Eg += PS.mask.x*F.SunE[g]*transmittance(g, Rg, Ls.y)*max(Ls.y, 0.0)*FgS; }
+          if (F.moonDir.w > 0.5) { Eg += PS.mask.z*F.MoonE[g]*transmittance(g, Rg, Lm.y)*max(Lm.y, 0.0)*FgM; }
           // (light bouncing between the ground and the cloud deck above it: ×1/(1 − ρ_ground·ρ_cloud), ~2× over snow)
           Ec += F.Alb[g]*Eg/(1.0 - F.Alb[g]*FgR/Fg);
+          Ec += PS.mask.w*F.TownS[g]*FgT;
         }
         L[g] += T[g]*Ec*sqrt(att*exp(vec4f(extS*dt)));   // (the per-wavelength remainder of the attenuation, about the segment's middle)
       }
@@ -345,23 +520,30 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   for (var g = 0u; g < 6u; g++) {
     var bg = vec4f(0.0);
     if (hitG) {
-      var Ed = ambE(g, 0.0)*gs.z;
-      if (F.sunDir.w > 0.5) { let m0 = max(ground.x, 0.0); let Es = F.SunE[g]*transmittance(g, Rg, ground.x)*m0;
+      let hG = gR - Rg;
+      var Ed = PS.mask.y*ambE(g, hG)*gs.z*gUp;
+      if (F.sunDir.w > 0.5) { let m0 = max(ground.z, 0.0); let Es = F.SunE[g]*transmittance(g, gR, ground.x)*m0*select(0.0, 1.0, ground.x > -0.02);
         // two-stream: what the clouds take out of the beam mostly reaches the ground as diffuse light
         var tt = gs.x; if (gs.w > 0.0 && m0 > 0.0) { let mm = min(m0, 1.0); tt = max((0.5 + 0.75*mm + (0.5 - 0.75*mm)*gs.x)/(1.0 + 0.105*gs.w), gs.x); }
-        Ed += Es*tt; }
-      if (F.moonDir.w > 0.5) { Ed += F.MoonE[g]*transmittance(g, Rg, ground.y)*max(ground.y, 0.0)*gs.y; }
-      bg = F.Alb[g]*Ed/PI/(1.0 - F.Alb[g]*select(0.0, rDiff(gs.w), cloudOn && hitG));
+        Ed += PS.mask.x*Es*tt; }
+      if (F.moonDir.w > 0.5) { Ed += PS.mask.z*F.MoonE[g]*transmittance(g, gR, ground.y)*max(ground.w, 0.0)*gs.y; }
+      let alb = F.Alb[g]*gAlb;
+      bg = alb*Ed/PI/(1.0 - alb*select(0.0, rDiff(gs.w), cloudOn && hitG));
+      if (F.townO.x > 0.0) { bg += PS.mask.w*F.TownS[g]*gTown; }
     } else if (gN <= 0.0) {
       bg = F.Air[g]*vr;
-      if (sunN > 0u) { var acc = vec4f(0.0); for (var k = 0u; k < sunN; k++) { acc += pow(vec4f(sunSm[k]), F.SunA[g]); } bg += F.SunK[g]*acc/16.0; }
-      bg += F.MoonK[g]*moonAcc;
       bg += mwL*starSpec(u32(F.galY.w), g);
       for (var k = 0u; k < st.n; k++) { bg += st.w[k]*starSpec(st.t[k], g); }
+      bg *= PS.mask.w;
+      if (sunN > 0u) { var acc = vec4f(0.0); for (var k = 0u; k < sunN; k++) { acc += pow(vec4f(sunSm[k]), F.SunA[g]); } bg += PS.mask.x*F.SunK[g]*acc/16.0; }
+      bg += PS.mask.z*F.MoonK[g]*moonAcc;
     }
+    if (hazeD > 0.0) { bg = vec4f(0.0); }
     let Lg = L[g] + T[g]*Tc*bg;
     xyz += vec3f(dot(Lg, F.CMFx[g]), dot(Lg, F.CMFy[g]), dot(Lg, F.CMFz[g]));
   }
+  // (the air's transmission to that distance, by band: long, middle, short wavelengths in the three slots, read as R, G, B)
+  if (hazeM == 2u) { xyz = vec3f(dot(T[4], vec4f(0.25)), 0.5*dot(T[2] + T[3], vec4f(0.25)), dot(T[1], vec4f(0.25))); }
   let idx = (py - PS.pad)*W + pxX;   // (pad: the first row the buffer holds; exports render in bands)
   accum[idx] += vec4f(select(vec3f(0.0), xyz, all(xyz == xyz)), 1.0);
 }

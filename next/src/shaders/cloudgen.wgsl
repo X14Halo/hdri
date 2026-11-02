@@ -13,13 +13,27 @@
 @group(0) @binding(11) var cuMapOut: texture_storage_2d_array<rgba16float, write>;   // the cumulus field, one map per level
 @group(0) @binding(12) var cuMap: texture_2d_array<f32>;
 @group(0) @binding(13) var clampSamp: sampler;
+@group(0) @binding(14) var paintTex: texture_2d<f32>;   // painted cloud: more (> 0.5) or less (< 0.5), by direction from the camera
+
+// painted cloud at p: the paint over the panorama (upper half: azimuth across, zenith to horizon down) at the direction of p
+// from the camera, −1 (clear it) … 1 (more cloud); every cloud field is raised or lowered by it there, so painting changes
+// where the clouds form, not what they are made of
+fn paintBias(p: vec3f) -> f32 {
+  if (LY.pnt.x < 0.5) { return 0.0; }
+  let el = atan2(p.y, max(length(p.xz), 1e-3)); let az = atan2(p.x, p.z) - LY.pnt.z;
+  let uv = vec2f(fract(az/6.2831853 + 0.5), clamp(1.0 - el/1.5707963, 0.0, 1.0));
+  return (textureSampleLevel(paintTex, clampSamp, uv, 0.0).r - 0.5)*2.0*LY.pnt.y;
+}
 
 // the layered (field) cloud types. x cover, y base km, z thickness km, w form; second: x cell size km, y seed, z extinction /km,
 // w wind direction (rad); thr: the coverage threshold of each layer, found so its cover matches the setting
 // cumulus field: cu x cover, y base km, z depth of the convection km, w development; cu2 x field scale km, y seed, z extinction
 // factor, w map margin km; cu3 x grouping, y streets, z roll spacing km, w the field's strong-core value; cu4 x shear (km per km
-// of height), y size code of the surface detail
-struct Layers { sc: vec4f, sc2: vec4f, ac: vec4f, ac2: vec4f, ci: vec4f, ci2: vec4f, wind: vec4f, thr: vec4f, cu: vec4f, cu2: vec4f, cu3: vec4f, cu4: vec4f }
+// of height), y size code of the surface detail, z clearing over the camera (0 off … 1), w its radius km
+// cu5: x showers (rain under the strong cores, 0…1), y how far rain falls before it has evaporated km, z anvils (0…1), w anvil
+// length downwind km
+// pnt: painted cloud — x on, y strength, z the view's azimuth offset (rad)
+struct Layers { sc: vec4f, sc2: vec4f, ac: vec4f, ac2: vec4f, ci: vec4f, ci2: vec4f, wind: vec4f, thr: vec4f, cu: vec4f, cu2: vec4f, cu3: vec4f, cu4: vec4f, cu5: vec4f, pnt: vec4f }
 
 // (levelE comes from cloudu.wgsl)
 const GRID: f32 = 2.0; const DOMAIN: f32 = 512.0; const NC: u32 = 256u;
@@ -212,8 +226,14 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   // dividing by it put wide stretches of clear air just "outside" a surface, where the surface detail then grew a haze)
   let hw = cuMapHW(l); let h = max(2.0*hw/CUMAP, 0.1*L);
   let M = cuMapF(xz, l); let F = M.x;
-  let g = vec2f(cuMapF(xz + vec2f(h, 0.0), l).x - cuMapF(xz - vec2f(h, 0.0), l).x, cuMapF(xz + vec2f(0.0, h), l).x - cuMapF(xz - vec2f(0.0, h), l).x)/(2.0*h);
-  let thr = LY.thr.w; let sp = max(LY.cu3.w - thr, 1e-3); let e = (F - thr)/sp;
+  var g = vec2f(cuMapF(xz + vec2f(h, 0.0), l).x - cuMapF(xz - vec2f(h, 0.0), l).x, cuMapF(xz + vec2f(0.0, h), l).x - cuMapF(xz - vec2f(0.0, h), l).x)/(2.0*h);
+  let thr = LY.thr.w; let sp = max(LY.cu3.w - thr, 1e-3);
+  // (an optional clearing over the camera: the field lowered in a soft disc around the zenith, so a panorama is not filled by
+  // one cloud overhead; off by default)
+  var Fc = F;
+  if (LY.cu4.z > 0.0) { let R = LY.cu4.w; let G = 1.5*LY.cu4.z*sp*exp(-dot(xz, xz)/(2.0*R*R)); Fc -= G; g += G*xz/(R*R); }
+  Fc += 1.3*sp*paintBias(p);
+  let e = (Fc - thr)/sp;
   // how big a thermal this cloud sits on: from the broad part of the field. Clouds made only by its fine octaves are
   // fragments (small, shallow, diluted); those on a broad strong thermal are deep, with walls
   let sf = smoothstep(-0.2, 0.25, (M.y - thr)/sp);
@@ -228,7 +248,7 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   // (outside the footprint: the horizontal distance to its edge, but above the height its wall reaches, at least a share of
   // the height above that: a plain extrusion of the footprint's edge put "near the surface" curtains of clear air up to the
   // top of the convection, which the surface detail then filled with a haze)
-  if (e <= 0.0) { let Tw = Hm*wall; return vec3f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e, sf); }
+  if (e <= 0.0) { let Tw = Hm*wall; return vec3f(min(min((Fc - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e, sf); }
   let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let pk = pow(max(em, 1e-4), k); let core = wall + (1.0 - wall)*pk;
   // (turrets and dips: the column's depth varies by ±20% over a few hundred metres, so the cloud above a base is not uniformly
   // thick and the base seen from below shades into darker and lighter patches)
@@ -238,6 +258,52 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   let gT = min(dT/sp*length(g), 60.0);
   // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
   return vec3f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e, sf);
+}
+
+// ---------- what falls out of and spreads from the convection ----------
+// The strength of the broad thermal at xz (the field's first octaves: showers and anvils come from whole cores, not lumps)
+fn cuBroad(xz: vec2f, l: u32) -> f32 { let thr = LY.thr.w; let sp = max(LY.cu3.w - thr, 1e-3); return (cuMapF(xz, l).y - thr)/sp; }
+// Showers: under the strongest cores, once the cloud is deep enough to rain (congestus onward), rain falls from just under the
+// base in curtains ~2–5 km across, drifting downwind as it falls. In dry air it evaporates on the way down (virga: streaks
+// that end in mid-air); in moist air it reaches the ground. Rain is a thin medium (extinction ~0.5–3 /km), not cloud.
+// Returns (signed distance km, extinction /km)
+fn cuRainEval(p: vec3f, l: u32) -> vec2f {
+  let base = LY.cu.y; let fall = base - p.y;                       // how far below the base
+  if (fall < 0.08 || p.y < -0.05) { return vec2f(-1.0, 0.0); }
+  let xz = p.xz - LY.wind.xy*0.25*fall + (vec2f(nz(vec3f(p.x/3.1, p.y/1.7, p.z/3.1)), nz(vec3f(p.x/3.1 + 0.4, p.y/1.7, p.z/3.1 + 0.7))) - 0.5)*0.6;
+  let eR = mix(0.55, 0.3, LY.cu.w);                                // (only strong cores rain, more of them in deep convection)
+  let b = cuBroad(xz, l) - eR;
+  let dh = b*1.6*LY.cu2.x;
+  // evaporation: the shaft thins and ends where the rain has evaporated (virga) or carries on to the ground
+  let Lf = LY.cu5.y; let left = 1.0 - smoothstep(0.55*Lf, Lf, fall);
+  let d = min(min(dh, fall - 0.08), select(p.y + 0.05, Lf - fall, Lf < base));
+  let s = LY.cu5.x*(0.4 + 1.6*LY.cu.w)*smoothstep(0.0, 0.25, b)*mix(0.35, 1.0, left)*smoothstep(0.08, 0.3, fall);
+  return vec2f(d, s);
+}
+// Anvils: where deep convection reaches the tropopause its updraft spreads out sideways as a thick ice sheet, carried downwind
+// by the upper winds for tens of km, thinning and sinking a little as it goes; flat on top. From the strong cores upwind.
+// Returns (signed distance km, extinction /km, height fraction in the sheet)
+fn cuAnvilEval(p: vec3f, l: u32) -> vec3f {
+  let top = LY.cu.y + LY.cu.z; let La = LY.cu5.w; let Ha = 0.6 + 1.6*LY.cu5.z;
+  if (p.y > top + 0.2 || p.y < top - Ha - 0.6) { return vec3f(-1.0, 0.0, 0.0); }
+  // (the core this air came from: upwind, at increasing distances, closely enough spaced that a core's anvil is one continuous
+  // plume, not a row of copies of the core)
+  var best = -9.0; var sAt = 0.0;
+  for (var i = 0u; i < 12u; i++) {
+    let s = f32(i)/11.0;
+    // (looked up two levels coarser: the cores it came from can lie tens of km upwind, beyond this level's map)
+    let a = cuBroad(p.xz - LY.wind.xy*s*La, min(l + 2u, 5u)) - 0.55 - 0.35*s;
+    if (a > best) { best = a; sAt = s; }
+  }
+  let a = best + 0.08*(nz(vec3f(p.x/5.3, p.y/2.1, p.z/5.3)) - 0.5);
+  // (tapering to nothing at its edges, thickest over the cores: not a flat-sided slab)
+  let th = Ha*smoothstep(-0.02, 0.3, a)*(1.0 - 0.45*sAt);
+  let tp = top - 0.2*sAt*Ha - 0.3*Ha*(1.0 - smoothstep(-0.02, 0.2, a));   // (sinking a little downwind and at its edges)
+  let bot = tp - th;
+  let d = min(min(a*1.2*LY.cu2.x, p.y - bot), tp - p.y);
+  // (thin and fibrous toward its edges and far downwind, dense over the cores)
+  let sig = 7.0*LY.cu5.z*smoothstep(-0.02, 0.35, a)*(1.0 - 0.7*sAt);
+  return vec3f(d, sig, clamp((p.y - bot)/max(tp - bot, 0.1), 0.0, 1.0));
 }
 
 struct Hit { d: f32, sig: f32, v: f32, r: f32 }
@@ -252,7 +318,7 @@ fn evalAt(p: vec3f) -> Hit {
     let hy = p.y*1.7; let wob = vec2f(n2(p.xz, 0.8, 0.31 + hy) - 0.5, n2(p.xz, 0.8, 0.77 + hy) - 0.5)*0.35;
     // (some cells grow thicker and wetter than others: a deck seen from below is a mosaic of darker and lighter cells)
     let vth = n2(p.xz, LY.sc2.x*2.3, 0.83);
-    let f = scField(p.xz + wob); let th = LY.sc.z*(0.6 + 0.8*vth); let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
+    var f = scField(p.xz + wob); f.x += 0.5*paintBias(p); let th = LY.sc.z*(0.6 + 0.8*vth); let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
     // (a deck under an inversion: the top nearly flat, ±20–50 m, a little lower at the thin cell rims; the base undulating
     // ±50–150 m and rising toward the gaps)
     // (cells are pillows: full depth in their middles, thinning to their rims mostly by the base rising, so the deck reads
@@ -270,7 +336,7 @@ fn evalAt(p: vec3f) -> Hit {
     // its 8-bit storage cannot draw contours)
   }
   if (LY.ac.x > 0.0 && p.y > LY.ac.y - 0.3 && p.y < LY.ac.y + LY.ac.z + 0.3) {
-    let f = acField(p.xz); let th = LY.ac.z; let form = LY.ac.w;
+    var f = acField(p.xz); f.x += 0.5*paintBias(p); let th = LY.ac.z; let form = LY.ac.w;
     let top = LY.ac.y + th*mix(0.85 + 0.15*f.y, 0.35 + 0.65*f.y, form);
     let bot = LY.ac.y + th*mix(0.05*(1.0 - f.y), 0.35*(1.0 - f.y), form);
     let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.y)*LY.ac2.x*0.3;
@@ -282,7 +348,7 @@ fn evalAt(p: vec3f) -> Hit {
     // below the generating level the ice falls in streaks; a streak at depth dz traces back to a head displaced downwind
     let topI = LY.ci.y + LY.ci.z; let dz = max(topI - p.y, 0.0);
     let back = LY.wind.xy*LY.wind.z*pow(dz, 1.3);
-    let f = ciField(p.xz + back);
+    var f = ciField(p.xz + back); f.x += 0.4*paintBias(p);
     let inLayer = 1.0 - smoothstep(LY.ci.z*0.6, LY.ci.z, dz);
     let tail = exp(-max(dz - LY.ci.z*0.6, 0.0)/max(LY.wind.w*0.45, 0.05))*smoothstep(0.0, 0.3, LY.ci.w);
     let prof = max(inLayer, tail*f.y);
@@ -306,6 +372,9 @@ fn evalAt(p: vec3f) -> Hit {
       let Rcf = LY.cu4.y; let dil = pow(De/(De + 0.25), 0.6667)/pow(Rcf/(Rcf + 0.25), 0.6667);
       best = Hit(r.x, LY.cu2.z*mix(0.45, 1.0, st)*min(dil, 1.0), clamp(LY.cu.y/8.0, 0.0, 1.0), 0.5*clamp(Rcf/2.4, 0.0, 1.0));
     }
+    if (LY.cu5.z > 0.0) { let a = cuAnvilEval(p, GP.x); if (a.x > best.d) { best = Hit(a.x, a.y, a.z, 0.9); } }
+    // (rain: style 0.75; it only counts where nothing else is)
+    if (LY.cu5.x > 0.0 && best.d < 0.0) { let rr = cuRainEval(p, GP.x); if (rr.x > best.d && rr.y > 0.0) { best = Hit(rr.x, rr.y, 0.0, 0.75); } }
   }
   if (GP.w > 0u) {
     let c = vec2i(floor((p.xz + 0.5*DOMAIN)/GRID));
@@ -345,7 +414,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         let Ae = 0.5*min(0.3*pow(Rc, 0.8), 0.45)*select(1.0, 0.45, h.r >= 0.5);
         inside = smoothstep(-0.03, 0.03, h.d - Ae + 0.03);
       } else { inside = smoothstep(0.0, 0.035, h.d); }
-      cov += inside; sg = max(sg, h.sig); vv += h.v*inside; if (inside > 0.0) { st = max(st, h.r); }   // (the style is a code, not an amount: never scaled)
+      // (the style is a code, not an amount: never scaled; rain's only where no cloud shares the voxel)
+      let isRain = h.r > 0.72 && h.r < 0.78;
+      cov += inside; sg = max(sg, select(h.sig, 0.0, isRain && st > 0.0)); vv += h.v*inside;
+      if (inside > 0.0) { if (isRain) { if (st == 0.0) { st = h.r; } } else { if (st > 0.72 && st < 0.78) { st = 0.0; sg = h.sig; } st = max(st, h.r); } }
     }
     // (extinction code, base and style stored premultiplied by the coverage: filtering against empty neighbours then dilutes
     // the coverage only, and the renderer divides back; the codes themselves never get blended toward zero)

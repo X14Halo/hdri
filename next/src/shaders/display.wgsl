@@ -4,10 +4,12 @@ struct Disp {
   rect: vec4f,                     // panorama placement in the canvas (x, y, w, h)
   view: vec4f,                     // x mode (0 panorama, 1 look around, 2 luminance), y yaw, z pitch, w vertical fov
   ex: vec4f,                       // x exposure (multiplies cd/m²), y azimuth offset
+  ld: vec4f,                       // look-dev references: x on, y ball radius px
 }
 @group(0) @binding(0) var<uniform> D: Disp;
 @group(0) @binding(1) var<storage, read> accum: array<vec4f>;
 @group(0) @binding(2) var<storage, read> accPrev: array<vec4f>;   // the last finished image, shown where the new one has not reached
+@group(0) @binding(3) var<storage, read> sh: array<vec4f, 9>;       // the panorama's lighting in spherical harmonics (lookdev.wgsl)
 
 struct VO { @builtin(position) pos: vec4f }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
@@ -38,9 +40,46 @@ fn samplePano(uv: vec2f) -> vec3f {   // bilinear, wrapping in azimuth
   let p = uv*D.pano - 0.5; let i = floor(p); let f = p - i; let x = i32(i.x); let y = i32(i.y);
   return mix(mix(texel(x, y), texel(x + 1, y), f.x), mix(texel(x, y + 1), texel(x + 1, y + 1), f.x), f.y);
 }
+// ---------- look-dev references, lit by the sky as it stands: a chrome ball (a mirror, ~60% reflective), an 18% grey ball and
+// a colour chart (the 24 standard patches, facing the camera) ----------
+const CHART = array<vec3f, 24>(vec3f(0.171, 0.084, 0.058), vec3f(0.539, 0.305, 0.223), vec3f(0.122, 0.195, 0.337), vec3f(0.095, 0.150, 0.056), vec3f(0.235, 0.216, 0.440), vec3f(0.136, 0.509, 0.402), vec3f(0.672, 0.209, 0.025), vec3f(0.080, 0.105, 0.381), vec3f(0.533, 0.102, 0.125), vec3f(0.112, 0.045, 0.150), vec3f(0.337, 0.503, 0.051), vec3f(0.745, 0.366, 0.027), vec3f(0.040, 0.047, 0.305), vec3f(0.061, 0.296, 0.067), vec3f(0.429, 0.037, 0.045), vec3f(0.799, 0.571, 0.014), vec3f(0.497, 0.093, 0.301), vec3f(0.002, 0.235, 0.356), vec3f(0.896, 0.896, 0.888), vec3f(0.578, 0.578, 0.578), vec3f(0.352, 0.352, 0.352), vec3f(0.195, 0.195, 0.191), vec3f(0.091, 0.091, 0.091), vec3f(0.034, 0.034, 0.034));
+// irradiance on a surface facing n, from the harmonics (Ramamoorthi & Hanrahan's convolution with the cosine lobe)
+fn irradiance(d: vec3f) -> vec3f {
+  let A0 = PI; let A1 = 2.0*PI/3.0; let A2 = PI/4.0;
+  return A0*0.282095*sh[0].xyz + A1*0.488603*(sh[1].xyz*d.y + sh[2].xyz*d.z + sh[3].xyz*d.x)
+       + A2*(1.092548*(sh[4].xyz*d.x*d.y + sh[5].xyz*d.y*d.z + sh[7].xyz*d.x*d.z) + 0.315392*sh[6].xyz*(3.0*d.z*d.z - 1.0) + 0.546274*sh[8].xyz*(d.x*d.x - d.y*d.y));
+}
+fn panoDir(d: vec3f) -> vec3f { let az = atan2(d.x, d.z) - D.ex.y; let el = asin(clamp(d.y, -1.0, 1.0)); return samplePano(vec2f(fract(az/(2.0*PI) + 0.5), 0.5 - el/PI)); }
+// (XYZ of the look-dev element under the pixel, or w = 0 where there is none)
+fn lookdev(fc: vec2f) -> vec4f {
+  let R = D.ld.y; let m = 14.0; let base = D.canvas.y - m - R;
+  let cy = cos(D.view.y); let sy = sin(D.view.y); let cp = cos(D.view.z); let sp = sin(D.view.z);
+  let fwd = vec3f(sy*cp, sp, cy*cp); let right = normalize(vec3f(cy, 0.0, -sy)); let up = cross(fwd, right);
+  for (var b = 0; b < 2; b++) {
+    let c = vec2f(m + R + f32(b)*(2.0*R + 10.0), base); let s = (fc - c)/R; let r2 = dot(s, s);
+    if (r2 <= 1.0) {
+      let n = normalize(right*s.x - up*s.y - fwd*sqrt(1.0 - r2));
+      if (b == 0) { return vec4f(0.6*panoDir(reflect(fwd, n)), 1.0); }
+      return vec4f(0.18/PI*max(irradiance(n), vec3f(0.0)), 1.0);
+    }
+  }
+  // the chart: 6 × 4 patches, facing the camera
+  let ps = R*0.62; let x0 = m + 4.0*R + 24.0; let y0 = base - 2.0*ps - 3.0;
+  let q = (fc - vec2f(x0, y0))/(ps + 2.0);
+  if (q.x >= 0.0 && q.y >= 0.0 && q.x < 6.0 && q.y < 4.0) {
+    if (fract(q.x)*(ps + 2.0) > ps || fract(q.y)*(ps + 2.0) > ps) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+    let k = u32(q.y)*6u + u32(q.x);
+    let X2R = mat3x3f(3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314, 0.0415560, 1.0572252);
+    let R2X = mat3x3f(0.4124564, 0.2126729, 0.0193339, 0.3575761, 0.7151522, 0.1191920, 0.1804375, 0.0721750, 0.9503041);
+    let e = max(X2R*irradiance(-fwd), vec3f(0.0));
+    return vec4f(R2X*(CHART[k]*e/PI), 1.0);
+  }
+  return vec4f(0.0);
+}
 @fragment fn fs(v: VO) -> @location(0) vec4f {
   let fc = v.pos.xy; var xyz: vec3f;
   let mode = i32(D.view.x);
+  var ldv = vec4f(0.0); if (D.ld.x > 0.5) { ldv = lookdev(fc); }
   if (mode == 1) {
     // look around: pinhole camera (yaw from north, clockwise; pitch up)
     let ndc = vec2f(fc.x/D.canvas.x*2.0 - 1.0, 1.0 - fc.y/D.canvas.y*2.0); let tf = tan(D.view.w*0.5);
@@ -52,9 +91,10 @@ fn samplePano(uv: vec2f) -> vec3f {   // bilinear, wrapping in azimuth
     xyz = samplePano(vec2f(fract(az/(2.0*PI) + 0.5), 0.5 - el/PI));
   } else {
     let q = (fc - D.rect.xy)/D.rect.zw;
-    if (any(q < vec2f(0.0)) || any(q > vec2f(1.0))) { return vec4f(0.027, 0.035, 0.047, 1.0); }
-    xyz = texel(i32(q.x*D.pano.x), i32(q.y*D.pano.y));
+    if (any(q < vec2f(0.0)) || any(q > vec2f(1.0))) { if (ldv.w <= 0.0) { return vec4f(0.027, 0.035, 0.047, 1.0); } }
+    else { xyz = texel(i32(q.x*D.pano.x), i32(q.y*D.pano.y)); }
   }
+  if (ldv.w > 0.0) { xyz = ldv.xyz; }
   if (mode == 2) { let l = (log(max(xyz.y, 1e-7))/log(10.0) + 4.0)/13.0; return vec4f(turbo(clamp(l, 0.0, 1.0)), 1.0); }
   let X2R = mat3x3f(3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314, 0.0415560, 1.0572252);
   let lin = max(X2R*xyz, vec3f(0.0))*D.ex.x;

@@ -29,10 +29,19 @@ struct Frame {
   eqX: vec4f, eqY: vec4f, eqZ: vec4f,   // equatorial frame; w: night, stars on, faintest star magnitude
   galX: vec4f, galY: vec4f, galZ: vec4f,// galactic frame; w: Milky Way strength, its spectrum index, include sun disc
   opts: vec4f,     // x atmosphere steps, y sky only (no ground), z sun disc on, w unused
+  terr: vec4f,     // distant hills: x height km (0 off), y distance km, z ruggedness, w seed
+  terr2: vec4f,    // tree line: x height km (0 off), y distance km, z cover, w seed
+  terr3: vec4f,    // x hills' albedo factor, y trees' albedo factor
+  TownS: array<vec4f, 6>,   // town lights' spectrum (1 cd/m² per unit)
+  Town: array<vec4f, 8>,    // towns: x, z km, radius km, mean upward luminance cd/m²
+  townO: vec4f,             // x number of towns
 }
 
-struct Pass { rowOff: u32, frame: u32, W: u32, H: u32, colOff: u32, colEnd: u32, rowEnd: u32, pad: u32 }   // (a crop window renders part of the panorama;
-// pad: the panorama row at the start of the accumulation buffer)
+struct Pass { rowOff: u32, frame: u32, W: u32, H: u32, colOff: u32, colEnd: u32, rowEnd: u32, pad: u32, mask: vec4f, opt: vec4f }   // (a crop window renders part of the panorama;
+// pad: the panorama row at the start of the accumulation buffer; mask: weights of the light layers — sun, sky, moon, night
+// sky (stars, Milky Way, airglow) — all 1 for the full image, one at a time for separate layers that sum to it; opt: x 1 for
+// path-traced light inside the clouds; y > 0: haze for comp — the air alone out to this distance (km), z 1 its light, 2 its
+// transmission)
 
 fn pcg3d(v0: vec3u) -> vec3u {
   var v = v0*1664525u + 1013904223u;

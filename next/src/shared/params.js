@@ -10,6 +10,13 @@ const DEFAULTS = {
   aerosol:'continental', aod:0.1, humidity:50, aerH:1.2, ozone:300, fogVis:50, fogH:0.15, diurnal:true, siteAlt:0,
   // ground
   surface:'grass', albedo:0.2, groundMode:'lit',
+  // the horizon: distant hills and a tree line
+  hillsOn:false, hillH:0.6, hillDist:25, hillRough:0.5, hillSeed:1, hillAlb:0.7,
+  // painted cloud: more or less cloud by direction (base64 of a 128 × 32 map over the upper half of the panorama)
+  paint:'', paintStr:1, brushSize:6,
+  // town lights (night): towns round the horizon light the ground, the air above them and the clouds' bases
+  townsOn:false, townN:3, townDist:15, townSize:1, townBright:1, townLED:0.5, townSeed:1,
+  treesOn:false, treeH:18, treeDist:0.8, treeCover:0.6, treeSeed:1, treeAlb:0.35,
   // night sky
   stars:true, starMag:6.5, mw:1, airglow:1, includeSun:true,
   // camera
@@ -17,7 +24,7 @@ const DEFAULTS = {
   // wind (km/h at cloud level; clouds lean and line up with it)
   windX:15, windZ:6,
   // cumulus layer
-  cuOn:true, cuModel:'field', cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuErode:1, cuAmb:1, cuDrop:14,
+  cuOn:true, cuModel:'field', cuCover:0.3, cuBase:1.3, cuDev:0.15, cuSize:1, cuOrg:0.5, cuStreets:0, cuShear:0.5, cuSeed:1, cuDens:1, cuRain:1, cuAnvil:1, cuClear:0, cuErode:1, cuAmb:1, cuDrop:14,
   // stratocumulus / stratus deck
   scOn:false, scCover:0.6, scBase:0.9, scThick:0.5, scForm:0.35, scCell:1.4, scSeed:1, scDens:1,
   // altocumulus / altostratus
@@ -26,5 +33,5 @@ const DEFAULTS = {
   ciOn:false, ciCover:0.25, ciBase:9.0, ciThick:0.7, ciForm:0.5, ciCell:1.5, ciSeed:1, ciDens:1, ciShear:1, ciFall:1.2,
   // rendering
   previewRes:1024, atmSteps:32, volQ:1,
-  outRes:4096, outSpp:64, format:'exr32', units:'nits',
+  outRes:4096, outSpp:64, smKm:5, smRes:2048, format:'exr32', layers:'beauty', cloudLight:'fast', units:'nits',
 };

@@ -3,16 +3,52 @@
 const $ = s => document.querySelector(s);
 const P = JSON.parse(JSON.stringify(DEFAULTS));
 try { const q = new URLSearchParams(location.search).get('p'); if (q) Object.assign(P, JSON.parse(q)); } catch (e){}
-const view = {mode:0, yaw:0, pitch:0.1, fov:75*D2R, expoComp:0, auto:true};
+const view = {mode:0, yaw:0, pitch:0.1, fov:75*D2R, expoComp:0, auto:true, lookdev:false};
 let worker = null, lastStatus = null, ready = false;
 
 /* ---------- panel schema ---------- */
 const fmtDeg = v => `${(+v).toFixed(1)}°`;
+// ---------- presets: typical skies, each a few settings over the defaults ----------
+const PRESETS = [
+  ['Clear noon', {sunEl:62, sunAz:180, aod:0.06, humidity:40}],
+  ['Fair-weather cumulus', {sunEl:46, sunAz:150, cuOn:true, cuCover:0.3, cuBase:1.2, cuDev:0.15, cuOrg:0.45, ciOn:true, ciCover:0.12, ciDens:0.6}],
+  ['Cloud streets', {sunEl:40, sunAz:160, windX:25, windZ:8, cuOn:true, cuCover:0.35, cuBase:1.0, cuDev:0.1, cuStreets:0.8, cuOrg:0.2}],
+  ['Dawn', {sunEl:2.5, sunAz:72, aod:0.1, humidity:72, cuOn:true, cuCover:0.06, cuBase:1.8, cuDev:0.1, ciOn:true, ciCover:0.3}],
+  ['Golden hour', {sunEl:5.5, sunAz:285, aod:0.15, humidity:60, cuOn:true, cuCover:0.18, cuBase:1.6, cuDev:0.2, ciOn:true, ciCover:0.3}],
+  ['Sunset', {sunEl:0.6, sunAz:292, aod:0.11, humidity:55, cuOn:true, cuCover:0.1, cuBase:2.4, cuDev:0.15, ciOn:true, ciCover:0.45}],
+  ['Civil twilight', {sunEl:-4.5, sunAz:298, moonEl:18, moonAz:110, aod:0.09, ciOn:true, ciCover:0.25}],
+  ['Overcast', {sunEl:38, sunAz:165, aod:0.2, humidity:85, scOn:true, scCover:0.98, scBase:0.7, scThick:0.8, scForm:0.08, scDens:1.4}],
+  ['Broken stratocumulus', {sunEl:30, sunAz:200, humidity:65, scOn:true, scCover:0.66, scBase:1.0, scThick:0.5, scForm:0.4, scCell:1.6}],
+  ['Open-cell stratocumulus', {sunEl:35, sunAz:140, humidity:70, aerosol:'maritime', aod:0.08, scOn:true, scCover:0.55, scBase:0.9, scThick:0.45, scForm:0.8, scCell:2.2}],
+  ['Altocumulus', {sunEl:28, sunAz:220, humidity:60, acOn:true, acCover:0.7, acBase:4.4, acForm:0.9, acCell:0.8, ciOn:true, ciCover:0.2}],
+  ['Mackerel sky', {sunEl:22, sunAz:250, ciOn:true, ciCover:0.6, ciForm:0.9, ciCell:1.2, acOn:true, acCover:0.35, acBase:5.5, acForm:1, acCell:0.5}],
+  ['Cumulus congestus', {sunEl:45, sunAz:200, humidity:65, cuOn:true, cuCover:0.3, cuBase:1.1, cuDev:0.6, cuOrg:0.6, cuShear:0.8}],
+  ['Storm building', {sunEl:24, sunAz:240, aod:0.08, humidity:60, cuOn:true, cuCover:0.4, cuBase:1.2, cuDev:0.82, cuOrg:0.8, cuShear:0.9}],
+  ['Thunderhead', {sunEl:32, sunAz:215, aod:0.12, humidity:70, windX:30, windZ:5, cuOn:true, cuCover:0.3, cuBase:1.3, cuDev:0.97, cuOrg:0.9, cuClear:0.6}],
+  ['Dark storm', {sunEl:28, sunAz:250, aod:0.18, humidity:85, scOn:true, scCover:0.95, scBase:0.9, scThick:1.1, scForm:0.35, scDens:2.2, cuOn:true, cuCover:0.25, cuBase:0.8, cuDev:0.6}],
+  ['Hazy summer', {sunEl:55, sunAz:200, aod:0.55, humidity:75, cuOn:true, cuCover:0.08, cuDev:0.1}],
+  ['Cirrus', {sunEl:30, sunAz:160, aod:0.07, ciOn:true, ciCover:0.6, ciForm:0.5, ciDens:1}],
+  ['Cirrostratus veil', {sunEl:35, sunAz:170, aod:0.08, ciOn:true, ciCover:0.95, ciForm:0.05, ciDens:1.6}],
+  ['Foggy morning', {sunEl:9, sunAz:100, aod:0.2, humidity:95, fogVis:0.6, fogH:0.12}],
+  ['Desert dust', {sunEl:40, sunAz:210, aerosol:'desert', aod:0.9, humidity:20, aerH:2.5, surface:'sand'}],
+  ['Wildfire smoke', {sunEl:20, sunAz:250, aerosol:'smoke', aod:1.6, aerH:2.2, humidity:35}],
+  ['Moonlit night', {sunEl:-32, sunAz:340, moonEl:38, moonAz:165, aod:0.06, cuOn:true, cuCover:0.15, cuDev:0.1}],
+  ['Starry night', {sunEl:-40, sunAz:0, moonEl:-20, aod:0.04, aerosol:'clean', humidity:35}],
+];
 const SECTIONS = [
   {title:'Scene file', items:[
     {type:'buttons', btns:[['Save scene', () => saveScene()], ['Load scene', () => loadScene()]]},
     {type:'buttons', btns:[['Mark issues', () => toggleMarking()], ['Clear marks', () => { MARKS.length = 0; drawMarks(); }], ['Save report', () => saveReport()]]},
     {type:'note', html:'<span id="markInfo">To report a problem: <b>Mark issues</b>, paint over it in the view, add a note, then <b>Save report</b>. The report holds the scene, the marks, the view and a picture, so it can be reproduced exactly.</span><textarea id="noteBox" class="notebox" placeholder="What looks wrong? (optional)"></textarea>'},
+  ]},
+  {title:'Presets', items:[
+    {type:'buttons', btns:PRESETS.map(([name, o]) => [name, () => applyPreset(o)])},
+  ]},
+  {title:'Paint clouds', items:[
+    {type:'buttons', paint:true, btns:[['More cloud', () => setPainting('more')], ['Clear sky', () => setPainting('less')], ['Erase painting', () => { P.paint = ''; PAINT = null; changed(); drawMarks(); }]]},
+    {k:'brushSize', label:'Brush size', min:1, max:30, step:0.5, fmt:v => `${v.toFixed(1)}°`},
+    {k:'paintStr', label:'Strength of the painting', min:0, max:2, step:0.01, fmt:v => `×${v.toFixed(2)}`},
+    {type:'note', html:'Drag over the sky (panorama or look-around view) to add cloud there or clear it, for every cloud layer seen in that direction. Click the button again to stop painting.'},
   ]},
   {title:'Randomize', items:[
     {k:'rndStyle', label:'Character', min:0, max:1, step:0.01, fmt:v => v < 0.15 ? 'realistic' : v < 0.5 ? 'realistic, some drama' : v < 0.85 ? 'stylized' : 'very stylized'},
@@ -49,6 +85,29 @@ const SECTIONS = [
     {k:'groundMode', label:'Below the horizon', type:'select', opts:[['lit', 'Lit ground'], ['black', 'Black (sky only)']]},
     {k:'camH', label:'Camera height', min:0.001, max:3, log:true, fmt:v => v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(2)} km`},
   ]},
+  {title:'Horizon', items:[
+    {k:'hillsOn', label:'Distant hills', type:'check'},
+    {k:'hillH', label:'Height', min:0.05, max:3, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.hillsOn},
+    {k:'hillDist', label:'Distance', min:3, max:80, step:0.5, fmt:v => `${v.toFixed(1)} km`, show:() => P.hillsOn},
+    {k:'hillRough', label:'Ruggedness', min:0, max:1, step:0.01, fmt:v => v < 0.3 ? 'rolling' : v < 0.7 ? 'hilly' : 'mountainous', show:() => P.hillsOn},
+    {k:'hillAlb', label:'Brightness (× ground albedo)', min:0.2, max:1.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.hillsOn},
+    {type:'buttons', btns:[['New hills', () => { P.hillSeed = (P.hillSeed*7919 + 31) % 100003; changed(); }]], show:() => P.hillsOn},
+    {k:'treesOn', label:'Tree line', type:'check'},
+    {k:'treeH', label:'Tree height', min:5, max:40, step:0.5, fmt:v => `${v.toFixed(1)} m`, show:() => P.treesOn},
+    {k:'treeDist', label:'Distance', min:0.1, max:5, step:0.05, fmt:v => `${Math.round(v*1000)} m`, show:() => P.treesOn},
+    {k:'treeCover', label:'Around the horizon', min:0.05, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.treesOn},
+    {k:'treeAlb', label:'Brightness (× ground albedo)', min:0.1, max:1, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.treesOn},
+    {type:'buttons', btns:[['New trees', () => { P.treeSeed = (P.treeSeed*7919 + 31) % 100003; changed(); }]], show:() => P.treesOn},
+  ]},
+  {title:'Town lights', items:[
+    {k:'townsOn', label:'Towns round the horizon (night)', type:'check'},
+    {k:'townN', label:'Number of towns', min:1, max:8, step:1, fmt:v => `${Math.round(v)}`, show:() => P.townsOn},
+    {k:'townDist', label:'Typical distance', min:2, max:60, step:0.5, fmt:v => `${v.toFixed(1)} km`, show:() => P.townsOn},
+    {k:'townSize', label:'Size', min:0.2, max:4, step:0.05, fmt:v => `×${v.toFixed(2)}`, show:() => P.townsOn},
+    {k:'townBright', label:'Brightness', min:0.05, max:5, step:0.01, log:true, fmt:v => `×${v.toFixed(2)}`, show:() => P.townsOn},
+    {k:'townLED', label:'Lighting', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'sodium (orange)' : v < 0.8 ? 'mixed sodium and LED' : 'white LED', show:() => P.townsOn},
+    {type:'buttons', btns:[['Move towns', () => { P.townSeed = (P.townSeed*7919 + 31) % 100003; changed(); }]], show:() => P.townsOn},
+  ]},
   {title:'Night sky', items:[
     {k:'stars', label:'Stars', type:'check'},
     {k:'starMag', label:'Faintest stars', min:2, max:7.5, step:0.1, fmt:v => `mag ${v.toFixed(1)}`, show:() => P.stars},
@@ -65,6 +124,9 @@ const SECTIONS = [
     {k:'cuOrg', label:'Grouping', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'evenly scattered' : v < 0.6 ? 'loosely grouped' : 'clustered, with clear gaps', show:() => P.cuOn},
     {k:'cuStreets', label:'Cloud streets (lined up with the wind)', min:0, max:1, step:0.01, fmt:v => v < 0.05 ? 'none' : `${Math.round(v*100)}%`, show:() => P.cuOn},
     {k:'cuShear', label:'Wind shear (tops lean downwind)', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
+    {k:'cuRain', label:'Showers (rain, virga) from congestus up', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off' : `${Math.round(v*100)}%`, show:() => P.cuOn && P.cuModel !== 'cells'},
+    {k:'cuAnvil', label:'Anvils on deep convection', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off' : `${Math.round(v*100)}%`, show:() => P.cuOn && P.cuModel !== 'cells'},
+    {k:'cuClear', label:'Keep overhead clear', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off (as it falls)' : `${Math.round(v*100)}%`, show:() => P.cuOn},
     {k:'cuErode', label:'Edge detail', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
     {k:'cuDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
     {type:'buttons', btns:[['New clouds', () => { P.cuSeed = (P.cuSeed*7919 + 31) % 100003; changed(); }]], show:() => P.cuOn},
@@ -109,8 +171,15 @@ const SECTIONS = [
     {k:'outRes', label:'Size', type:'select', opts:[[2048, '2K · 2048 × 1024'], [4096, '4K · 4096 × 2048'], [8192, '8K · 8192 × 4096'], [16384, '16K · 16384 × 8192']]},
     {k:'outSpp', label:'Samples per pixel', type:'select', opts:[[16, '16 (draft)'], [32, '32'], [64, '64'], [128, '128'], [256, '256 (final)']]},
     {k:'format', label:'File', type:'select', opts:[['exr32', 'OpenEXR, 32-bit float'], ['exr16', 'OpenEXR, 16-bit half'], ['hdr', 'Radiance HDR']]},
+    {k:'cloudLight', label:'Light in the clouds', type:'select', opts:[['fast', 'Fast model (as the preview)'], ['pt', 'Path-traced (slow reference; use 128+ samples)']]},
+    {k:'layers', label:'Light layers', type:'select', opts:[['beauty', 'Single image'], ['layers', 'Layers: sun, sky, moon, night (stars, airglow, towns), + their sum']]},
     {k:'units', label:'Units', type:'select', opts:[['nits', 'Luminance (cd/m², physical)'], ['watts', 'Radiance (W·m⁻²·sr⁻¹ equivalent)']]},
     {type:'buttons', btns:[['Render and download', () => startExport()], ['Cancel', () => cancelExport()]]},
+    {k:'smKm', label:'Shadow matte: area', type:'select', opts:[[1, '1 km square'], [2, '2 km'], [5, '5 km'], [10, '10 km'], [25, '25 km']]},
+    {k:'smRes', label:'Shadow matte: size', type:'select', opts:[[1024, '1024²'], [2048, '2048²'], [4096, '4096²']]},
+    {type:'buttons', btns:[['Shadow matte (ground, top-down)', () => startMatte()], ['Haze for comp', () => startHaze()]]},
+    {type:'note', html:'<b>Haze for comp</b>: the air between the camera and points 250 m … 50 km away, as EXR layers <i>haze_…</i> (its light) and <i>trans_…</i> (its transmission): a CG element at that distance comps in as element × trans + haze.'},
+    {type:'note', html:'<span id="smInfo">The clouds\' shadow on the ground around the camera, seen from straight above, for lighting a CG set under this sky: R the sun through the clouds (crisp shadow), G the sky\'s light through the clouds (soft dimming), B the optical depth toward the sun. Top is north, right is east, the camera at the centre.</span>'},
     {type:'note', html:'<span id="expInfo">Linear Rec.709 (sRGB primaries), equirectangular, north in the middle. The preview pauses while the export renders. Half floats clip above 65 504, which in physical units the sun disc far exceeds.</span>'},
   ]},
 ];
@@ -125,7 +194,7 @@ function buildPanel(){
     const el = document.createElement('section'); el.className = 'sec'; if (sec.hidden && sec.hidden()) el.hidden = true; el.innerHTML = `<h2>${sec.title}</h2>`; const rows = document.createElement('div'); rows.className = 'rows'; el.appendChild(rows);
     for (const it of sec.items){
       const row = document.createElement('div'); row.className = 'row'; rows.appendChild(row);
-      if (it.type === 'buttons'){ row.classList.add('full'); row.innerHTML = `<div class="btns">${it.btns.map((b, i) => `<button class="btn" data-i="${i}">${b[0]}</button>`).join('')}</div>`;
+      if (it.type === 'buttons'){ row.classList.add('full'); row.innerHTML = `<div class="btns">${it.btns.map((b, i) => `<button class="btn" data-i="${i}"${it.paint && i < 2 ? ` data-paint="${['more', 'less'][i]}"` : ''}>${b[0]}</button>`).join('')}</div>`;
         row.querySelectorAll('button').forEach(bt => bt.onclick = () => it.btns[+bt.dataset.i][1]()); CTRL.push({it, row}); continue; }
       if (it.type === 'note'){ row.classList.add('full'); row.innerHTML = `<div class="note">${it.html}</div>`; CTRL.push({it, row}); continue; }
       const id = 'c_' + it.k;
@@ -176,14 +245,15 @@ function drawOverlay(){
 function resize(){ const [w, h] = canvasSize(); sendView({cw:w, ch:h}); drawOverlay(); drawMarks(); }
 new ResizeObserver(resize).observe($('#view'));
 let drag = null;
-cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); if (marking){ markStroke = {r: 0.006, pts: []}; MARKS.push(markStroke); addMark(e); return; } drag = {x:e.clientX, y:e.clientY, yaw:view.yaw, pitch:view.pitch, moved:false}; });
-cv.addEventListener('pointermove', e => { if (marking){ if (markStroke) addMark(e); return; } if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 3) drag.moved = true;
+cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); if (painting){ paintStroke = true; paintAt(e); return; } if (marking){ markStroke = {r: 0.006, pts: []}; MARKS.push(markStroke); addMark(e); return; } drag = {x:e.clientX, y:e.clientY, yaw:view.yaw, pitch:view.pitch, moved:false}; });
+cv.addEventListener('pointermove', e => { if (painting){ if (paintStroke) paintAt(e); return; } if (marking){ if (markStroke) addMark(e); return; } if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 3) drag.moved = true;
   if (view.mode === 1 && drag.moved){ const k = view.fov/cv.getBoundingClientRect().height; view.yaw = drag.yaw - dx*k; view.pitch = clamp(drag.pitch + dy*k, -1.5, 1.5); sendView(); }
   else if (view.mode !== 1 && P.mode === 'manual') placeSun(e); });
-cv.addEventListener('pointerup', e => { if (marking){ markStroke = null; return; } if (drag && !drag.moved && view.mode !== 1 && P.mode === 'manual') placeSun(e); drag = null; });
+cv.addEventListener('pointerup', e => { if (painting){ paintStroke = false; commitPaint(); return; } if (marking){ markStroke = null; return; } if (drag && !drag.moved && view.mode !== 1 && P.mode === 'manual') placeSun(e); drag = null; });
 cv.addEventListener('wheel', e => { if (view.mode !== 1) return; e.preventDefault(); view.fov = clamp(view.fov*Math.exp(e.deltaY*0.001), 10*D2R, 140*D2R); sendView(); }, {passive:false});
 function placeSun(e){ const pr = panoRect(), r = $('#view').getBoundingClientRect(); const u = (e.clientX - r.left - pr.x)/pr.w, v = (e.clientY - r.top - pr.y)/pr.h; if (u < 0 || u > 1 || v < 0 || v > 1) return;
   P.sunAz = ((((u - 0.5)*360 + P.azOff) % 360) + 360) % 360; P.sunEl = clamp((0.5 - v)*180, -20, 90); changed(); }
+$('#ldBtn').onclick = () => { view.lookdev = !view.lookdev; $('#ldBtn').classList.toggle('on', view.lookdev); sendView(); };
 document.querySelectorAll('#viewSeg button').forEach(b => b.onclick = () => { document.querySelectorAll('#viewSeg button').forEach(x => x.classList.toggle('on', x === b)); view.mode = +b.dataset.v; $('#legend').hidden = view.mode !== 2; sendView(); drawOverlay(); });
 document.querySelectorAll('#resSeg button').forEach(b => b.onclick = () => { document.querySelectorAll('#resSeg button').forEach(x => x.classList.toggle('on', x === b)); P.previewRes = +b.dataset.r; changed(); });
 $('#autoEx').onchange = e => { view.auto = e.target.checked; sendView(); };
@@ -212,7 +282,28 @@ function addMark(e){ const r = $('#view').getBoundingClientRect(), uv = screenTo
 function drawMarks(){ const c = $('#markCv'), r = $('#view').getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
   if (c.width !== Math.round(r.width*dpr) || c.height !== Math.round(r.height*dpr)){ c.width = Math.round(r.width*dpr); c.height = Math.round(r.height*dpr); }
   const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height); g.fillStyle = 'rgba(255,40,80,0.45)';
-  for (const s of MARKS) for (const [u, v] of s.pts){ const p = uvToScreen(u, v); if (!p) continue; g.beginPath(); g.arc(p[0], p[1], Math.max(3, s.r*p[2]), 0, 2*Math.PI); g.fill(); } }
+  for (const s of MARKS) for (const [u, v] of s.pts){ const p = uvToScreen(u, v); if (!p) continue; g.beginPath(); g.arc(p[0], p[1], Math.max(3, s.r*p[2]), 0, 2*Math.PI); g.fill(); }
+  // (while painting: the paint itself, white where cloud is added, blue where it is cleared)
+  if (painting){ const a = paintArr(); for (let y = 0; y < PH; y++) for (let x = 0; x < PW; x++){ const v = a[y*PW + x] - 128; if (Math.abs(v) < 4) continue;
+    const p = uvToScreen((x + 0.5)/PW, (y + 0.5)/PH*0.5); if (!p) continue; g.fillStyle = v > 0 ? `rgba(255,255,255,${Math.min(v/127, 1)*0.45})` : `rgba(40,120,255,${Math.min(-v/128, 1)*0.45})`;
+    g.fillRect(p[0] - p[2]/PW*0.5, p[1] - p[2]/PH*0.25, p[2]/PW + 1, p[2]/PH*0.5 + 1); } } }
+// ---------- painting cloud: more or less of it by direction (the paint raises or lowers every cloud field there) ----------
+const PW = 128, PH = 32; let painting = null, paintStroke = false, PAINT = null, PAINTKEY = null, paintDirty = false;
+function paintArr(){ if (!PAINT || PAINTKEY !== P.paint){ PAINT = new Uint8Array(PW*PH).fill(128); PAINTKEY = P.paint;
+    if (P.paint){ try { const b = atob(P.paint); if (b.length === PAINT.length) PAINT = Uint8Array.from(b, c => c.charCodeAt(0)); } catch (e){} } } return PAINT; }
+function setPainting(mode){ painting = painting === mode ? null : mode; if (painting && marking) toggleMarking();
+  $('#view').classList.toggle('marking', !!painting);
+  for (const b of document.querySelectorAll('button')){ if (b.dataset.paint) b.classList.toggle('on', b.dataset.paint === painting); }
+  setStatus(painting ? (painting === 'more' ? 'Painting: drag over the sky where you want more cloud' : 'Painting: drag over the sky to clear it') : 'Painting off'); drawMarks(); }
+function paintAt(e){ const r = $('#view').getBoundingClientRect(), uv = screenToUV(e.clientX - r.left, e.clientY - r.top); if (!uv || uv[1] > 0.5) return;
+  const a = paintArr(), el = (0.5 - uv[1])*Math.PI, rad = +P.brushSize || 6;
+  const ru = rad/360*PW/Math.max(Math.cos(el), 0.12), rv = rad/90*PH, cx = uv[0]*PW, cy = uv[1]*2*PH, sgn = painting === 'more' ? 1 : -1;
+  for (let y = Math.max(0, Math.floor(cy - rv)); y <= Math.min(PH - 1, Math.ceil(cy + rv)); y++) for (let xx = Math.floor(cx - ru); xx <= Math.ceil(cx + ru); xx++){
+    const d2 = ((xx + 0.5 - cx)/ru)**2 + ((y + 0.5 - cy)/rv)**2; if (d2 >= 1) continue; const x = ((xx % PW) + PW) % PW, i = y*PW + x;
+    a[i] = clamp(Math.round(a[i] + sgn*18*(1 - d2)*(1 - d2)), 0, 255); }
+  paintDirty = true; drawMarks(); }
+function commitPaint(){ if (!paintDirty) return; paintDirty = false; const a = paintArr(); let s = ''; for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
+  P.paint = a.every(v => v === 128) ? '' : btoa(s); PAINTKEY = P.paint; changed(); }
 async function saveFile(name, text){
   const dl = await claudeDownloads();
   if (dl){ try { await dl.save({filename: name, data: text}); setStatus('Saved ' + name); } catch (e){ setStatus(e && e.code === 'declined' ? 'Save declined' : `Could not save (${e && e.code || e})`); } return; }
@@ -240,11 +331,31 @@ async function saveReport(){
 // common it is, with its layers at heights and covers that go together (cumulus bases at the condensation level from the
 // humidity, ~125 m per °C of dewpoint depression; no towering cumulus at dawn; overcast decks hiding the layers above);
 // haze from typical aerosol loads. Stylized: golden hour and twilight, layered and towering skies, unusual air, more often.
+// a preset starts from the defaults (every cloud layer off, average air), then sets what defines it
+function applyPreset(o){
+  const keep = {rndStyle: P.rndStyle, previewRes: P.previewRes, atmSteps: P.atmSteps, volQ: P.volQ, outRes: P.outRes, outSpp: P.outSpp, format: P.format, layers: P.layers, cloudLight: P.cloudLight, units: P.units, smKm: P.smKm, smRes: P.smRes, lat: P.lat, lon: P.lon, date: P.date, utc: P.utc, surface: P.surface, albedo: P.albedo, groundMode: P.groundMode};
+  Object.assign(P, DEFAULTS, {cuOn: false}, keep, {mode: 'manual'}, o);
+  for (const k of ['cuSeed', 'scSeed', 'acSeed', 'ciSeed']) P[k] = 1 + Math.floor(Math.random()*99991);
+  syncUI(); changed();
+}
 function randomize(what){
   const st = clamp(P.rndStyle ?? 0.25, 0, 1), R = Math.random, U = (a, b) => a + (b - a)*R(), G = () => Math.sqrt(-2*Math.log(Math.max(R(), 1e-9)))*Math.cos(2*Math.PI*R());
   const pick = arr => { let t = R()*arr.reduce((s, a) => s + Math.max(a[0], 0), 0); for (const a of arr){ t -= Math.max(a[0], 0); if (t <= 0) return a[1]; } return arr[arr.length - 1][1]; };
   const seed = () => 1 + Math.floor(R()*99991);
-  if (what === 'all' || what === 'sun'){
+  // with a place picked, the time and date are drawn for that place (the sun where it really is) and the weather from its
+  // climate, roughly: by latitude band and the local season
+  const loc = P.mode === 'location';
+  if (loc && (what === 'all' || what === 'sun')){
+    const yr = (P.date || '2026-06-21').slice(0, 4), doy = Math.floor(R()*365), dt = new Date(Date.UTC(+yr, 0, 1 + doy));
+    P.date = dt.toISOString().slice(0, 10);
+    const solarNoon = 12 - (P.lon || 0)/15 + (P.utc || 0);   // (local clock time of solar noon, roughly)
+    const h = pick([[1 - 0.5*st, 'day'], [0.4 + 0.5*st, 'golden'], [0.1 + 0.2*st, 'night']]) === 'day' ? solarNoon + U(-4.5, 4.5) : R() < 0.5 ? solarNoon - U(5, 7.5) : solarNoon + U(5, 7.5);
+    const hh = ((h % 24) + 24) % 24; P.time = `${String(Math.floor(hh)).padStart(2, '0')}:${String(Math.floor((hh % 1)*60)).padStart(2, '0')}`;
+  }
+  const lat = Math.abs(P.lat || 0), mon = +(P.date || '2026-06-21').slice(5, 7);
+  const summer = loc && ((P.lat >= 0) === (mon >= 5 && mon <= 9)), winter = loc && ((P.lat >= 0) === (mon <= 2 || mon >= 11));
+  const zone = !loc ? null : lat < 15 ? 'tropical' : lat < 35 ? 'subtropical' : lat < 55 ? 'mid' : 'high';
+  if ((what === 'all' || what === 'sun') && !loc){
     P.mode = 'manual';
     const tod = pick([[1 - 0.65*st, 'day'], [0.22 + 0.5*st, 'golden'], [0.07 + 0.3*st, 'twilight'], [0.04 + 0.08*st, 'night']]);
     P.sunEl = tod === 'day' ? 15 + 55*Math.pow(R(), 1.3) : tod === 'golden' ? U(0.5, 15) : tod === 'twilight' ? U(-6, 0.5) : U(-25, -10);
@@ -254,14 +365,18 @@ function randomize(what){
     P.aerosol = pick([[5, 'continental'], [3, 'maritime'], [1 + st, 'urban'], [0.3 + 1.2*st, 'desert'], [0.2 + 1.2*st, 'smoke'], [1, 'clean']]);
     const aodMed = {continental: 0.1, maritime: 0.08, urban: 0.25, desert: 0.35, smoke: 0.5, clean: 0.04}[P.aerosol];   // (typical loads of each)
     P.aod = clamp(aodMed*Math.exp(G()*(0.5 + 0.4*st)), 0.02, 1.5);
-    P.humidity = Math.round(clamp(U(30, 85) + G()*8*st, 10, 95));
+    P.humidity = Math.round(clamp(U(30, 85) + G()*8*st + (zone === 'tropical' ? 15 : zone === 'high' ? 8 : 0) + (summer && zone === 'subtropical' ? -10 : 0), 10, 97));
+    if (zone === 'high') P.aerosol = R() < 0.6 ? 'clean' : P.aerosol; else if (zone === 'subtropical' && summer && R() < 0.3) P.aerosol = 'desert';
     P.aerH = U(0.8, 2.2);
     P.fogVis = R() < 0.03 + 0.12*st && P.sunEl < 20 ? Math.exp(U(Math.log(0.4), Math.log(8))) : 50; P.fogH = U(0.05, 0.4);
     P.ozone = Math.round(U(270, 360));
   }
   if (what === 'all' || what === 'clouds'){
-    const hi = P.sunEl > 25;   // (deep convection builds in the afternoon heat)
-    const reg = pick([[1.2 - 0.8*st, 'clear'], [4 - 1.5*st, 'fair'], [2, 'cuci'], [(hi ? 1.2 : 0.2) + 2*st, 'congestus'], [1.5, 'ac'], [1.5, 'scbroken'], [0.9, 'overcast'], [1.3, 'ci'], [0.4 + 3*st, 'layered']]);
+    const sEl = loc ? computeFrame(P).derived.sunEl : P.sunEl;
+    const hi = sEl > 25;   // (deep convection builds in the afternoon heat)
+    // (climate: the tropics and summer favour convection, winter and high latitudes stratiform decks)
+    const kc = zone === 'tropical' ? 2.2 : summer ? 1.6 : winter ? 0.3 : 1, ks = zone === 'high' ? 2 : winter ? 2.2 : zone === 'tropical' ? 0.5 : 1;
+    const reg = pick([[1.2 - 0.8*st, 'clear'], [(4 - 1.5*st)*Math.sqrt(kc), 'fair'], [2, 'cuci'], [((hi ? 1.2 : 0.2) + 2*st)*kc, 'congestus'], [1.5, 'ac'], [1.5*ks, 'scbroken'], [0.9*ks, 'overcast'], [1.3, 'ci'], [0.4 + 3*st, 'layered']]);
     const ang = U(0, 2*Math.PI), spd = U(5, 30 + 25*st); P.windX = Math.round(spd*Math.cos(ang)); P.windZ = Math.round(spd*Math.sin(ang));
     P.cuOn = P.scOn = P.acOn = P.ciOn = false;
     P.cuSeed = seed(); P.scSeed = seed(); P.acSeed = seed(); P.ciSeed = seed();
@@ -287,18 +402,54 @@ function randomize(what){
 let EXP = null;
 function startExport(){
   if (EXP || !worker || !ready) return;
-  const W = +P.outRes, H = W/2, spp = +P.outSpp; let rgb;
-  try { rgb = new Float32Array(W*H*3); } catch (e){ $('#expInfo').textContent = 'Not enough memory for this size: choose a smaller one.'; return; }
-  EXP = {W, H, rgb, format: P.format, name: `sky_el${Math.round(P.sunEl)}_az${Math.round(P.sunAz)}_${W}`, t0: performance.now()};
+  const W = +P.outRes, H = W/2, spp = +P.outSpp, layers = P.layers === 'layers'; let rgb, rgbL;
+  if (layers && W > 4096){ $('#expInfo').textContent = 'Light layers go up to 4K (four full-size images held at once): choose 4K or smaller.'; return; }
+  try { rgb = layers ? null : new Float32Array(W*H*3); rgbL = layers ? [0, 1, 2, 3].map(() => new Float32Array(W*H*3)) : null; }
+  catch (e){ $('#expInfo').textContent = 'Not enough memory for this size: choose a smaller one.'; return; }
+  EXP = {W, H, rgb, rgbL, format: layers && P.format === 'hdr' ? 'exr32' : P.format, name: `sky_el${Math.round(P.sunEl)}_az${Math.round(P.sunAz)}_${W}`, t0: performance.now()};
   $('#expInfo').textContent = `Rendering ${W} × ${H} at ${spp} samples…`;
-  worker.postMessage({type:'export', W, spp, units: P.units});
+  worker.postMessage({type:'export', W, spp, units: P.units, layers, pt: P.cloudLight === 'pt'});
+}
+// haze for comp: the air's own light and its transmission out to a set of distances, as EXR layers: a CG element at distance d
+// composited as  element × trans_d + haze_d  sits in this sky's air (no clouds: the air alone)
+const HAZE_D = [0.25, 0.5, 1, 2, 5, 10, 20, 50];
+function startHaze(){
+  if (EXP || !worker || !ready) return;
+  const W = 1024, H = 512, spp = Math.min(+P.outSpp, 32); let rgbL;
+  try { rgbL = HAZE_D.flatMap(() => [new Float32Array(W*H*3), new Float32Array(W*H*3)]); } catch (e){ $('#expInfo').textContent = 'Not enough memory.'; return; }
+  const nm = d => String(Math.round(d*1000)).padStart(5, '0') + 'm';
+  EXP = {W, H, rgb: null, rgbL, names: HAZE_D.flatMap(d => [`haze_${nm(d)}`, `trans_${nm(d)}`]), format: P.format === 'exr16' ? 'exr16' : 'exr32', name: `haze_el${Math.round(P.sunEl)}_az${Math.round(P.sunAz)}`, t0: performance.now()};
+  $('#expInfo').textContent = `Rendering the haze at ${HAZE_D.length} distances…`;
+  worker.postMessage({type:'export', W, spp, units: P.units, haze: HAZE_D});
+}
+let SMX = null;
+function startMatte(){
+  if (SMX || !worker || !ready) return;
+  const N = +P.smRes, km = +P.smKm;
+  SMX = {N, km, rgb: new Float32Array(N*N*3), name: `shadow_matte_${km}km_sun_el${Math.round(P.sunEl)}_az${Math.round(P.sunAz)}_${N}`};
+  $('#smInfo').textContent = `Tracing the clouds' shadow over ${km} km at ${N} × ${N}…`;
+  worker.postMessage({type:'shadowMatte', N, km});
+}
+async function finishMatte(secs){
+  const X = SMX; if (!X) return; SMX = null;
+  if (X.onDone){ X.onDone({N: X.N, rgb: X.rgb}); return; }   // (tests)
+  const parts = await encodeEXR(X.rgb, X.N, X.N, false, f => { $('#smInfo').textContent = `Encoding… ${Math.round(f*100)}%`; });
+  let blob = new Blob(parts, {type: 'application/octet-stream'}); const fname = X.name + '.exr';
+  const dl = await claudeDownloads();
+  if (dl){ blob = await zipStore(fname, new Uint8Array(await blob.arrayBuffer()));
+    try { await dl.save({filename: X.name + '.zip', data: blob}); }
+    catch (e){ $('#smInfo').textContent = e && e.code === 'declined' ? 'Download declined.' : `Could not save the file (${e && e.code || e}).`; return; } }
+  else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000); }
+  let mn = 1; for (let i = 0; i < X.rgb.length; i += 3) mn = Math.min(mn, X.rgb[i]);
+  $('#smInfo').textContent = `Shadow matte ${X.N} × ${X.N} over ${X.km} km traced in ${fmtSecs(secs)} and downloaded. Darkest sun transmission ${mn.toPrecision(2)}.`;
 }
 function cancelExport(){ if (!EXP) return; worker.postMessage({type:'exportCancel'}); EXP = null; $('#expInfo').textContent = 'Export cancelled.'; }
 const fmtSecs = s => { s = Math.max(0, Math.round(s)); return s >= 60 ? `${Math.floor(s/60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
 async function finishExport(secs){
   const X = EXP; if (!X) return; EXP = null;
   $('#expInfo').textContent = 'Encoding…';
-  const parts = X.format === 'hdr' ? encodeHDR(X.rgb, X.W, X.H) : await encodeEXR(X.rgb, X.W, X.H, X.format === 'exr16', f => { $('#expInfo').textContent = `Encoding… ${Math.round(f*100)}%`; });
+  const src = X.names ? X.names.map((name, i) => ({name, rgb: X.rgbL[i]})) : X.rgbL ? [{name: '', rgb: null}, ...['sun', 'sky', 'moon', 'night'].map((name, i) => ({name, rgb: X.rgbL[i]}))] : X.rgb;
+  const parts = X.format === 'hdr' ? encodeHDR(X.rgb, X.W, X.H) : await encodeEXR(src, X.W, X.H, X.format === 'exr16', f => { $('#expInfo').textContent = `Encoding… ${Math.round(f*100)}%`; });
   const fname = X.name + (X.format === 'hdr' ? '.hdr' : '.exr');
   let blob = new Blob(parts, {type: 'application/octet-stream'});
   // inside Claude the page hands files over through its downloads capability, which takes .zip but not .exr/.hdr: the
@@ -313,7 +464,8 @@ async function finishExport(secs){
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   }
-  let mx = 0; for (let i = 0; i < X.rgb.length; i += 3){ const y = 0.2126*X.rgb[i] + 0.7152*X.rgb[i + 1] + 0.0722*X.rgb[i + 2]; if (y > mx) mx = y; }
+  const at = i => X.names ? X.rgbL[0][i] : X.rgbL ? X.rgbL[0][i] + X.rgbL[1][i] + X.rgbL[2][i] + X.rgbL[3][i] : X.rgb[i];
+  let mx = 0; for (let i = 0; i < X.W*X.H*3; i += 3){ const y = 0.2126*at(i) + 0.7152*at(i + 1) + 0.0722*at(i + 2); if (y > mx) mx = y; }
   $('#expInfo').textContent = `Rendered ${X.W} × ${X.H} in ${fmtSecs(secs)} and downloaded (${(blob.size/1048576).toFixed(0)} MB). Peak ${mx.toPrecision(3)} ${P.units === 'watts' ? 'W·m⁻²·sr⁻¹' : 'cd/m²'}.`;
 }
 let dlNs;
@@ -334,13 +486,21 @@ function toHalf(v){ const f = toHalf.f, u = toHalf.u; f[0] = v; const x = u[0]; 
   if (e <= 0){ if (e < -10) return s; m = (m | 0x800000) >>> (1 - e); return s | ((m + 0x1000) >>> 13); } if (e >= 31) return s | 0x7bff; return s | (e << 10) | ((m + 0x1000) >>> 13); }
 toHalf.f = new Float32Array(1); toHalf.u = new Uint32Array(toHalf.f.buffer);
 async function deflate(u8){ const cs = new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate')); return new Uint8Array(await new Response(cs).arrayBuffer()); }
+// rgb: one image (R, G, B), or a list of layers [{name, rgb}] written as channels name.R … (name '' for the main R, G, B; an
+// rgb of null: the sum of the other layers, so a beauty that is exactly their sum needs no memory of its own)
 async function encodeEXR(rgb, W, H, half, onProg){
+  const layers = Array.isArray(rgb) ? rgb : [{name: '', rgb}];
+  const sumOf = layers.filter(l => l.rgb);
+  const chans = []; for (const l of layers) for (const c of ['B', 'G', 'R']) chans.push({name: l.name ? `${l.name}.${c}` : c, src: l.rgb, ch: c === 'R' ? 0 : c === 'G' ? 1 : 2});
+  chans.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);   // (EXR channels are stored in name order)
+  const NC = chans.length;
   const zip = typeof CompressionStream !== 'undefined'; const lines = zip ? 16 : 1; const bpp = half ? 2 : 4;
   const enc = new TextEncoder(); const hdr = []; const pushStr = s => hdr.push(...enc.encode(s), 0);
   const i32 = v => { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, v, true); hdr.push(...b); };
   const f32v = v => { const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, v, true); hdr.push(...b); };
   hdr.push(0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0);
-  pushStr('channels'); pushStr('chlist'); i32(3*(2 + 16) + 1); for (const c of ['B', 'G', 'R']){ pushStr(c); i32(half ? 1 : 2); hdr.push(0, 0, 0, 0); i32(1); i32(1); } hdr.push(0);
+  const nameLen = chans.reduce((a, c) => a + enc.encode(c.name).length + 1, 0);
+  pushStr('channels'); pushStr('chlist'); i32(nameLen + NC*16 + 1); for (const c of chans){ pushStr(c.name); i32(half ? 1 : 2); hdr.push(0, 0, 0, 0); i32(1); i32(1); } hdr.push(0);
   pushStr('compression'); pushStr('compression'); i32(1); hdr.push(zip ? 3 : 0);
   pushStr('dataWindow'); pushStr('box2i'); i32(16); i32(0); i32(0); i32(W - 1); i32(H - 1);
   pushStr('displayWindow'); pushStr('box2i'); i32(16); i32(0); i32(0); i32(W - 1); i32(H - 1);
@@ -351,8 +511,9 @@ async function encodeEXR(rgb, W, H, half, onProg){
   hdr.push(0);
   const nChunks = Math.ceil(H/lines); const chunks = [];
   for (let c = 0; c < nChunks; c++){
-    const y0 = c*lines, n = Math.min(lines, H - y0); const raw = new Uint8Array(n*W*3*bpp); const dv = new DataView(raw.buffer); let o = 0;
-    for (let j = 0; j < n; j++){ const row = (y0 + j)*W*3; for (const ch of [2, 1, 0]){ for (let x = 0; x < W; x++){ const v = rgb[row + x*3 + ch];
+    const y0 = c*lines, n = Math.min(lines, H - y0); const raw = new Uint8Array(n*W*NC*bpp); const dv = new DataView(raw.buffer); let o = 0;
+    for (let j = 0; j < n; j++){ const row = (y0 + j)*W*3; for (const cc of chans){ const ch = cc.ch; for (let x = 0; x < W; x++){ const i = row + x*3 + ch;
+      let v = 0; if (cc.src) v = cc.src[i]; else for (const l of sumOf) v += l.rgb[i];
       if (half){ dv.setUint16(o, toHalf(Math.min(v, 65504)), true); o += 2; } else { dv.setFloat32(o, v, true); o += 4; } } } }
     let data = raw;
     if (zip){ const t = new Uint8Array(raw.length); const h2 = (raw.length + 1) >> 1; for (let i = 0, a = 0, b = h2; i < raw.length; i += 2){ t[a++] = raw[i]; if (i + 1 < raw.length) t[b++] = raw[i + 1]; }
@@ -398,9 +559,12 @@ function start(){
     else if (m.type === 'probe'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
     else if (m.type === 'shot' || m.type === 'snap'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
     else if (m.type === 'pixels'){ const r = pending.get(m.id); pending.delete(m.id); if (r) r(m); }
-    else if (m.type === 'exportChunk'){ if (EXP && EXP.W === m.W) EXP.rgb.set(m.rgb, m.y0*m.W*3); }
+    else if (m.type === 'exportChunk'){ if (EXP && EXP.W === m.W) (EXP.rgbL ? EXP.rgbL[m.layer] : EXP.rgb).set(m.rgb, m.y0*m.W*3); }
     else if (m.type === 'exportProgress'){ if (EXP){ const el = m.secs, eta = m.f > 0.02 ? el/m.f - el : NaN; $('#expInfo').textContent = `Rendering ${EXP.W} × ${EXP.H}: ${Math.round(m.f*100)}%` + (isFinite(eta) ? `, about ${fmtSecs(eta)} left` : ''); setStatus(`Exporting · ${Math.round(m.f*100)}%`); } }
-    else if (m.type === 'exportDone') finishExport(m.secs); };
+    else if (m.type === 'exportDone') finishExport(m.secs);
+    else if (m.type === 'smChunk'){ if (SMX && SMX.N === m.N){ const a = m.data, o = SMX.rgb, b = m.y0*m.N*3; for (let i = 0; i < m.rows*m.N; i++){ o[b + 3*i] = a[4*i]; o[b + 3*i + 1] = a[4*i + 1]; o[b + 3*i + 2] = a[4*i + 2]; } } }
+    else if (m.type === 'smProgress'){ if (SMX) $('#smInfo').textContent = `Tracing the clouds' shadow: ${Math.round(m.f*100)}%`; }
+    else if (m.type === 'smDone') finishMatte(m.secs); };
   worker.onerror = e => { console.error('worker', e.message); $('#ldStep').textContent = 'Worker error: ' + e.message; window.__sky.error = e.message; };
   const [w, h] = canvasSize(); off.width = w; off.height = h;
   worker.postMessage({type:'init', canvas: off, noPresent: !!P.noPresent}, [off]);
@@ -413,6 +577,7 @@ window.__sky = {
   readback: () => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'readback', id}); }),
   setView(o){ Object.assign(view, o); sendView(); },
   probe: (l, alt) => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'probe', id, l, alt}); }),
+  matte: (N, km) => new Promise(res => { P.smRes = N; P.smKm = km; startMatte(); if (SMX) SMX.onDone = res; else res(null); }),
   shot: () => new Promise(res => { const id = ++rbId; pending.set(id, res); worker.postMessage({type:'shot', id}); }),
 };
 start();

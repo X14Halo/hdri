@@ -5,7 +5,8 @@ const FRAME_LAYOUT = [
   ['BR', 6], ['BMs', 6], ['BMa', 6], ['BO', 6], ['Alb', 6], ['SunE', 6], ['MoonE', 6], ['SunK', 6], ['SunA', 6], ['MoonK', 6], ['Air', 6],
   ['CMFx', 6], ['CMFy', 6], ['CMFz', 6], ['Star', 96],
   ['atm', 1], ['atm2', 1], ['fogPh', 1], ['sunDir', 1], ['moonDir', 1], ['moonLight', 1], ['pole', 1], ['eqX', 1], ['eqY', 1], ['eqZ', 1],
-  ['galX', 1], ['galY', 1], ['galZ', 1], ['opts', 1],
+  ['galX', 1], ['galY', 1], ['galZ', 1], ['opts', 1], ['terr', 1], ['terr2', 1], ['terr3', 1],
+  ['TownS', 6], ['Town', 8], ['townO', 1],
 ];
 const FRAME_OFF = (() => { const o = {}; let n = 0; for (const [k, len] of FRAME_LAYOUT){ o[k] = n; n += len*4; } o._size = n; return o; })();
 
@@ -46,6 +47,20 @@ function computeFrame(P){
   const phaseDeg = phase*R2D, allen = Math.pow(10, -0.4*(0.026*phaseDeg + 4e-9*phaseDeg**4));
   const meanALS = moonDiskMean(md, ml, pole);
   const F = new Float32Array(FRAME_OFF._size);
+  // town lights: a mix of high-pressure sodium (the orange of older street lighting: a broadened, self-reversed sodium line with
+  // weaker lines either side) and white LED (a blue emitter under a broad yellow phosphor), normalised to 1 cd/m²
+  const townSpec = (() => { const led = clamp(P.townLED ?? 0.5, 0, 1), g = (l, c, w) => Math.exp(-0.5*((l - c)/w)**2);
+    const s = LAM.map(l => (1 - led)*(1.0*g(l, 595, 9) + 0.8*g(l, 583, 7) + 0.25*g(l, 568, 4) + 0.3*g(l, 616, 5) + 0.12*g(l, 498, 4) + 0.1*g(l, 515, 4) + 0.04)
+                         + led*(0.9*g(l, 452, 10) + 1.0*g(l, 565, 55) + 0.25*g(l, 620, 40)));
+    let Y = 0; for (let i = 0; i < NL; i++) Y += s[i]*CMFY[i]; return s.map(v => v/Y); })();
+  // the towns: placed round the horizon at distances about the setting, each a disc of lit ground (radius km, mean upward
+  // luminance cd/m²: a town centre ~0.5, its suburbs a tenth of that)
+  { const n = P.townsOn ? clamp(Math.round(P.townN ?? 3), 1, 8) : 0, r = rng32((P.townSeed ?? 1)*7907 + 3);
+    for (let k = 0; k < 8; k++){ let v = [0, 0, 0, 0];
+      if (k < n){ const az = r()*2*Math.PI, d = (P.townDist ?? 15)*Math.exp(0.6*(r()*2 - 1)), rad = (0.8 + 3*r()*r())*(P.townSize ?? 1);
+        v = [d*Math.sin(az), d*Math.cos(az), rad, (P.townBright ?? 1)*0.25*(0.5 + r())]; }
+      F.set(v, FRAME_OFF.Town + 4*k); }
+    F.set([n, 0, 0, 0], FRAME_OFF.townO); }
   const put = (k, i, v) => { F[FRAME_OFF[k] + i] = v; };
   for (let i = 0; i < NL; i++){ const l = LAM[i];
     const ext = betaM550*Math.pow(l/550, -alphaE); const ssa = 1 - (1 - ae.ssa(l))/Math.pow(grow, 0.7);
@@ -58,6 +73,7 @@ function computeFrame(P){
     for (const [ll, R] of [[557.7, 250], [589.3, 40], [630.0, 60], [636.4, 20]]) if (Math.abs(ll - l) <= 7.5) ag += R*phot(ll)/DL;
     put('Air', i, ag*P.airglow);
     put('CMFx', i, CMFX[i]); put('CMFy', i, CMFY[i]); put('CMFz', i, CMFZ[i]);
+    put('TownS', i, townSpec[i]);
   }
   F.set(STAR_SPEC, FRAME_OFF.Star);
   const sunOn = sunEl > -14 ? 1 : 0, moonOn = (moonEl > -2 && sunEl < 2) ? 1 : 0;
@@ -70,6 +86,10 @@ function computeFrame(P){
   v4('eqX', ...eqX, sunEl < 0 ? 1 : 0); v4('eqY', ...eqY, P.stars ? 1 : 0); v4('eqZ', ...zp, P.starMag);
   v4('galX', ...GALACTIC.x, P.mw); v4('galY', ...GALACTIC.y, Math.round(15*Math.log10(4600/2500))); v4('galZ', ...GALACTIC.z, P.includeSun ? 1 : 0);
   v4('opts', P.atmSteps || 32, P.groundMode === 'black' ? 1 : 0, P.includeSun ? 1 : 0, 0);
+  // the horizon: distant hills (height km, distance km, ruggedness, seed) and a tree line (height km, distance km, cover, seed)
+  v4('terr', P.hillsOn ? P.hillH : 0, P.hillDist, P.hillRough, P.hillSeed);
+  v4('terr2', P.treesOn ? P.treeH/1000 : 0, P.treeDist, P.treeCover, P.treeSeed);
+  v4('terr3', P.hillAlb, P.treeAlb, 0, 0);
   // the tables depend only on the air and the ground, not on the sun (except the sky irradiance table, rebuilt per change)
   const atmKey = [aodE, HM, alphaE, fogS, fogH, P.aerosol, P.ozone, P.surface, P.albedo, RH, P.siteAlt || 0].map(v => typeof v === 'number' ? v.toPrecision(5) : v).join('|');
   const i550 = 11, h = P.camH, b550 = BETA_R[i550]*altK*Math.exp(-h/8) + (F[FRAME_OFF.BMs + i550] + F[FRAME_OFF.BMa + i550])*Math.exp(-h/HM) + fogS*Math.exp(-h/fogH);
