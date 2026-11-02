@@ -72,22 +72,22 @@ const SECTIONS = [
     {k:'moonIllum', label:'Moon illuminated', min:0, max:1, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.moonOverride},
   ]},
   {title:'Air', items:[
-    {k:'aerosol', label:'Aerosol type', type:'select', opts:Object.entries(AEROSOLS).map(([k, a]) => [k, a.name])},
     {k:'aod', label:'Haze (aerosol optical depth, 550 nm)', min:0.01, max:2, log:true, fmt:v => v.toFixed(3)},
+    {k:'aerosol', label:'Aerosol type', type:'select', opts:Object.entries(AEROSOLS).map(([k, a]) => [k, a.name])},
     {k:'humidity', label:'Relative humidity', min:5, max:97, step:1, fmt:v => `${Math.round(v)}%`},
-    {k:'aerH', label:'Haze layer height', min:0.3, max:4, step:0.05, fmt:v => `${v.toFixed(2)} km`},
-    {k:'ozone', label:'Ozone', min:200, max:500, step:5, fmt:v => `${Math.round(v)} DU`},
     {k:'fogVis', label:'Fog or mist (visibility)', min:0.05, max:50, log:true, fmt:v => v >= 49.5 ? 'none' : v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(1)} km`},
     {k:'fogH', label:'Fog depth', min:0.02, max:1, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.fogVis < 49.5},
+    {k:'aerH', label:'Haze layer height', min:0.3, max:4, step:0.05, fmt:v => `${v.toFixed(2)} km`},
+    {k:'ozone', label:'Ozone', min:200, max:500, step:5, fmt:v => `${Math.round(v)} DU`},
     {k:'diurnal', label:'Morning mist and evening haze follow the sun', type:'check'},
     {k:'siteAlt', label:'Ground altitude', min:0, max:5, step:0.05, fmt:v => `${Math.round(v*1000)} m`},
   ]},
   {title:'Ground', items:[
     {k:'surface', label:'Surface', type:'select', opts:Object.entries(SURFACES).map(([k, s]) => [k, s.name])},
     {k:'albedo', label:'Albedo', min:0, max:1, step:0.01, fmt:v => v.toFixed(2), show:() => P.surface === 'grey'},
-    {k:'groundMode', label:'Below the horizon', type:'select', opts:[['lit', 'Lit ground'], ['black', 'Black (sky only)']]},
-    {k:'azOff', label:'Rotate the panorama (north offset)', min:-180, max:180, step:0.5, fmt:fmtDeg},
     {k:'camH', label:'Camera height', min:0.001, max:3, log:true, fmt:v => v < 1 ? `${Math.round(v*1000)} m` : `${v.toFixed(2)} km`},
+    {k:'azOff', label:'Rotate the panorama (north offset)', min:-180, max:180, step:0.5, fmt:fmtDeg},
+    {k:'groundMode', label:'Below the horizon', type:'select', opts:[['lit', 'Lit ground'], ['black', 'Black (sky only)']]},
   ]},
   {title:'Horizon', items:[
     {k:'hillsOn', label:'Distant hills', type:'check'},
@@ -120,24 +120,24 @@ const SECTIONS = [
   ]},
   {title:'Cumulus', layer:'cuOn', items:[
     {k:'cuOn', label:'Cumulus layer', type:'check'},
-    {k:'cuModel', label:'Formation', type:'select', opts:[['field', 'One continuous field (natural groups)'], ['cells', 'Individual clouds']], show:() => P.cuOn},
     {k:'cuCover', label:'Cloud cover', min:0, max:0.9, step:0.01, fmt:v => `${Math.round(v*100)}%`, show:() => P.cuOn},
     {k:'cuDev', label:'Development', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'fair weather' : v < 0.45 ? 'moderate (mediocris)' : v < 0.75 ? 'towering (congestus)' : 'deep convection', show:() => P.cuOn},
     {k:'cuBase', label:'Cloud base', min:0.3, max:3.5, step:0.05, fmt:v => `${Math.round(v*1000)} m`, show:() => P.cuOn},
     {k:'cuSize', label:'Cloud size', min:0.4, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
     {k:'cuOrg', label:'Grouping', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'evenly scattered' : v < 0.6 ? 'loosely grouped' : 'clustered, with clear gaps', show:() => P.cuOn},
+    {type:'buttons', btns:[['New clouds', () => { P.cuSeed = (P.cuSeed*7919 + 31) % 100003; changed(); }]], show:() => P.cuOn},
     {k:'cuStreets', label:'Cloud streets (lined up with the wind)', min:0, max:1, step:0.01, fmt:v => v < 0.05 ? 'none' : `${Math.round(v*100)}%`, show:() => P.cuOn},
     {k:'cuShear', label:'Wind shear (tops lean downwind)', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
+    {k:'cuClear', label:'Keep overhead clear', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off (as it falls)' : `${Math.round(v*100)}%`, show:() => P.cuOn},
     {k:'cuRain', label:'Showers (rain, virga) from congestus up', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off' : `${Math.round(v*100)}%`, show:() => P.cuOn && P.cuModel !== 'cells'},
     {k:'cuAnvil', label:'Anvils on deep convection', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off' : `${Math.round(v*100)}%`, show:() => P.cuOn && P.cuModel !== 'cells'},
-    {k:'rainBow', label:'Rainbows in the rain', min:0, max:2, step:0.01, fmt:v => v < 0.02 ? 'none' : `×${v.toFixed(2)}`, show:() => P.cuOn && P.cuModel !== 'cells' && P.cuRain > 0.02},
     {k:'cuMamma', label:'Mammatus under anvils', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'none' : `${Math.round(v*100)}%`, show:() => P.cuOn && P.cuModel !== 'cells' && P.cuAnvil > 0.02},
-    {k:'cuClear', label:'Keep overhead clear', min:0, max:1, step:0.01, fmt:v => v < 0.02 ? 'off (as it falls)' : `${Math.round(v*100)}%`, show:() => P.cuOn},
-    {k:'cuErode', label:'Edge detail', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
+    {k:'rainBow', label:'Rainbows in the rain', min:0, max:2, step:0.01, fmt:v => v < 0.02 ? 'none' : `×${v.toFixed(2)}`, show:() => P.cuOn && P.cuModel !== 'cells' && P.cuRain > 0.02},
     {k:'cuDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
-    {k:'cuDrop', label:'Droplet size (silver linings, coronae)', min:5, max:40, step:0.5, fmt:v => `${v.toFixed(1)} µm`, show:() => P.cuOn},
+    {k:'cuErode', label:'Edge detail', min:0, max:2, step:0.01, fmt:v => v.toFixed(2), show:() => P.cuOn},
     {k:'cuAmb', label:'Sky light on the clouds', min:0, max:2, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.cuOn},
-    {type:'buttons', btns:[['New clouds', () => { P.cuSeed = (P.cuSeed*7919 + 31) % 100003; changed(); }]], show:() => P.cuOn},
+    {k:'cuDrop', label:'Droplet size (silver linings, coronae)', min:5, max:40, step:0.5, fmt:v => `${v.toFixed(1)} µm`, show:() => P.cuOn},
+    {k:'cuModel', label:'Formation', type:'select', opts:[['field', 'One continuous field (natural groups)'], ['cells', 'Individual clouds']], show:() => P.cuOn},
   ]},
   {title:'Wind', items:[
     {k:'windX', label:'Low wind (cloud base), from west (+) / east (−)', min:-60, max:60, step:1, fmt:v => `${Math.round(v)} km/h`},
@@ -153,8 +153,8 @@ const SECTIONS = [
     {k:'scBase', label:'Base', min:0.1, max:2.5, step:0.05, fmt:v => `${Math.round(v*1000)} m`, show:() => P.scOn},
     {k:'scThick', label:'Thickness', min:0.1, max:1.5, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.scOn},
     {k:'scCell', label:'Cell size', min:0.4, max:5, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.scOn},
-    {k:'scDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.scOn},
     {type:'buttons', btns:[['New pattern', () => { P.scSeed = (P.scSeed*7919 + 31) % 100003; changed(); }]], show:() => P.scOn},
+    {k:'scDens', label:'Water content (density)', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.scOn},
   ]},
   {title:'Altocumulus · altostratus', items:[
     {k:'acOn', label:'Mid-level layer', type:'check'},
@@ -163,8 +163,8 @@ const SECTIONS = [
     {k:'acBase', label:'Base', min:2, max:7, step:0.05, fmt:v => `${v.toFixed(2)} km`, show:() => P.acOn},
     {k:'acThick', label:'Thickness', min:0.1, max:2.5, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.acOn},
     {k:'acCell', label:'Cloudlet size', min:0.2, max:2, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.acOn},
-    {k:'acDens', label:'Density', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.acOn},
     {type:'buttons', btns:[['New pattern', () => { P.acSeed = (P.acSeed*7919 + 31) % 100003; changed(); }]], show:() => P.acOn},
+    {k:'acDens', label:'Density', min:0.3, max:2.5, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.acOn},
   ]},
   {title:'Cirrus · cirrostratus · cirrocumulus', items:[
     {k:'ciOn', label:'High ice-cloud layer', type:'check'},
@@ -172,13 +172,13 @@ const SECTIONS = [
     {k:'ciForm', label:'Form', min:0, max:1, step:0.01, fmt:v => v < 0.2 ? 'cirrostratus (veil)' : v < 0.65 ? 'cirrus (fibres and fall streaks)' : 'cirrocumulus (ripples)', show:() => P.ciOn},
     {k:'ciBase', label:'Height', min:6, max:13, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
     {k:'ciThick', label:'Thickness', min:0.2, max:2.5, step:0.01, fmt:v => `${Math.round(v*1000)} m`, show:() => P.ciOn},
+    {k:'ciCell', label:'Pattern scale', min:0.4, max:5, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
+    {type:'buttons', btns:[['New pattern', () => { P.ciSeed = (P.ciSeed*7919 + 31) % 100003; changed(); }]], show:() => P.ciOn},
     {k:'ciFall', label:'Fall streak length', min:0, max:3, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
     {k:'ciShear', label:'Wind shear (streak curve)', min:0, max:3, step:0.01, fmt:v => v.toFixed(2), show:() => P.ciOn},
-    {k:'ciCell', label:'Pattern scale', min:0.4, max:5, step:0.05, fmt:v => `${v.toFixed(1)} km`, show:() => P.ciOn},
     {k:'ciDens', label:'Optical thickness', min:0.2, max:4, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.ciOn},
     {k:'ciHalo', label:'Halos (22°, 46°)', min:0, max:2, step:0.01, fmt:v => v < 0.02 ? 'none' : `×${v.toFixed(2)}`, show:() => P.ciOn},
     {k:'ciDogs', label:'Sundogs (flat plate crystals)', min:0, max:2, step:0.01, fmt:v => v < 0.02 ? 'none' : `×${v.toFixed(2)}`, show:() => P.ciOn},
-    {type:'buttons', btns:[['New pattern', () => { P.ciSeed = (P.ciSeed*7919 + 31) % 100003; changed(); }]], show:() => P.ciOn},
   ]},
   {title:'Timelapse', items:[
     {k:'tlFrames', label:'Frames', min:2, max:240, step:1, fmt:v => `${Math.round(v)}`},
@@ -212,28 +212,36 @@ const SECTIONS = [
     {k:'outRes', label:'Size', type:'select', opts:[[2048, '2K · 2048 × 1024'], [4096, '4K · 4096 × 2048'], [8192, '8K · 8192 × 4096'], [16384, '16K · 16384 × 8192']]},
     {k:'outSpp', label:'Samples per pixel', type:'select', opts:[[16, '16 (draft)'], [32, '32'], [64, '64'], [128, '128'], [256, '256 (final)']]},
     {k:'format', label:'File', type:'select', opts:[['exr32', 'OpenEXR, 32-bit float'], ['exr16', 'OpenEXR, 16-bit half'], ['hdr', 'Radiance HDR']]},
-    {k:'cloudLight', label:'Light in the clouds', type:'select', opts:[['fast', 'Fast model (as the preview)'], ['pt', 'Path-traced (slow reference; use 128+ samples)']]},
-    {k:'layers', label:'Light layers', type:'select', opts:[['beauty', 'Single image'], ['layers', 'Layers: sun, sky, moon, night (stars, airglow, towns), + their sum']]},
-    {k:'units', label:'Units', type:'select', opts:[['nits', 'Luminance (cd/m², physical)'], ['watts', 'Radiance (W·m⁻²·sr⁻¹ equivalent)']]},
     {k:'expSpace', label:'Colour space', type:'select', opts:[['rec709', 'Linear Rec.709 (sRGB primaries)'], ['acescg', 'ACEScg (AP1)'], ['aces2065', 'ACES2065-1 (AP0)'], ['xyz', 'CIE XYZ']]},
+    {k:'layers', label:'Light layers', type:'select', opts:[['beauty', 'Single image'], ['layers', 'Layers: sun, sky, moon, night (stars, airglow, towns), + their sum']]},
     {k:'sunLight', label:'Sun', type:'select', opts:[['dome', 'In the image'], ['split', 'As a separate light (disc left out; JSON, USD, Nuke files)']]},
+    {type:'buttons', btns:[['Render and download', () => startExport()], ['Cancel', () => cancelExport()]]},
+    {type:'note', html:'<span id="expInfo">Equirectangular, north in the middle, colours unclipped (out-of-gamut colours keep negative values) with the colour space written into the EXR. Written band by band, so 8K and 16K work with layers too. The preview pauses while the export renders. Half floats clip above 65 504, which in physical units the sun disc far exceeds: split the sun off or use 32-bit.</span>'},
+    {k:'units', label:'Units', type:'select', opts:[['nits', 'Luminance (cd/m², physical)'], ['watts', 'Radiance (W·m⁻²·sr⁻¹ equivalent)']]},
+    {k:'cloudLight', label:'Light in the clouds', type:'select', opts:[['fast', 'Fast model (as the preview)'], ['pt', 'Path-traced (slow reference; use 128+ samples)']]},
     {k:'expAlpha', label:'Mattes: cloud.A (cloud opacity) and ground.A (ground, horizon)', type:'check'},
     {k:'expRig', label:'Light rig files with every export (JSON, USD .usda, Nuke .nk)', type:'check'},
-    {type:'buttons', btns:[['Render and download', () => startExport()], ['Cancel', () => cancelExport()]]},
-    {k:'smKm', label:'Shadow matte: area', type:'select', opts:[[1, '1 km square'], [2, '2 km'], [5, '5 km'], [10, '10 km'], [25, '25 km']]},
-    {k:'smRes', label:'Shadow matte: size', type:'select', opts:[[1024, '1024²'], [2048, '2048²'], [4096, '4096²']]},
-    {type:'buttons', btns:[['Shadow matte (ground, top-down)', () => startMatte()], ['Haze for comp', () => startHaze()]]},
+  ]},
+  {title:'Passes for comp and 3D', items:[
     {k:'hazeRes', label:'Haze for comp: size', type:'select', opts:[[1024, '1K · 1024 × 512'], [2048, '2K'], [4096, '4K'], [8192, '8K']]},
     {k:'hazeShafts', label:'Haze for comp: with the clouds\' shadows in the air (shafts)', type:'check'},
+    {type:'buttons', btns:[['Haze for comp', () => startHaze()]]},
     {type:'note', html:'<b>Haze for comp</b>: the air between the camera and points 250 m … 50 km away, as EXR layers <i>haze_…</i> (its light) and <i>trans_…</i> (its transmission): a CG element at that distance comps in as element × trans + haze.'},
+    {k:'smKm', label:'Shadow matte: area', type:'select', opts:[[1, '1 km square'], [2, '2 km'], [5, '5 km'], [10, '10 km'], [25, '25 km']]},
+    {k:'smRes', label:'Shadow matte: size', type:'select', opts:[[1024, '1024²'], [2048, '2048²'], [4096, '4096²']]},
+    {type:'buttons', btns:[['Shadow matte (ground, top-down)', () => startMatte()]]},
+    {type:'note', html:'<span id="smInfo">The clouds\' shadow on the ground around the camera, seen from straight above, for lighting a CG set under this sky: R the sun through the clouds (crisp shadow), G the sky\'s light through the clouds (soft dimming), B the optical depth toward the sun. Top is north, right is east, the camera at the centre.</span>'},
     {k:'vxKm', label:'Cloud volume: area', type:'select', opts:[[2, '2 km square'], [5, '5 km'], [10, '10 km'], [20, '20 km'], [40, '40 km']]},
     {k:'vxRes', label:'Cloud volume: voxels across', type:'select', opts:[[128, '128'], [256, '256'], [384, '384'], [512, '512']]},
     {type:'buttons', btns:[['Cloud volume (Houdini, Blender)', () => startVolume()], ['Cancel', () => cancelVolume()]]},
     {type:'note', html:'<span id="vxInfo">The clouds around the camera as a grid of extinction (half floats, cubic voxels, as tall as the cloud layers that are on), with a Houdini Python SOP and a Blender script that build a VDB from it. Lined up with the light rig files.</span>'},
-    {type:'note', html:'<span id="smInfo">The clouds\' shadow on the ground around the camera, seen from straight above, for lighting a CG set under this sky: R the sun through the clouds (crisp shadow), G the sky\'s light through the clouds (soft dimming), B the optical depth toward the sun. Top is north, right is east, the camera at the centre.</span>'},
-    {type:'note', html:'<span id="expInfo">Equirectangular, north in the middle, colours unclipped (out-of-gamut colours keep negative values) with the colour space written into the EXR. Written band by band, so 8K and 16K work with layers too. The preview pauses while the export renders. Half floats clip above 65 504, which in physical units the sun disc far exceeds: split the sun off or use 32-bit.</span>'},
   ]},
 ];
+// the panel's order: what an artist reaches for first at the top (a new sky, the sun, the clouds, the air, the export), then
+// the finer controls and the specialist tools, the scene files and issue reports last
+{ const ORDER = ['Randomize', 'Presets', 'Sun & moon', 'Cumulus', 'Stratocumulus · stratus', 'Altocumulus · altostratus', 'Cirrus · cirrostratus · cirrocumulus',
+    'Air', 'Wind', 'Export', 'Ground', 'Horizon', 'Paint clouds', 'Night sky', 'Town lights', 'Passes for comp and 3D', 'Timelapse', 'Look-dev model', 'Match a plate', 'Quality', 'Scene file'];
+  SECTIONS.sort((a, b) => { const i = ORDER.indexOf(a.title), j = ORDER.indexOf(b.title); return (i < 0 ? 99 : i) - (j < 0 ? 99 : j); }); }
 
 /* ---------- panel ---------- */
 const CTRL = [];
@@ -305,10 +313,6 @@ function drawOverlay(){
   const ov = $('#overlay'); if (view.mode === 1){ ov.innerHTML = ''; return; }
   const pr = panoRect(); let html = `<div class="hline" style="left:${pr.x}px;width:${pr.w}px;top:${pr.y + pr.h/2}px"></div>`;
   ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].forEach((n, i) => { const az = i*45; const u = (((az - P.azOff)/360 + 0.5) % 1 + 1) % 1; html += `<div class="compass" style="left:${pr.x + u*pr.w}px;top:${pr.y + pr.h/2 + 4}px">${n}</div>`; });
-  // (the wind: an arrow on the horizon where the clouds are heading, the upper wind's where they differ)
-  const wa = (x, z, lab) => { const az = Math.atan2(x, z)*R2D, u = (((az - P.azOff)/360 + 0.5) % 1 + 1) % 1; html += `<div class="compass" style="left:${pr.x + u*pr.w}px;top:${pr.y + pr.h/2 - 20}px;color:#9ec5ff">➜ ${lab}</div>`; };
-  if (Math.hypot(P.windX, P.windZ) > 0.5) wa(P.windX, P.windZ, `wind ${Math.round(Math.hypot(P.windX, P.windZ))} km/h`);
-  if (P.windUpX !== undefined && Math.hypot(P.windUpX, P.windUpZ) > 0.5) wa(P.windUpX, P.windUpZ, `upper ${Math.round(Math.hypot(P.windUpX, P.windUpZ))}`);
   ov.innerHTML = html; drawCrop(); }
 function resize(){ const [w, h] = canvasSize(); sendView({cw:w, ch:h}); drawOverlay(); drawMarks(); if (PLATE.img) plateLayout(); }
 new ResizeObserver(resize).observe($('#view'));
@@ -492,7 +496,10 @@ function randomize(what){
     P.cuSeed = seed(); P.scSeed = seed(); P.acSeed = seed(); P.ciSeed = seed();
     const lcl = clamp(0.025*(100 - P.humidity) + G()*0.1, 0.4, 3.2);   // km
     const cu = (cov, dev) => { P.cuOn = true; P.cuCover = clamp(cov, 0.03, 0.85); P.cuDev = clamp(dev, 0, 1); P.cuBase = +lcl.toFixed(2);
-      P.cuSize = clamp(U(0.8, 1.25) + G()*0.15*st, 0.5, 2); P.cuOrg = U(0.2, 0.85); P.cuStreets = R() < 0.15 + 0.15*st ? U(0.3, 0.9) : 0; P.cuShear = U(0.2, 1.1 + 0.6*st); };
+      P.cuSize = clamp(U(0.8, 1.25) + G()*0.15*st, 0.5, 2); P.cuOrg = U(0.2, 0.85); P.cuStreets = R() < 0.15 + 0.15*st ? U(0.3, 0.9) : 0; P.cuShear = U(0.2, 1.1 + 0.6*st);
+      // (deep convection: a few storms, not a sky of them; and mostly standing off at a distance, as such skies are usually shot,
+      // rather than with the camera under a storm's base — sometimes under it all the same)
+      if (P.cuDev > 0.6){ P.cuCover = Math.min(P.cuCover, U(0.12, 0.3)); P.cuClear = R() < 0.75 ? +U(0.5, 0.9).toFixed(2) : 0; } else P.cuClear = 0; };
     const ci = (cov) => { P.ciOn = true; P.ciCover = clamp(cov, 0.05, 0.9); P.ciBase = U(7.5, 11); P.ciForm = U(0.2, 0.75); P.ciThick = U(0.4, 1.2); P.ciFall = U(0.5, 2.5); P.ciShear = U(0.5, 2); P.ciCell = U(0.8, 2.5); P.ciDens = U(0.7, 1.6 + st); };
     const ac = (cov) => { P.acOn = true; P.acCover = clamp(cov, 0.1, 0.95); P.acBase = U(2.8, 6); P.acForm = U(0.4, 1); P.acThick = U(0.2, 0.6); P.acCell = U(0.3, 1.2); };
     const sc = (cov, form) => { P.scOn = true; P.scCover = clamp(cov, 0.2, 1); P.scForm = form; P.scBase = +clamp(lcl*0.8, 0.3, 2).toFixed(2); P.scThick = U(0.25, 0.7); P.scCell = U(0.9, 2.5); };

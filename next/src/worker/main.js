@@ -35,7 +35,7 @@ function layoutFor(code, use){
     else if (q.includes('storage')) ents.push({binding:b, visibility:V, buffer:{type:'read-only-storage'}});
     else if (t === 'sampler') ents.push({binding:b, visibility:V, sampler:{type:'filtering'}});
     else if (t.startsWith('texture_storage')){ const mm = t.match(/texture_storage_(\w+)<(\w+),/); ents.push({binding:b, visibility:V, storageTexture:{access:'write-only', format:mm[2], viewDimension:mm[1].replace('_array', '-array')}}); }
-    else if (t.startsWith('texture_')){ const dim = t.match(/texture_(\w+)</)[1].replace('_array', '-array'); ents.push({binding:b, visibility:V, texture:{sampleType:'float', viewDimension:dim}}); } }
+    else if (t.startsWith('texture_')){ const dim = t.match(/texture_(\w+)</)[1].replace('_array', '-array'); ents.push({binding:b, visibility:V, texture:{sampleType: /<u32>/.test(t) ? 'uint' : 'float', viewDimension:dim}}); } }
   return device.createBindGroupLayout({entries: ents});
 }
 const computePipe = async (label, code, entry, use) => { const lay = layoutFor(code, use);
@@ -75,11 +75,15 @@ async function init(m){
   R.fieldBuf = device.createBuffer({size: 256*256*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
   R.fgp = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   // the cumulus field, mapped once per level (640² texels over the level and a margin)
-  R.cuMap = device.createTexture({size:[640, 640, VOL.NLEV], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING});
+  R.cuMap = device.createTexture({size:[640, 640, VOL.NLEV], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST});
+  // (the distance from each cumulus's edge: jump flooding between two seed maps, then written with the field into cuMap2 and copied back)
+  R.cuMap2 = device.createTexture({size:[640, 640, VOL.NLEV], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC});
+  R.jfa = [0, 1].map(() => device.createTexture({size:[640, 640, VOL.NLEV], format:'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING}));
+  R.jfaSteps = [64, 32, 16, 8, 4, 2, 1, 1].map(s => { const b = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}); device.queue.writeBuffer(b, 0, new Uint32Array([s, 0, 0, 0])); return b; });
   R.cuMapW = R.cuMap.createView({dimension:'2d-array'});
   R.paintTex = device.createTexture({size:[128, 32], format:'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST});
   device.queue.writeTexture({texture: R.paintTex}, new Uint8Array(128*32*4).fill(128), {bytesPerRow: 512}, [128, 32]);
-  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight, pCuMap, pShadow, pVol] = await Promise.all([
+  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight, pCuMap, pShadow, pVol, pJfaI, pJfaS, pJfaF] = await Promise.all([
     computePipe('transLUT', wgsl('common', 'atmo', 'cloudu', 'luts'), 'transLUT', [0, 1]),
     computePipe('msLUT', wgsl('common', 'atmo', 'cloudu', 'luts'), 'msLUTpass', [0, 2, 4, 5]),
     computePipe('ambLUT', wgsl('common', 'atmo', 'cloudu', 'luts'), 'ambPass', [0, 2, 3, 4, 6, 8, 9]),
@@ -93,8 +97,11 @@ async function init(m){
     computePipe('cumap', wgsl('common', 'cloudu', 'cloudgen'), 'cuMapMain', [0, 5, 6, 7, 8, 11]),
     computePipe('shadowmap', wgsl('common', 'cloudu', 'cloudvol', 'cloudlit', 'shadowmap'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
     computePipe('volexport', wgsl('common', 'cloudu', 'cloudvol', 'volexport'), 'main', [0, 1, 2, 3, 4, 5, 6, 7, 8]),
+    computePipe('jfaInit', wgsl('common', 'cloudu', 'cloudgen'), 'jfaInit', [5, 6, 12, 16]),
+    computePipe('jfaStep', wgsl('common', 'cloudu', 'cloudgen'), 'jfaStep', [5, 15, 16, 17]),
+    computePipe('jfaFinal', wgsl('common', 'cloudu', 'cloudgen'), 'jfaFinal', [0, 5, 6, 12, 15, 18]),
   ]);
-  R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField; R.pCuMap = pCuMap; R.pShadow = pShadow; R.pVol = pVol;
+  R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField; R.pCuMap = pCuMap; R.pShadow = pShadow; R.pVol = pVol; R.pJfaI = pJfaI; R.pJfaS = pJfaS; R.pJfaF = pJfaF;
   { const enc = device.createCommandEncoder(); const c = enc.beginComputePass(); c.setPipeline(pNoise); c.setBindGroup(0, bg(pNoise, [[0, R.noise.createView()]])); c.dispatchWorkgroups(32, 32, 32); c.end();
     const c2 = enc.beginComputePass(); c2.setPipeline(pNoise2); c2.setBindGroup(0, bg(pNoise2, [[0, R.noise2.createView()]])); c2.dispatchWorkgroups(32, 32, 32); c2.end(); device.queue.submit([enc.finish()]); }
   R.pT = pT; R.pM = pM; R.pA = pA; R.pMeter = pMeter; R.pSky = pSky;
@@ -109,7 +116,7 @@ async function init(m){
   R.pMesh = device.createRenderPipeline({label:'mesh', layout:'auto', vertex:{module: dm, entryPoint:'vsMesh', buffers:[{arrayStride: 24, attributes:[{shaderLocation: 0, offset: 0, format:'float32x3'}, {shaderLocation: 1, offset: 12, format:'float32x3'}]}]},
     fragment:{module: dm, entryPoint:'fsMesh', targets:[{format: canvasFmt}]}, primitive:{topology:'triangle-list', cullMode:'none'}, depthStencil:{format:'depth24plus', depthWriteEnabled: true, depthCompare:'less'}});
   R.meshU = device.createBuffer({size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
-  R.shBuf = device.createBuffer({size: 9*16, usage: GPUBufferUsage.STORAGE});
+  R.shBuf = device.createBuffer({size: 9*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
   R.pLd = await computePipe('lookdev', wgsl('lookdev'), 'main', [0, 1, 2, 3]);
   R.disp = device.createBuffer({size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   // per-band pass uniforms: a small pool, one per band submitted in a frame
@@ -192,6 +199,12 @@ function buildClouds(P, enc){
     const c = enc.beginComputePass(); c.setPipeline(R.pCuMap);
     c.setBindGroup(0, bg(R.pCuMap, [[0, R.cu], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp], [11, R.cuMapW]]));
     c.dispatchWorkgroups(80, 80); c.end(); }
+  if (fOn){ const jv = R.jfa.map(t => t.createView({dimension:'2d-array'})), mapV = R.cuMap.createView({dimension:'2d-array'}), m2 = R.cuMap2.createView({dimension:'2d-array'});
+    for (let l = 0; l < VOL.NLEV; l++){ const c = enc.beginComputePass();
+      c.setPipeline(R.pJfaI); c.setBindGroup(0, bg(R.pJfaI, [[5, R.gp[l]], [6, R.ly], [12, mapV], [16, jv[0]]])); c.dispatchWorkgroups(80, 80);
+      let a = 0; for (const sb of R.jfaSteps){ c.setPipeline(R.pJfaS); c.setBindGroup(0, bg(R.pJfaS, [[5, R.gp[l]], [15, jv[a]], [16, jv[1 - a]], [17, sb]])); c.dispatchWorkgroups(80, 80); a = 1 - a; }
+      c.setPipeline(R.pJfaF); c.setBindGroup(0, bg(R.pJfaF, [[0, R.cu], [5, R.gp[l]], [6, R.ly], [12, mapV], [15, jv[a]], [18, m2]])); c.dispatchWorkgroups(80, 80); c.end(); }
+    enc.copyTextureToTexture({texture: R.cuMap2}, {texture: R.cuMap}, [640, 640, VOL.NLEV]); }
   if (r1 > r0) for (let l = 0; l < VOL.NLEV; l++){
     const c = enc.beginComputePass(); c.setPipeline(R.pGen);
     c.setBindGroup(0, bg(R.pGen, [[0, R.cu], [1, R.densV], [2, R.cuRec], [3, R.cuStart], [4, R.cuIdx], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp], [12, R.cuMapW], [13, R.samp], [14, R.paintTex.createView()]]));
@@ -272,7 +285,9 @@ function applyParams(){
   resetAccum();
 }
 
-function exposure(){ const v = S.view; if (v.auto){ const E = Math.max(S.meter.E || 1e-3, 0.44); return Math.PI/E*Math.pow(2, v.expoComp); } return 1/(1.2*Math.pow(2, v.expoComp)); }
+// auto exposure: as an incident meter on the ground would set it (a grey card comes out grey), but never so bright that the sky
+// itself burns out — under a storm the ground is very dark while the sky beyond is sunlit cloud; there, the sky's own key wins
+function exposure(){ const v = S.view; if (v.auto){ const E = Math.max(S.meter.E || 1e-3, 0.44); let x = Math.PI/E; if (S.skyKey > 0) x = Math.min(x, 0.9/S.skyKey); return x*Math.pow(2, v.expoComp); } return 1/(1.2*Math.pow(2, v.expoComp)); }
 
 function tick(){
   requestAnimationFrame(tick);
@@ -300,7 +315,7 @@ function tick(){
   if ((submitted || S.dispDirty) && !S.noPresent && (S.dispInFlight || 0) < 2){ S.dispDirty = false; display(enc); used = true; S.dispInFlight = (S.dispInFlight || 0) + 1;
     device.queue.onSubmittedWorkDone().then(() => { S.dispInFlight--; }); }
   else if (submitted) S.dispDirty = true;
-  if (used){ const t0 = performance.now(); device.queue.submit([enc.finish()]);
+  if (used){ const t0 = performance.now(); device.queue.submit([enc.finish()]); mapKey();
     if (submitted){ S.inFlight++; const sub = submitted, row0 = S.row; if (S.P.dbgLog) post({type:'log', text:`submit ${sub} rows (row ${row0}, sample ${S.sample})`});
       device.queue.onSubmittedWorkDone().then(() => { S.inFlight--; const dt = performance.now() - t0; if (S.P.dbgLog) post({type:'log', text:`done ${sub} rows in ${dt.toFixed(0)} ms`});
         // aim for ~10 ms of GPU work per frame
@@ -317,7 +332,10 @@ function display(enc, to){
   const v = to ? {...S.view, mode: 0} : S.view, cw = to ? to.width : canvas.width, ch = to ? to.height : canvas.height; let rw = cw, rh = cw/2; if (rh > ch){ rh = ch; rw = ch*2; }
   device.queue.writeBuffer(R.disp, 0, new Float32Array([cw, ch, S.W, S.H, (cw - rw)/2, (ch - rh)/2, rw, rh, v.mode, v.yaw, v.pitch, v.fov, exposure(), S.P.azOff*D2R, 0, 0, v.lookdev && !to ? 1 : 0, Math.round(Math.min(ch*0.09, 70)), 0, 0, ...lookSun()]));
   // (look-dev: the panorama's lighting into spherical harmonics first, for the grey ball and the chart)
-  if (v.lookdev && !to){ const c = enc.beginComputePass(); c.setPipeline(R.pLd); c.setBindGroup(0, R.bgLdAll[S.cur]); c.dispatchWorkgroups(1); c.end(); }
+  // (always: it also measures the sky's key for auto exposure, read back a couple of times a second)
+  if (!to){ const c = enc.beginComputePass(); c.setPipeline(R.pLd); c.setBindGroup(0, R.bgLdAll[S.cur]); c.dispatchWorkgroups(1); c.end();
+    const now = performance.now(); if (!S.keyBusy && now - (S.keyT || 0) > 400){ S.keyT = now; S.keyBusy = true; const kb = device.createBuffer({size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST}); enc.copyBufferToBuffer(R.shBuf, 0, kb, 0, 16);
+      S.keyPending = kb; } }
   const tex = to || (S.noPresent ? dispTarget(cw, ch) : gctx.getCurrentTexture());
   const dep = dispDepth(tex.width, tex.height);
   const rp = enc.beginRenderPass({colorAttachments:[{view: tex.createView(), loadOp:'clear', storeOp:'store', clearValue:{r:0.027, g:0.035, b:0.047, a:1}}],
@@ -342,7 +360,10 @@ function setMesh(m){ if (R.mesh){ R.mesh.vb.destroy(); R.mesh.ib.destroy(); R.me
 function dispTarget(w, h){ if (!R.dispTex || R.dispTex.width !== w || R.dispTex.height !== h){ if (R.dispTex) R.dispTex.destroy();
   R.dispTex = device.createTexture({size:[w, h], format:'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC}); } return R.dispTex; }
 // the displayed image (test runs): RGBA8, rows top to bottom
-async function shot(){ { const e = device.createCommandEncoder(); display(e); device.queue.submit([e.finish()]); } const t = R.dispTex; if (!t) return null; const w = t.width, h = t.height, bpr = Math.ceil(w*4/256)*256;
+function mapKey(){ const kb = S.keyPending; if (!kb) return; S.keyPending = null;
+  kb.mapAsync(GPUMapMode.READ).then(() => { const k = Math.exp(new Float32Array(kb.getMappedRange())[3]); kb.unmap(); kb.destroy(); S.keyBusy = false;
+    if (isFinite(k) && Math.abs(k/(S.skyKey || 1) - 1) > 0.03){ S.skyKey = k; S.dispDirty = true; } }).catch(() => { S.keyBusy = false; }); }
+async function shot(){ { const e = device.createCommandEncoder(); display(e); device.queue.submit([e.finish()]); mapKey(); } const t = R.dispTex; if (!t) return null; const w = t.width, h = t.height, bpr = Math.ceil(w*4/256)*256;
   const rb = device.createBuffer({size: bpr*h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
   const enc = device.createCommandEncoder(); enc.copyTextureToBuffer({texture: t}, {buffer: rb, bytesPerRow: bpr}, [w, h]); device.queue.submit([enc.finish()]);
   await rb.mapAsync(GPUMapMode.READ); const src = new Uint8Array(rb.getMappedRange()), o = new Uint8Array(w*h*4);

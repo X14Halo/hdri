@@ -14,6 +14,11 @@
 @group(0) @binding(12) var cuMap: texture_2d_array<f32>;
 @group(0) @binding(13) var clampSamp: sampler;
 @group(0) @binding(14) var paintTex: texture_2d<f32>;   // painted cloud: more (> 0.5) or less (< 0.5), by direction from the camera
+// (the cumulus maps' distance from each cloud's edge, by jump flooding: the nearest clear texel to every cloudy one)
+@group(0) @binding(15) var jfaIn: texture_2d_array<u32>;
+@group(0) @binding(16) var jfaOut: texture_storage_2d_array<r32uint, write>;
+@group(0) @binding(17) var<uniform> JS: vec4u;   // x step in texels
+@group(0) @binding(18) var cuMap2: texture_storage_2d_array<rgba16float, write>;
 
 // painted cloud at p (relative to the camera): the paint over the panorama (upper half: azimuth across, zenith to horizon
 // down), −1 (clear it) … 1 (more cloud), for one layer (channel ch: cumulus, stratocumulus, altocumulus, cirrus). Each layer
@@ -133,11 +138,19 @@ fn acField(xz: vec2f) -> vec2f {
   let w = vec2f(n2(xz, cs*4.3, 0.21) - 0.5, n2(xz, cs*4.3, 0.63) - 0.5)*cs*1.6;
   let q = rot(xz + w, LY.ac2.w)/vec2f(cs*0.8, cs*1.25);       // rows lie across the wind
   let f = worley2(q, seed + 5u);
-  let lump = 1.0 - smoothstep(0.05, 0.75, f.x);
   let wave = 0.5 + 0.5*sin(6.2831853*q.x*0.9 + 4.0*n2(xz, cs*6.0, 0.37));
+  // cloudlets of uneven size: a second, coarser lattice takes over from place to place, rather than one size of cloudlet
+  // tiled evenly over the whole sheet
+  let f2 = worley2(q*0.62 + vec2f(17.3, 5.1), seed + 31u);
+  let mixB = smoothstep(0.35, 0.65, n2(xz, 9.0, 0.44));
+  var lump = mix(1.0 - smoothstep(0.05, 0.75, f.x), 1.0 - smoothstep(0.05, 0.8, f2.x), mixB);
+  // rows across the wind (the billows of the shear) in some parts of the sheet only
+  let rows = smoothstep(0.45, 0.7, n2(xz, 14.0, 0.58));
+  lump *= 1.0 - 0.6*rows + 0.6*rows*wave;
   let veil = 0.75 + 0.25*fbm2s(xz, 6.0, 0.45);
-  // (altocumulus comes in patches and sheets with clear sky between, at 20–60 km scales, not evenly over the whole sky)
-  let meso = fbm2s(xz, 22.0, 0.83) - 0.5 + 0.8*(n2(xz, 13.0, 0.27) - 0.5);
+  // (altocumulus comes in patches and sheets with clear sky between, at 20–60 km scales, not evenly over the whole sky; and
+  // within them in rafts a few km across with gaps between)
+  let meso = fbm2s(xz, 22.0, 0.83) - 0.5 + 0.8*(n2(xz, 13.0, 0.27) - 0.5) + 0.9*(fbm2s(xz, 4.5, 0.12) - 0.5);
   // (within a patch the cloudlets merge; toward its edges they shrink apart, with blue between, rather than the patch ending in
   // one hard outline)
   let c = mix(veil, 0.8*lump + 0.2*wave, form) + mix(1.0, 0.5, form)*meso;
@@ -207,6 +220,13 @@ fn cuField(xz: vec2f) -> vec2f {
   // sky you are under); streets: rolls lined up with the wind, ~2–3 boundary-layer depths apart, wandering
   let org = LY.cu3.x;
   if (org > 0.0) { o += 0.2*org*(cuMeso(xz, s) - cuMeso(vec2f(0.0), s)*exp(-dot(xz, xz)/1800.0)); }
+  // clusters (a few km): cumulus come in groups with clear sky between, never sprinkled evenly — where the boundary layer is
+  // a little moister or the ground warmer, many clouds of all sizes and the big ones; elsewhere a few small ones or none.
+  // Always some, more with Grouping; the camera's own few km kept average (the cover describes the sky you are under)
+  let Lc = max(4.0, 3.5*L);
+  let cl = (gnoise2(xz/Lc + vec2f(3.3, 8.1), s + 60u) + 0.45*gnoise2(xz/(0.43*Lc) + vec2f(1.1, 2.2), s + 61u))/0.75;
+  let cl0 = (gnoise2(vec2f(3.3, 8.1), s + 60u) + 0.45*gnoise2(vec2f(1.1, 2.2), s + 61u))/0.75;
+  o += (0.12 + 0.45*org)*(cl - cl0*exp(-dot(xz, xz)/(2.0*1.44*Lc*Lc)));
   if (LY.cu3.y > 0.0) { let c = dot(xz, vec2f(-LY.wl.y, LY.wl.x));
     o += 0.1*LY.cu3.y*cos(6.2831853*c/LY.cu3.z + 2.2*gnoise2(xz/9.0, s + 50u)); }
   return vec2f(f + o, fl + o);
@@ -215,12 +235,40 @@ fn cuField(xz: vec2f) -> vec2f {
 fn cuMapHW(l: u32) -> f32 { return 0.5*levelE(l) + LY.cu2.w; }
 const CUMAP: f32 = 640.0;
 // (xz in the field's own coordinates, which drift with the wind; the maps stay centred on the camera)
-fn cuMapF(xz: vec2f, l: u32) -> vec2f { let uv = (xz + LY.drift.xy)/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).rg; }
+fn cuMapF(xz: vec2f, l: u32) -> vec3f { let uv = (xz + LY.drift.xy)/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).rgb; }
 @compute @workgroup_size(8, 8, 1)
 fn cuMapMain(@builtin(global_invocation_id) id: vec3u) {
   if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
   let hw = cuMapHW(GP.x); let xz = ((vec2f(id.xy) + 0.5)/CUMAP*2.0 - 1.0)*hw;
   textureStore(cuMapOut, vec2u(id.xy), GP.x, vec4f(cuField(xz - LY.drift.xy), 0.0, 0.0));
+}
+// jump flooding over a level's map: every cloudy texel finds its nearest clear one (seeds: the clear texels themselves)
+const JFA_NONE: u32 = 0xffffffffu;
+@compute @workgroup_size(8, 8, 1)
+fn jfaInit(@builtin(global_invocation_id) id: vec3u) {
+  if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
+  let F = textureLoad(cuMap, vec2i(id.xy), i32(GP.x), 0).x;
+  textureStore(jfaOut, vec2u(id.xy), GP.x, vec4u(select(id.x | (id.y << 16u), JFA_NONE, F > LY.thr.w), 0u, 0u, 0u));
+}
+@compute @workgroup_size(8, 8, 1)
+fn jfaStep(@builtin(global_invocation_id) id: vec3u) {
+  if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
+  let st = i32(JS.x); var best = JFA_NONE; var bd = 1e30; let p = vec2f(id.xy);
+  for (var j = -1; j <= 1; j++) { for (var i = -1; i <= 1; i++) {
+    let q = vec2i(id.xy) + vec2i(i, j)*st;
+    if (any(q < vec2i(0)) || any(q >= vec2i(i32(CUMAP)))) { continue; }
+    let s = textureLoad(jfaIn, q, i32(GP.x), 0).x; if (s == JFA_NONE) { continue; }
+    let d = distance(p, vec2f(f32(s & 0xffffu), f32(s >> 16u))); if (d < bd) { bd = d; best = s; } } }
+  textureStore(jfaOut, vec2u(id.xy), GP.x, vec4u(best, 0u, 0u, 0u));
+}
+// the map with its distances: (field, broad part, km from the cloud's edge inside it, 0)
+@compute @workgroup_size(8, 8, 1)
+fn jfaFinal(@builtin(global_invocation_id) id: vec3u) {
+  if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
+  let m = textureLoad(cuMap, vec2i(id.xy), i32(GP.x), 0); let s = textureLoad(jfaIn, vec2i(id.xy), i32(GP.x), 0).x;
+  let tk = 2.0*cuMapHW(GP.x)/CUMAP; var d = 0.0;
+  if (m.x > LY.thr.w) { d = select(max(distance(vec2f(id.xy), vec2f(f32(s & 0xffffu), f32(s >> 16u))) - 0.5, 0.0)*tk, 64.0*tk, s == JFA_NONE); }
+  textureStore(cuMap2, vec2u(id.xy), GP.x, vec4f(m.x, m.y, d, 0.0));
 }
 // the cloud at p from the field: a flat base at the condensation level; above it the cloud reaches a height that grows with
 // the field's excess over the threshold: steep-sided at its margin (the edge of an updraft), deeper toward strong cores, up to
@@ -260,19 +308,29 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   let eS = 0.04; let k = mix(0.5, 1.7, LY.cu.w); let wall = mix(0.4, 0.12, LY.cu.w)*mix(0.3, 1.0, sf);
   // the base: level (the condensation level), undulating a few tens of metres, and curving up into the sides over the outer
   // part of the cloud (seen from below, a dark flat middle and rounded, lighter margins rather than a cut-off sheet)
-  let bn = (nz(vec3f(p.x/0.43, 0.29, p.z/0.43)) - 0.5)*0.05 + (nz(vec3f(p.x/0.13, 0.67, p.z/0.13)) - 0.5)*0.02;
+  // (the base: level as a whole, but not ruler-straight: it rises and dips ~±60 m over a few hundred metres to a kilometre
+  // with the moisture of each updraft, so seen edge-on from afar it reads as a soft, slightly uneven line)
+  let bn = (nz(vec3f(p.x/1.3, 0.83, p.z/1.3)) - 0.5)*0.09 + (nz(vec3f(p.x/0.43, 0.29, p.z/0.43)) - 0.5)*0.09 + (nz(vec3f(p.x/0.13, 0.67, p.z/0.13)) - 0.5)*0.035;
   let y = y0 - bn - 0.18*Hm*wall*(1.0 - smoothstep(0.0, 5.0*eS, max(e, 0.0)));
   // (outside the footprint: the horizontal distance to its edge, but above the height its wall reaches, at least a share of
   // the height above that: a plain extrusion of the footprint's edge put "near the surface" curtains of clear air up to the
   // top of the convection, which the surface detail then filled with a haze)
-  if (e <= 0.0) { let Tw = Hm*wall; return vec3f(min(min((Fc - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e, sf); }
+  if (e <= 0.0) { let Tw = min(Hm*wall, 0.12);   // (a cloud's margin is low now: its depth grows in from its edge)
+    return vec3f(min(min((Fc - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e, sf); }
   let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let pk = pow(max(em, 1e-4), k); let core = wall + (1.0 - wall)*pk;
+  // the cloud's depth also kept in proportion to its width: as high, at most, as its aspect allows at this distance in from its
+  // edge (fair weather: mounds about half as high as wide; congestus: towers; a small fragment stays small, not a thin tall
+  // column). The distance comes from the map (painting more cloud adds to it as it widens the cloud)
+  let dev = LY.cu.w; let Aw = 1.1 + 4.5*pow(dev, 1.5) + 6.0*pow(dev, 4.0); let R0 = 0.3*L;
+  let De = M.z + max(Fc - F, 0.0)/sp*0.5*L;
+  let Td = 0.03 + Aw*pow(De + 1e-4, 0.75)*pow(R0, 0.25);
   // (turrets and dips: the column's depth varies by ±20% over a few hundred metres, so the cloud above a base is not uniformly
   // thick and the base seen from below shades into darker and lighter patches)
   let tn = nz(RM2*vec3f(xz.x/(0.55*L), 0.37, xz.y/(0.55*L)));
-  let T = Hm*edge*core*(0.8 + 0.4*tn);
+  var T = Hm*edge*core*(0.8 + 0.4*tn);
   let dT = (0.8 + 0.4*tn)*Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*(1.0 - wall)*k*pk/max(em, 1e-4), e < 1.0));
-  let gT = min(dT/sp*length(g), 60.0);
+  var gT = min(dT/sp*length(g), 60.0);
+  let Tc = Td*(0.8 + 0.4*tn); if (Tc < T) { T = Tc; gT = min(0.75*Aw*pow(R0/(De + 1e-3), 0.25)*(0.8 + 0.4*tn), 60.0); }
   // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
   return vec3f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e, sf);
 }

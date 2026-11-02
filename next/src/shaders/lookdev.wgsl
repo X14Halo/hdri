@@ -7,6 +7,7 @@ struct Disp { canvas: vec2f, pano: vec2f, rect: vec4f, view: vec4f, ex: vec4f, l
 @group(0) @binding(3) var<storage, read_write> shOut: array<vec4f, 9>;
 const PI: f32 = 3.14159265358979;
 var<workgroup> part: array<array<vec3f, 9>, 64>;
+var<workgroup> keyP: array<vec2f, 64>;
 fn texel(x: i32, y: i32) -> vec3f {
   let W = i32(D.pano.x); let H = i32(D.pano.y);
   let xx = ((x % W) + W) % W; let yy = clamp(y, 0, H - 1);
@@ -17,7 +18,7 @@ fn shBasis(d: vec3f) -> array<f32, 9> {
 }
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_id) lid: vec3u) {
-  var acc: array<vec3f, 9>;
+  var acc: array<vec3f, 9>; var lk = vec2f(0.0);
   for (var i = 0u; i < 9u; i++) { acc[i] = vec3f(0.0); }
   let NU = 192u; let NV = 96u;
   for (var s = lid.x; s < NU*NV; s += 64u) {
@@ -27,12 +28,16 @@ fn main(@builtin(local_invocation_id) lid: vec3u) {
     var L = texel(i32(u*D.pano.x), i32(v*D.pano.y));
     if (D.sunD.w > 0.5 && dot(d, D.sunD.xyz) > D.sunE.w) { L = vec3f(0.0); }   // (the disc: added as a light instead)
     let dw = (2.0*PI/f32(NU))*(PI/f32(NV))*cos(el);
+    // (the sky's key for auto exposure: the mean log luminance of the upper half, the sun's disc and its glare counting little in a log mean)
+    if (el > 0.02) { lk += vec2f(log(max(L.y, 1e-4))*dw, dw); }
     let b = shBasis(d);
     for (var i = 0u; i < 9u; i++) { acc[i] += L*b[i]*dw; }
   }
   for (var i = 0u; i < 9u; i++) { part[lid.x][i] = acc[i]; }
+  keyP[lid.x] = lk;
   workgroupBarrier();
   if (lid.x == 0u) {
-    for (var i = 0u; i < 9u; i++) { var t = vec3f(0.0); for (var k = 0u; k < 64u; k++) { t += part[k][i]; } shOut[i] = vec4f(t, 0.0); }
+    var kk = vec2f(0.0); for (var k = 0u; k < 64u; k++) { kk += keyP[k]; }
+    for (var i = 0u; i < 9u; i++) { var t = vec3f(0.0); for (var k = 0u; k < 64u; k++) { t += part[k][i]; } shOut[i] = vec4f(t, select(0.0, kk.x/max(kk.y, 1e-6), i == 0u)); }
   }
 }

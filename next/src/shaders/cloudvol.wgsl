@@ -12,7 +12,7 @@ fn profileOf(v: f32) -> f32 { return 0.35 + 0.65*smoothstep(0.0, 0.8, v); }   //
 // with a fixed droplet number (~300/cm³, continental) σ ∝ LWC^(2/3): ~25/km 50 m above the base, ~85 at 0.4 km, ~140 at 1 km,
 // ~190 at 2 km (observed: fair-weather cumulus ~20 → 60–110 → 100+, congestus 50–200); the cloud's own factor (g channel) scales it
 const CU_BSCALE: f32 = 8.0;
-fn cuSigmaZ(z: f32) -> f32 { let zz = max(z, 0.0); return max(85.0*pow(zz/(1.0 + 0.35*zz)/0.351, 0.6667), 10.0); }
+fn cuSigmaZ(z: f32) -> f32 { let zz = max(z, 0.0); return max(85.0*pow(zz/(1.0 + 0.35*zz)/0.351, 0.6667), 4.0); }   // (thin right at the base: the water grows up from the condensation level, so a base edge seen from afar is not a hard line)
 // (all liquid clouds, cumulus and the water layers alike, from their own base; ice by height fraction)
 // small cumulus are diluted: a thermal entrains surrounding air at a rate ∝ 1/radius, so the small ones hold a much smaller
 // share of their adiabatic water (their mixed fraction ~R/(R + 0.25 km)); σ ∝ LWC^(2/3). A lone 200 m cloud ends up ~half as
