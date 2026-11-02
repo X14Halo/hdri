@@ -28,7 +28,7 @@ const altToSlice = (alt, nz) => alt < VZS ? alt/VZS*VFZ*nz : (VFZ + (alt - VZS)/
 // from the cloud's seed.
 function genCumulus(P, calib){
   const out = {clouds: [], top: 0, base: 1e9};
-  if (!P.cuOn || !(P.cuCover > 0.001)) return out;
+  if (!P.cuOn || !(P.cuCover > 0.001) || cuIsField(P)) return out;
   const r = rng32(P.cuSeed*7919 + 13);
   const dev = clamp(P.cuDev, 0, 1);                        // 0 fair weather, 0.5 congestus, 1 cumulonimbus
   const size = P.cuSize;
@@ -129,23 +129,37 @@ function packCumulus(cu){
 
 // ---------- the layered cloud types: the uniform block for the generator (struct Layers in cloudgen.wgsl) ----------
 // thr: per-layer coverage thresholds (from the measured distribution of each layer's field)
+// cumulus as a continuous field (the default; 'cells' places individual clouds instead)
+const cuIsField = P => P.cuOn && P.cuCover > 0.001 && P.cuModel !== 'cells';
+function cuFieldParams(P){
+  const dev = clamp(P.cuDev, 0, 1), base = P.cuBase;
+  const Hm = 0.9 + 1.6*dev + 9*Math.pow(dev, 2.2);           // depth of the convection (to the inversion / the tropopause)
+  const L = 1.3*(P.cuSize || 1)*(1 + 2.2*dev);                // field scale: single clouds ~0.3–0.6 of it across (fair weather 0.3–1 km, congestus 2–4 km)
+  const shear = 0.35*(P.cuShear ?? 0.5);
+  const Rc = clamp(0.4*L*(1 + dev), 0.3, 2.4);               // the scale of the surface detail (lumps, billows)
+  const margin = 0.6*L + shear*Hm + 0.5;
+  return {dev, base, Hm, L, shear, Rc, margin, rollSp: 2.6*(0.5 + base)};
+}
 function layerUniforms(P, thr){
   const wl = Math.hypot(P.windX, P.windZ) || 1, wang = Math.atan2(P.windZ, P.windX);
   const on = (k) => P[k + 'On'] && P[k + 'Cover'] > 0.001;
-  const sigAc = 0.5 + 0.5*clamp(P.acForm, 0, 1);   // (factors on the adiabatic liquid-water profile from each layer's base)
+  const sigAc = 0.3 + 0.25*clamp(P.acForm, 0, 1);   // (altocumulus: thin, τ ~3–10, lower water content than adiabatic)   // (factors on the adiabatic liquid-water profile from each layer's base)
   return new Float32Array([
     on('sc') ? P.scCover : 0, P.scBase, P.scThick, P.scForm,   P.scCell, P.scSeed, (0.6 + 0.3*clamp(P.scForm, 0, 1))*P.scDens, wang,
     on('ac') ? P.acCover : 0, P.acBase, P.acThick, P.acForm,   P.acCell, P.acSeed + 101, sigAc*P.acDens, wang,
     on('ci') ? P.ciCover : 0, P.ciBase, P.ciThick, P.ciForm,   P.ciCell, P.ciSeed + 211, 0.6*P.ciDens, wang,
     P.windX/wl, P.windZ/wl, 1.8*P.ciShear, P.ciFall,
-    thr.sc ?? 0.5, thr.ac ?? 0.5, thr.ci ?? 0.5, 0]);
+    thr.sc ?? 0.5, thr.ac ?? 0.5, thr.ci ?? 0.5, thr.cu ?? 0.2,
+    ...(() => { const f = cuFieldParams(P), on = cuIsField(P) && thr.cuHi !== undefined;
+      return [on ? P.cuCover : 0, f.base, f.Hm, f.dev,   f.L, P.cuSeed, P.cuDens, f.margin,
+        clamp(P.cuOrg, 0, 1), clamp(P.cuStreets, 0, 1), f.rollSp, thr.cuHi ?? 0.5,   f.shear, f.Rc, 0, 0]; })()]);
 }
 // altitude range a layer can occupy (for the build slab and the renderer's cloud band)
 function layerBand(P){
   let lo = 1e9, hi = 0;
-  if (P.scOn && P.scCover > 0.001){ lo = Math.min(lo, P.scBase - 0.05); hi = Math.max(hi, P.scBase + P.scThick*1.15); }
+  if (P.scOn && P.scCover > 0.001){ lo = Math.min(lo, P.scBase - 0.05); hi = Math.max(hi, P.scBase + P.scThick*1.5); }
   if (P.acOn && P.acCover > 0.001){ lo = Math.min(lo, P.acBase); hi = Math.max(hi, P.acBase + P.acThick); }
   if (P.ciOn && P.ciCover > 0.001){ lo = Math.min(lo, P.ciBase - (P.ciForm > 0.2 ? P.ciFall : 0)); hi = Math.max(hi, P.ciBase + P.ciThick); }
   return hi > 0 ? [Math.max(lo, 0), hi] : null;
 }
-const LAYER_KEYS = {sc: /^sc(Form|Cell|Seed|Base|Thick)$/, ac: /^ac(Form|Cell|Seed|Base|Thick)$/, ci: /^ci(Form|Cell|Seed|Base|Thick)$/};
+const LAYER_KEYS = {cu: /^(cu(Model|Size|Dev|Org|Streets|Seed|Base)|wind[XZ])$/, sc: /^sc(Form|Cell|Seed|Base|Thick)$/, ac: /^ac(Form|Cell|Seed|Base|Thick)$/, ci: /^ci(Form|Cell|Seed|Base|Thick)$/};

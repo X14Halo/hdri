@@ -220,9 +220,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // gone and the narrower the cloud is across the axis. The viewer sees the stream heading toward them.
           let upl = normalize(p - C0);
           let vr = rawCloud(q.xz, q.y, u32(levelOf(q.xz).x));
-          let isCu = vr.a < 0.5; let Rc = clamp(vr.a/0.5*2.4, 0.25, 2.4);
-          let Wc = select(40.0, 2.6*Rc, isCu);
-          let Hc = select(0.6, 2.0*Rc*mix(0.35, 0.65 + 1.6*CU.wind.w, clamp(Rc/1.5, 0.0, 1.0)), isCu);
+          // (compact: cumulus, and the lumpy cells of stratocumulus and altocumulus, which are only one to three layer depths
+          // across, so they are lit and shaded as separate cells (a lit side and a shadow side) rather than as a uniform sheet;
+          // smooth sheets (stratus, altostratus) as a horizontal slab)
+          let lay = vr.a >= 0.5;
+          let isCu = vr.a < 0.62;
+          let Rc = select(clamp(vr.a/0.5*2.4, 0.25, 2.4), clamp((vr.a - 0.5)/0.12*1.2, 0.1, 1.2), lay);
+          let Wc = select(40.0, select(2.6*Rc, 2.9*Rc, lay), isCu);
+          let Hc = select(0.6, select(2.0*Rc*mix(0.35, 0.65 + 1.6*CU.wind.w, clamp(Rc/1.5, 0.0, 1.0)), 0.8*Rc, lay), isCu);
           // first order: the droplets' full phase function (silver linings, the bright aureole of thin edges)
           let ice = vr.a > 0.8;
           let sunF = select(cs1, ci1, ice)*exp(-lt.x); let moonF = select(cm1, cim, ice)*exp(-lt.y);
@@ -256,13 +261,16 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
               // from beyond (Up) is made of that same, reduced, light)
               let A = clamp(along/across, 1.0, 5.0);
               let fD = 1.0/(1.0 + 1.3*(1.0 - GM)*dA*A); let fU = 1.0/(1.0 + 0.5*min(A, 2.0));
-              let ws = clamp(0.5 + 0.5*cS, 0.0, 1.0);   // the stream travelling on (away from the sun) is seen looking toward it
-              // light that has crossed only a few optical depths still travels mostly forward (Monte Carlo: of the diffuse light
-              // through τ 1, 38% is within 5° of the beam; τ 5, 9%; gone by τ ~10–15): a narrow forward lobe that fades with
-              // depth, on top of the broad stream; this is what keeps thin clouds near the sun bright white
-              let fp = exp(-dA/2.5);
-              let fwd = (1.0 - fp)*ws + fp*PI*phaseHG(cS, 0.9);
-              Fd += dI*fD*(max(Dn - ex, 0.0)*fwd + fU*Up*(1.0 - ws))/PI;
+              let ws = clamp(0.5 + 0.5*cS, 0.0, 1.0);   // the stream travelling back (toward the sun) is seen looking away from it
+              // the stream travelling on (seen looking toward the sun): light that has crossed only a few optical depths still
+              // travels mostly forward, and its spread widens with each scattering (Monte Carlo through a droplet cloud: of the
+              // diffuse light through τ 1, 38% within 5° of the beam; τ 5, 9%; broad by τ ~15). As a lobe whose asymmetry falls
+              // with depth (g ≈ 0.8 at the surface, 0.5 at τ 4, 0.2 at τ 20), normalised to carry the stream's flux: thin and
+              // small clouds near the sun glow white, thick ones go grey. A forward-travelling stream also leaks less out of the
+              // cloud's sides than a diffuse one
+              let gt = 0.8/(1.0 + 0.15*dA);
+              let fwd = 0.833*PI*phaseHG(cS, gt)/(0.25*(1.0 + gt)*(1.0 + gt));
+              Fd += dI*(pow(fD, 1.0 - gt)*max(Dn - ex, 0.0)*fwd + fD*fU*Up*(1.0 - ws))/PI;
             } else {
               // a wide layer: a horizontal slab lit through its top at the sun's incidence (projected measured depths)
               let dAT = lt.x*mu0; let dBT = ya*mu0;
@@ -282,8 +290,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // up through the cloud below, back down from the cloud above
           let Ug = (1.0 - Rbd)/(1.0 - Rau*Rbd);
           let kg = dI*Ug*((1.0 - wv) + Rau*wv)/PI;
-          let lgl = u32(clamp(round(log2(max(q.y, 0.1)*CU.res.z/CU.vol.x)), levelOf(q.xz).x, CU.vol.z - 1.0));
-          let gl = rawLight(q.xz, 0.0, lgl);
+          // (blended between the two nearest levels: picking one by rounding switched the averaging patch at fixed altitudes,
+          // ~1.4 and ~2.8 km, drawing a hard light/shadow line across every cloud at that height)
+          let lgf = clamp(log2(max(q.y, 0.1)*CU.res.z/CU.vol.x) - 0.5, levelOf(q.xz).x, CU.vol.z - 1.0);
+          let lg0 = floor(lgf); let gwt = lgf - lg0;
+          var gl = rawLight(q.xz, 0.0, u32(lg0));
+          if (gwt > 0.001) { gl = mix(gl, rawLight(q.xz, 0.0, u32(lg0) + 1u), gwt); }
           Fg += kg; FgS += kg*exp(-gl.x); FgM += kg*exp(-gl.y); FgA += kg/(1.0 + 0.105*gl.z); FgR += kg*rDiff(gl.z);
           Tc *= exp(-sig*ds);
         }

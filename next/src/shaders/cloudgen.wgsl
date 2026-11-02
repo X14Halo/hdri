@@ -10,10 +10,16 @@
 @group(0) @binding(8) var wrapSamp: sampler;
 @group(0) @binding(9) var<uniform> F: Frame;                      // (declared for common.wgsl; unused here)
 @group(0) @binding(10) var<storage, read_write> fieldOut: array<f32>;   // (coverage field samples, for calibrating cover)
+@group(0) @binding(11) var cuMapOut: texture_storage_2d_array<rgba16float, write>;   // the cumulus field, one map per level
+@group(0) @binding(12) var cuMap: texture_2d_array<f32>;
+@group(0) @binding(13) var clampSamp: sampler;
 
 // the layered (field) cloud types. x cover, y base km, z thickness km, w form; second: x cell size km, y seed, z extinction /km,
 // w wind direction (rad); thr: the coverage threshold of each layer, found so its cover matches the setting
-struct Layers { sc: vec4f, sc2: vec4f, ac: vec4f, ac2: vec4f, ci: vec4f, ci2: vec4f, wind: vec4f, thr: vec4f }
+// cumulus field: cu x cover, y base km, z depth of the convection km, w development; cu2 x field scale km, y seed, z extinction
+// factor, w map margin km; cu3 x grouping, y streets, z roll spacing km, w the field's strong-core value; cu4 x shear (km per km
+// of height), y size code of the surface detail
+struct Layers { sc: vec4f, sc2: vec4f, ac: vec4f, ac2: vec4f, ci: vec4f, ci2: vec4f, wind: vec4f, thr: vec4f, cu: vec4f, cu2: vec4f, cu3: vec4f, cu4: vec4f }
 
 // (levelE comes from cloudu.wgsl)
 const GRID: f32 = 2.0; const DOMAIN: f32 = 512.0; const NC: u32 = 256u;
@@ -87,12 +93,20 @@ fn scField(xz: vec2f) -> vec2f {
   let cs = LY.sc2.x; let seed = u32(LY.sc2.y); let form = LY.sc.w;
   let w = vec2f(n2(xz, cs*3.1, 0.13) - 0.5, n2(xz, cs*3.1, 0.57) - 0.5)*cs*1.1;
   let q = rot(xz + w, LY.sc2.w)/vec2f(cs*1.35, cs);           // (a little stretched along the wind)
-  let f = worley2(q, seed); let edge = f.y - f.x;
-  let closed = smoothstep(0.02, 0.4, edge); let open = 1.0 - smoothstep(0.0, 0.3, edge);
+  // cells of uneven size: the pattern drifts between larger and smaller cells from place to place, rather than one size
+  // tiled evenly over the whole sky
+  let fA = worley2(q, seed); let fB = worley2(q*1.7 + vec2f(17.3, 5.1), seed + 31u);
+  let mixB = smoothstep(0.35, 0.65, n2(xz, 21.0, 0.44));
+  let edge = mix(fA.y - fA.x, (fB.y - fB.x)*0.85, mixB);
+  let closed = smoothstep(0.02, 0.4, edge);
+  // open cells: the cloud sits on the rims as chains of lumps (the rims' convective cells), not as thin continuous rings
+  let clump = 1.0 - smoothstep(0.1, 0.65, worley2(q*2.9 + vec2f(3.7, 9.1), seed + 7u).x);
+  let open = (1.0 - smoothstep(0.0, 0.42, edge))*(0.45 + 0.55*clump);
   let cell = mix(mix(1.0, closed, smoothstep(0.0, 0.45, form)), open, smoothstep(0.55, 1.0, form));
   let det = fbm2s(xz, cs*0.45, 0.71);
-  let meso = n2(xz, 38.0, 0.91) - 0.5;
-  return vec2f(0.7*cell + 0.3*det + 0.45*meso, cell);
+  // grouping: thicker, more continuous areas and broken or clear ones (10–40 km), so the deck is not the same everywhere
+  let meso = n2(xz, 38.0, 0.91) - 0.5 + 0.6*(n2(xz, 13.7, 0.29) - 0.5);
+  return vec2f(0.7*cell + 0.3*det + 0.6*meso, cell);
 }
 // ---------- altocumulus / altostratus: a sheet of cloudlets in rows across the wind (billows of the shear), in patches;
 // altostratus: a thick grey veil with soft undulations. Returns (coverage field, lump height)
@@ -106,7 +120,9 @@ fn acField(xz: vec2f) -> vec2f {
   let veil = 0.75 + 0.25*fbm2s(xz, 6.0, 0.45);
   // (altocumulus comes in patches and sheets with clear sky between, at 20–60 km scales, not evenly over the whole sky)
   let meso = fbm2s(xz, 22.0, 0.83) - 0.5 + 0.8*(n2(xz, 13.0, 0.27) - 0.5);
-  let c = mix(veil, 0.75*lump + 0.25*wave, form) + 1.0*meso;
+  // (within a patch the cloudlets merge; toward its edges they shrink apart, with blue between, rather than the patch ending in
+  // one hard outline)
+  let c = mix(veil, 0.8*lump + 0.2*wave, form) + mix(1.0, 0.5, form)*meso;
   return vec2f(c, mix(veil, lump, form));
 }
 // ---------- cirrus: ice from generating cells high up, trailing fall streaks that hang back and curve as they sink into
@@ -114,9 +130,10 @@ fn acField(xz: vec2f) -> vec2f {
 fn ciField(xz: vec2f) -> vec2f {
   let cs = LY.ci2.x; let seed = u32(LY.ci2.y); let form = LY.ci.w;
   let q = rot(xz, LY.ci2.w);
-  let warp = (n2(xz, cs*5.0, 0.17) - 0.5)*cs*2.5;
-  let fib = nz(vec3f(q.x/(cs*9.0), 0.33, (q.y + warp)/(cs*0.55)));            // fibres along the wind
-  let fib2 = nz(vec3f(q.x/(cs*3.0), 0.77, (q.y + warp*0.6)/(cs*0.21)));
+  let warp = (n2(xz, cs*5.0, 0.17) - 0.5)*cs*2.5 + (nz(RM2*vec3f(xz.x/(cs*17.0), 0.51, xz.y/(cs*13.0))) - 0.5)*cs*6.0;
+  // fibres along the wind (sampled through slanted rotations of the noise volume: no repeating comb of parallel strands)
+  let fib = nz(RM1*vec3f(q.x/(cs*9.0), 0.33, (q.y + warp)/(cs*0.55)));
+  let fib2 = nz(RM2*vec3f(q.x/(cs*3.0), 0.77, (q.y + warp*0.6)/(cs*0.21)));
   let heads = 1.0 - smoothstep(0.1, 0.6, worley2(q/vec2f(cs*4.0, cs*1.2), seed + 9u).x);
   let veil = 0.8 + 0.2*fbm2s(xz, 9.0, 0.53);
   let cc = 1.0 - smoothstep(0.1, 0.7, worley2(q/(cs*0.12), seed + 13u).x);       // cirrocumulus grains
@@ -127,17 +144,94 @@ fn ciField(xz: vec2f) -> vec2f {
   return vec2f(c + 0.6*meso, fib);
 }
 
+
+// ---------- cumulus as one continuous field (the way real cumulus fields and good procedural skies work): where the boundary
+// layer's thermals are strong enough, cloud forms. A non-repeating, domain-warped fBm stands for the strength of the
+// convection; the cover sets the threshold (a measured quantile), and how far a place is above it sets how deep the cloud
+// grows there. So the edges of every cloud are shallow and wispy, clouds merge into irregular complexes, sizes follow a
+// power law by themselves, and towers rise only out of the strongest cores, inside the groups rather than alone in clear sky.
+// gradient noise from hashed lattice points (no tiling anywhere in the 512 km domain), about −0.7 … 0.7
+fn g2h(i: vec2f, s: u32) -> vec2f { let u = vec2u(bitcast<u32>(i32(i.x)), bitcast<u32>(i32(i.y))); let h = hash3(vec3u(u, s)); let a = 6.2831853*h.x; return vec2f(cos(a), sin(a)); }
+fn gnoise2(p: vec2f, s: u32) -> f32 {
+  let i = floor(p); let f = p - i; let u = f*f*f*(f*(f*6.0 - 15.0) + 10.0);
+  let a = dot(g2h(i, s), f); let b = dot(g2h(i + vec2f(1.0, 0.0), s), f - vec2f(1.0, 0.0));
+  let c = dot(g2h(i + vec2f(0.0, 1.0), s), f - vec2f(0.0, 1.0)); let d = dot(g2h(i + vec2f(1.0, 1.0), s), f - vec2f(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+fn cuMeso(xz: vec2f, s: u32) -> f32 { return gnoise2(xz/26.0 + vec2f(3.1, 7.7), s + 40u) + 0.5*gnoise2(xz/11.3 + vec2f(1.9, 4.3), s + 41u); }
+fn cuField(xz: vec2f) -> f32 {
+  let L = LY.cu2.x; let s = u32(LY.cu2.y)*97u + 11u;
+  var p = xz/L;
+  // two warps: the big one bends the groups into irregular, merging complexes; the smaller one makes outlines wander
+  p += 0.65*vec2f(gnoise2(p*0.31 + vec2f(5.2, 1.3), s + 1u), gnoise2(p*0.31 + vec2f(1.7, 9.2), s + 2u));
+  p += 0.3*vec2f(gnoise2(p*1.13 + vec2f(2.9, 6.1), s + 3u), gnoise2(p*1.13 + vec2f(8.3, 0.7), s + 4u));
+  // fBm: each octave turned and scaled by an irrational step, so no direction or size is preferred and nothing repeats
+  var f = 0.0; var a = 1.0; var na = 0.0; var q = p;
+  for (var i = 0u; i < 5u; i++) { f += a*gnoise2(q, s + 10u + i); na += a; q = rot(q, 0.6435)*2.137 + vec2f(3.17, 7.93); a *= 0.52; }
+  f /= na;
+  // grouping: mesoscale moisture (20–50 km; it shifts how many clouds form, a little, without fusing them into one mass), with
+  // the camera's own neighbourhood kept average (the cover setting describes the
+  // sky you are under); streets: rolls lined up with the wind, ~2–3 boundary-layer depths apart, wandering
+  let org = LY.cu3.x;
+  if (org > 0.0) { f += 0.2*org*(cuMeso(xz, s) - cuMeso(vec2f(0.0), s)*exp(-dot(xz, xz)/1800.0)); }
+  if (LY.cu3.y > 0.0) { let c = dot(xz, vec2f(-LY.wind.y, LY.wind.x));
+    f += 0.1*LY.cu3.y*cos(6.2831853*c/LY.cu3.z + 2.2*gnoise2(xz/9.0, s + 50u)); }
+  return f;
+}
+// the map of the field for level l (its texels span the level plus a margin for the lean and wander of the towers)
+fn cuMapHW(l: u32) -> f32 { return 0.5*levelE(l) + LY.cu2.w; }
+const CUMAP: f32 = 640.0;
+fn cuMapF(xz: vec2f, l: u32) -> f32 { let uv = xz/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).r; }
+@compute @workgroup_size(8, 8, 1)
+fn cuMapMain(@builtin(global_invocation_id) id: vec3u) {
+  if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
+  let hw = cuMapHW(GP.x); let xz = ((vec2f(id.xy) + 0.5)/CUMAP*2.0 - 1.0)*hw;
+  textureStore(cuMapOut, vec2u(id.xy), GP.x, vec4f(cuField(xz), 0.0, 0.0, 0.0));
+}
+// the cloud at p from the field: a flat base at the condensation level; above it the cloud reaches a height that grows with
+// the field's excess over the threshold: steep-sided at its margin (the edge of an updraft), deeper toward strong cores, up to
+// the top of the convection. Columns lean downwind with the shear and wander with height. Returns (signed distance km, excess)
+fn cuFieldEval(p: vec3f, l: u32) -> vec2f {
+  let base = LY.cu.y; let Hm = LY.cu.z; let y = p.y - base;
+  if (y < -0.45 || y > Hm + 0.35) { return vec2f(-1.0, 0.0); }
+  let L = LY.cu2.x; let hy = clamp(y/max(Hm, 0.3), 0.0, 1.0);
+  var xz = p.xz - LY.wind.xy*LY.cu4.x*max(y, 0.0);
+  let wq = vec3f(xz.x/(1.37*L), p.y/(0.83*L), xz.y/(1.37*L));
+  xz += (vec2f(nz(wq + vec3f(0.61, 0.23, 0.87)), nz(wq + vec3f(0.17, 0.71, 0.37))) - 0.5)*L*(0.12 + 0.3*hy);
+  // (the slope over ~a tenth of the field scale, not one texel: the finest octaves make the local slope steep and noisy, and
+  // dividing by it put wide stretches of clear air just "outside" a surface, where the surface detail then grew a haze)
+  let hw = cuMapHW(l); let h = max(2.0*hw/CUMAP, 0.1*L);
+  let F = cuMapF(xz, l);
+  let g = vec2f(cuMapF(xz + vec2f(h, 0.0), l) - cuMapF(xz - vec2f(h, 0.0), l), cuMapF(xz + vec2f(0.0, h), l) - cuMapF(xz - vec2f(0.0, h), l))/(2.0*h);
+  let thr = LY.thr.w; let sp = max(LY.cu3.w - thr, 1e-3); let e = (F - thr)/sp;
+  // column depth: √ near the margin (near-vertical sides), then a power of the excess that steepens with development, so
+  // fair-weather fields are many shallow clouds of similar depth and deep convection has a few towers in its strongest cores
+  let eS = 0.1; let k = mix(0.5, 1.7, LY.cu.w);
+  // (outside the footprint: the horizontal distance to its edge, but above the height its steep margin reaches, at least a
+  // share of the height above that: a plain extrusion of the footprint's edge put "near the surface" curtains of clear air
+  // up to the top of the convection, which the surface detail then filled with a haze)
+  if (e <= 0.0) { let Tw = Hm*pow(eS, k); return vec2f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e); }
+  let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let core = pow(max(em, 1e-4), k);
+  let T = Hm*edge*core;
+  let dT = Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*k*core/max(em, 1e-4), e < 1.0));
+  let gT = min(dT/sp*length(g), 60.0);
+  // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
+  return vec2f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e);
+}
+
 struct Hit { d: f32, sig: f32, v: f32, r: f32 }
 fn evalAt(p: vec3f) -> Hit {
   var best = Hit(-1.0, 0.0, 0.0, 0.0);
   // the layers (alpha codes the style for the renderer: < 0.5 cumulus by size, 0.5–0.62 lumpy water layers by lump size,
   // 0.7 smooth water sheets, 0.9 ice)
-  if (LY.sc.x > 0.0 && p.y > LY.sc.y - 0.35 && p.y < LY.sc.y + LY.sc.z + 0.3) {
+  if (LY.sc.x > 0.0 && p.y > LY.sc.y - 0.35 && p.y < LY.sc.y + 1.4*LY.sc.z + 0.3) {
     // cells are domes: thickest in the middle, thinning to their edges (thin bright rims, dark cores seen from below), merging
     // into a continuous deck where the cover is high
     // (the cell pattern wanders a little with height, so the cells' sides billow instead of being straight extrusions)
     let hy = p.y*1.7; let wob = vec2f(n2(p.xz, 0.8, 0.31 + hy) - 0.5, n2(p.xz, 0.8, 0.77 + hy) - 0.5)*0.35;
-    let f = scField(p.xz + wob); let th = LY.sc.z; let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
+    // (some cells grow thicker and wetter than others: a deck seen from below is a mosaic of darker and lighter cells)
+    let vth = n2(p.xz, LY.sc2.x*2.3, 0.83);
+    let f = scField(p.xz + wob); let th = LY.sc.z*(0.6 + 0.8*vth); let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
     // (a deck under an inversion: the top nearly flat, ±20–50 m, a little lower at the thin cell rims; the base undulating
     // ±50–150 m and rising toward the gaps)
     // (cells are pillows: full depth in their middles, thinning to their rims mostly by the base rising, so the deck reads
@@ -151,7 +245,7 @@ fn evalAt(p: vec3f) -> Hit {
     // lumpy (cumuliform) except for stratus: the size code drives the renderer's billows in proportion to the deck
     // (softer lumps than cumulus: the cells are only 1–2 layer depths across)
     let st = select(0.7, 0.5 + 0.12*clamp(LY.sc2.x*0.35/1.2, 0.02, 1.0), LY.sc.w > 0.15);
-    if (d > best.d) { best = Hit(d, LY.sc2.z, clamp(LY.sc.y/8.0, 0.0, 1.0), st); }   // (the deck's nominal base: adiabatic profile above it; a constant, so
+    if (d > best.d) { best = Hit(d, LY.sc2.z*(0.7 + 0.6*vth), clamp(LY.sc.y/8.0, 0.0, 1.0), st); }   // (the deck's nominal base: adiabatic profile above it; a constant, so
     // its 8-bit storage cannot draw contours)
   }
   if (LY.ac.x > 0.0 && p.y > LY.ac.y - 0.3 && p.y < LY.ac.y + LY.ac.z + 0.3) {
@@ -175,6 +269,19 @@ fn evalAt(p: vec3f) -> Hit {
     let dh = (f.x*prof - LY.thr.z)*LY.ci2.x*0.25;
     let d = min(dv, dh);
     if (d > best.d) { best = Hit(d, LY.ci2.z*(0.4 + 0.6*prof), clamp(1.0 - dz/(LY.ci.z + LY.wind.w), 0.0, 1.0), 0.9); }
+  }
+  if (LY.cu.x > 0.0) {
+    let r = cuFieldEval(p, GP.x);
+    if (r.x > best.d) {
+      // stage and dilution: some parts of the field are dissolving (thinned by mixing: lower extinction, softer, more eaten
+      // edges); and a thermal entrains surrounding air at a rate ∝ 1/its size, so small, shallow clouds and the thin margins
+      // of big ones hold a smaller share of their adiabatic water (mixed fraction ~D/(D + 0.25 km); σ ∝ LWC^(2/3))
+      let sx = p.xz/(3.7*LY.cu2.x);
+      let st = smoothstep(0.32, 0.58, nz(vec3f(sx.x, 0.47, sx.y)) + 0.25*r.y);
+      let Tl = LY.cu.z*pow(clamp(r.y, 0.0, 1.0), mix(0.5, 1.7, LY.cu.w))*0.8 + 0.08;
+      let Rcf = LY.cu4.y; let dil = pow(Tl/(Tl + 0.25), 0.6667)/pow(Rcf/(Rcf + 0.25), 0.6667);
+      best = Hit(r.x, LY.cu2.z*mix(0.45, 1.0, st)*min(dil, 1.0), clamp(LY.cu.y/8.0, 0.0, 1.0), 0.5*clamp(Rcf/2.4, 0.0, 1.0));
+    }
   }
   if (GP.w > 0u) {
     let c = vec2i(floor((p.xz + 0.5*DOMAIN)/GRID));
@@ -223,12 +330,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   textureStore(densOut, vec3u(id.x, id.y, l*NZ + k), o);
 }
 
-// the coverage field of one layer (GP.x: 0 low deck, 1 mid, 2 high) on a 256² grid over the central 64 km, for calibration
+// the coverage field of one layer (GP.x: 0 low deck, 1 mid, 2 high, 3 cumulus) on a 256² grid over the central 64 km, for calibration
 @compute @workgroup_size(8, 8, 1)
 fn fieldMain(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= 256u || id.y >= 256u) { return; }
   let xz = (vec2f(id.xy) + 0.5)/256.0*64.0 - 32.0;
   var c = 0.0;
-  if (GP.x == 0u) { c = scField(xz).x; } else if (GP.x == 1u) { c = acField(xz).x; } else { c = ciField(xz).x; }
+  if (GP.x == 0u) { c = scField(xz).x; } else if (GP.x == 1u) { c = acField(xz).x; } else if (GP.x == 2u) { c = ciField(xz).x; } else { c = cuField(xz); }
   fieldOut[id.y*256u + id.x] = c;
 }

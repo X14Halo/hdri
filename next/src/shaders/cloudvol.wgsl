@@ -107,12 +107,18 @@ fn cuSurface(q: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, l
   let iv = smoothstep(0.2, 0.85, W1*0.6 + B2*0.4);
   return vec3f(f, soft, iv);
 }
-// ice fibres drawn out along the wind (crystals spread by shear into long thin strands, 0.1–1 km across)
+// ice fibres drawn out along the wind (crystals spread by shear into long thin strands, 0.1–1 km across). The strands bend and
+// wander (a slow warp across the wind), come in bundles that fade in and out, and are sampled through slanted rotations of the
+// noise volume, so the field never repeats
 fn iceFib(q: vec3f) -> f32 {
-  let wd = CU.wind.xy; let al = dot(q.xz, wd); let ac = dot(q.xz, vec2f(-wd.y, wd.x)); let L = CU.wind.z;
-  let f1 = nzs(vec3f(al/(4.0*L), q.y/0.6, ac/(0.25*L)) + vec3f(0.17, 0.41, 0.83)).a;
-  let f2 = nzs(vec3f(al/(1.3*L), q.y/0.3, ac/(0.06*L)) + vec3f(0.53, 0.29, 0.07)).a;
-  return smoothstep(0.35, 0.75, clamp(0.55*f1 + 0.45*f2, 0.0, 1.0));
+  let wd = CU.wind.xy; var al = dot(q.xz, wd); var ac = dot(q.xz, vec2f(-wd.y, wd.x)); let L = CU.wind.z;
+  let w0 = nzs(RM2*vec3f(al/(9.1*L), q.y/2.3, ac/(6.7*L)) + vec3f(0.29, 0.61, 0.13)).a - 0.5;
+  let w1 = nzs(RM1*vec3f(al/(3.3*L), q.y/1.1, ac/(2.6*L)) + vec3f(0.83, 0.07, 0.47)).a - 0.5;
+  ac += w0*2.4*L + w1*0.7*L; al += w1*1.5*L;
+  let f1 = nzs(RM1*vec3f(al/(4.0*L), q.y/0.6, ac/(0.25*L)) + vec3f(0.17, 0.41, 0.83)).a;
+  let f2 = nzs(RM2*vec3f(al/(1.3*L), q.y/0.3, ac/(0.07*L)) + vec3f(0.53, 0.29, 0.07)).a;
+  let bundle = smoothstep(0.3, 0.7, nzs(RM2*vec3f(al/(6.1*L), q.y/1.7, ac/(1.3*L)) + vec3f(0.71, 0.37, 0.59)).a);
+  return smoothstep(0.35, 0.75, clamp(0.55*f1 + 0.45*f2*mix(0.4, 1.0, bundle), 0.0, 1.0))*mix(0.55, 1.0, bundle);
 }
 fn densFullL(q: vec3f, l: u32) -> f32 {
   let v = rawCloud(q.xz, q.y, l);

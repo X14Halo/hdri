@@ -81,3 +81,9 @@ fn toXYZ(L: array<vec4f, 6>) -> vec3f {
   for (var g = 0u; g < 6u; g++) { xyz += vec3f(dot(L[g], F.CMFx[g]), dot(L[g], F.CMFy[g]), dot(L[g], F.CMFz[g])); }
   return xyz;
 }
+
+// fixed rotations at irrational angles: a tileable noise volume sampled through them never lines its tiles up with the sky's
+// axes, so a straight line across the sky (a fibre, a row) runs through the tile at a slant and does not come back to the
+// same pattern
+const RM1 = mat3x3f(0.62965, 0.24494, -0.73726, 0.09877, 0.91606, 0.38870, 0.77058, -0.31756, 0.55260);
+const RM2 = mat3x3f(0.53576, 0.71989, -0.44126, -0.11489, 0.57989, 0.80656, 0.83651, -0.38143, 0.39339);
