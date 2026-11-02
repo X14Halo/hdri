@@ -80,6 +80,13 @@ fn townE(p: vec3f, ext: f32) -> f32 {
 fn townSparkle(xz: vec2f) -> f32 { let c = vec2i(floor(xz/0.05)); let h = hash3(vec3u(bitcast<u32>(c.x), bitcast<u32>(c.y), 515u)).x; return 0.15 + 4.25*h*h*h*h; }
 var<private> rs: vec3u;
 fn rnd() -> f32 { rs.z += 0x9E3779B9u; return hash3(rs).x; }
+// the light volume read at a point jittered by about a voxel, differently each sample: its trilinear interpolation has
+// creases at every voxel face, which in a cloud's shading drew a faint regular grid (crosshatch in perspective); jittered
+// and averaged over the samples, the creases blur into a smooth field
+fn lightJ(q: vec3f) -> vec4f {
+  let v = levelE(u32(levelOf(q.xz).x))/CU.res.z;
+  return lightAt(q + (vec3f(rnd(), rnd(), rnd()) - 0.5)*vec3f(1.3*v, 0.6*v, 1.3*v));
+}
 fn sampleHG(d: vec3f, g: f32) -> vec3f {
   let xi = rnd(); let s = (1.0 - g*g)/(1.0 - g + 2.0*g*xi);
   let ct = clamp((1.0 + g*g - s*s)/(2.0*g), -1.0, 1.0); let st = sqrt(max(1.0 - ct*ct, 0.0)); let ph = 6.2831853*rnd();
@@ -246,7 +253,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (pxX >= PS.colEnd || py >= PS.rowEnd) { return; }
   let fW = f32(W); let fH = f32(H);
   let n = PS.frame;
-  let jit = select(vec2f(fract(0.5 + f32(n)*0.7548776662) - 0.5, fract(0.5 + f32(n)*0.5698402910) - 0.5), vec2f(0.0), n == 0u);
+  // (each pixel's own rotation of the sample sequences: with one sequence shared by every pixel, all pixels sampled the same
+  // sub-pixel spot and the same depths at once, and the noise of a part-converged image lined up into faint stripes)
+  let cp = hash3(vec3u(pxX, py, 6151u));
+  let jit = select(vec2f(fract(cp.x + f32(n)*0.7548776662) - 0.5, fract(cp.y + f32(n)*0.5698402910) - 0.5), vec2f(0.0), n == 0u);
   let px = vec2f(f32(pxX), f32(py)) + 0.5 + jit;
   let rd = dirFromPixel(px, fW, fH);
   let camH = F.atm2.y; let ro = vec3f(0.0, camH, 0.0); let r0 = Rg + camH; let mu = rd.y;
@@ -262,7 +272,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let pRs = phaseR(cS); let pMs = phaseCS(cS, F.atm2.x); let pFs = phaseFog(cS);
   let pRm = phaseR(cM); let pMm = phaseCS(cM, F.atm2.x); let pFm = phaseFog(cM);
   let ign = fract(hash3(vec3u(pxX, py, 977u)).x + f32(n)*0.61803398875);
-  let jt = select(fract(0.5 + f32(n)*0.61803398875 + (ign - 0.5)*0.3), 0.5, n == 0u);
+  let jt = select(fract(ign + f32(n)*0.61803398875), 0.5, n == 0u);
   let NS = u32(F.opts.x);
 
   // ---- what lies behind, as wavelength-independent factors: ground, sun disc, moon disc, stars, Milky Way
@@ -387,7 +397,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         // past the fine-step budget (long grazing rays through distant cloud fields) the march carries on with coarse steps
         // through the macro density, so far cloud banks still block what is behind them
         let coarse = cloudSteps >= 640u;
-        detailLod = 1.0 - smoothstep(0.008, 0.02, t*PI/fH);   // (the ~25 m billows only where a pixel is finer than ~15 m)
+        detailLod = 1.0 - smoothstep(0.008, 0.02, t*PI/fH); pixKm = t*PI/fH;   // (the ~25 m billows only where a pixel is finer than ~15 m)
         var ds = clamp(t*0.005, 0.02, 1.0);
         var sig = 0.0;
         if (coarse) { ds = max(ds, dt*0.125); sig = densMacro(q); }
@@ -403,7 +413,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           // optical depth to the sun: the first ~0.36 km marched through the detailed cloud (the shadows of its own billows),
           // the next ~2 km through the full-resolution cloud shapes (crisp shadows cast by neighbouring turrets and clouds),
           // the rest from the light volume beyond that point
-          var lt = lightAt(q);
+          var lt = lightJ(q);
           if (F.sunDir.w > 0.5 && t < 60.0 && !coarse) {
             // (steps growing from 15 m: the billows and domes of ~50–150 m shade each other, which is what makes them read;
             // sample positions jittered per pixel and pass: fixed ones would step as the cloud's surfaces cross them, drawing
@@ -413,7 +423,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
             for (var j = 0; j < 7; j++) { tl += densFull(volPos(p + Ls*(d0 + rl*sf)))*sf; d0 += sf; sf *= 1.5; }
             var sd = 0.12;
             for (var j = 0; j < 6; j++) { if (tl > 25.0) { break; } tl += densMacro(volPos(p + Ls*(d0 + rl*sd)))*sd; d0 += sd; sd *= 1.4; }
-            lt.x = tl + select(lightAt(volPos(p + Ls*d0)).x, 0.0, tl > 25.0);
+            lt.x = tl + select(lightJ(volPos(p + Ls*d0)).x, 0.0, tl > 25.0);
           }
           // ---- light inside the cloud (all orders but the first from slab radiative transfer, δ-Eddington, g = 0.86).
           // At this point the cloud is treated as a layer seen along its lit axis: the cloud between the point and the light
@@ -528,7 +538,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let p = ro + rd*tAir; let r = length(p - C0); let h = r - Rg; let up = (p - C0)/r;
     let muS = dot(up, Ls); let muM = dot(up, Lm);
     var shS = 1.0; var shM = 1.0; var shA = 1.0;
-    if (cloudSh) { let la = lightAt(volPos(p)); shS = exp(-la.x); shM = exp(-la.y); shA = 1.0/(1.0 + 0.18*la.z); }
+    if (cloudSh) { let la = lightJ(volPos(p)); shS = exp(-la.x); shM = exp(-la.y); shA = 1.0/(1.0 + 0.18*la.z); }
     let dM = densM(h); let dF = densF(h); let dR = densR(h); let dO = densO(h);
     // the towns' light scattered by the air (their glow over the horizon): each town a Lambertian disc on the ground, lighting
     // this point at its distance and angle, through the air between (mean extinction), scattered toward the camera

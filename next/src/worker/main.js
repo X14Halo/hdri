@@ -79,11 +79,11 @@ async function init(m){
   // (the distance from each cumulus's edge: jump flooding between two seed maps, then written with the field into cuMap2 and copied back)
   R.cuMap2 = device.createTexture({size:[640, 640, VOL.NLEV], format:'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC});
   R.jfa = [0, 1].map(() => device.createTexture({size:[640, 640, VOL.NLEV], format:'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING}));
-  R.jfaSteps = [64, 32, 16, 8, 4, 2, 1, 1].map(s => { const b = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}); device.queue.writeBuffer(b, 0, new Uint32Array([s, 0, 0, 0])); return b; });
+  R.jfaSteps = [256, 128, 64, 32, 16, 8, 4, 2, 1, 1].map(s => { const b = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}); device.queue.writeBuffer(b, 0, new Uint32Array([s, 0, 0, 0])); return b; });
   R.cuMapW = R.cuMap.createView({dimension:'2d-array'});
   R.paintTex = device.createTexture({size:[128, 32], format:'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST});
   device.queue.writeTexture({texture: R.paintTex}, new Uint8Array(128*32*4).fill(128), {bytesPerRow: 512}, [128, 32]);
-  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight, pCuMap, pShadow, pVol, pJfaI, pJfaS, pJfaF] = await Promise.all([
+  const [pT, pM, pA, pMeter, pSky, pNoise, pNoise2, pGen, pField, pLight, pCuMap, pShadow, pVol, pJfaI, pJfaS, pJfaF, pJfaB] = await Promise.all([
     computePipe('transLUT', wgsl('common', 'atmo', 'cloudu', 'luts'), 'transLUT', [0, 1]),
     computePipe('msLUT', wgsl('common', 'atmo', 'cloudu', 'luts'), 'msLUTpass', [0, 2, 4, 5]),
     computePipe('ambLUT', wgsl('common', 'atmo', 'cloudu', 'luts'), 'ambPass', [0, 2, 3, 4, 6, 8, 9]),
@@ -100,8 +100,9 @@ async function init(m){
     computePipe('jfaInit', wgsl('common', 'cloudu', 'cloudgen'), 'jfaInit', [5, 6, 12, 16]),
     computePipe('jfaStep', wgsl('common', 'cloudu', 'cloudgen'), 'jfaStep', [5, 15, 16, 17]),
     computePipe('jfaFinal', wgsl('common', 'cloudu', 'cloudgen'), 'jfaFinal', [0, 5, 6, 12, 15, 18]),
+    computePipe('jfaBlur', wgsl('common', 'cloudu', 'cloudgen'), 'jfaBlur', [0, 5, 6, 12, 17, 18]),
   ]);
-  R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField; R.pCuMap = pCuMap; R.pShadow = pShadow; R.pVol = pVol; R.pJfaI = pJfaI; R.pJfaS = pJfaS; R.pJfaF = pJfaF;
+  R.pNoise = pNoise; R.pGen = pGen; R.pLight = pLight; R.pField = pField; R.pCuMap = pCuMap; R.pShadow = pShadow; R.pVol = pVol; R.pJfaI = pJfaI; R.pJfaS = pJfaS; R.pJfaF = pJfaF; R.pJfaB = pJfaB; R.blurDir = [0, 1].map(d => { const b = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}); device.queue.writeBuffer(b, 0, new Uint32Array([d, 0, 0, 0])); return b; });
   { const enc = device.createCommandEncoder(); const c = enc.beginComputePass(); c.setPipeline(pNoise); c.setBindGroup(0, bg(pNoise, [[0, R.noise.createView()]])); c.dispatchWorkgroups(32, 32, 32); c.end();
     const c2 = enc.beginComputePass(); c2.setPipeline(pNoise2); c2.setBindGroup(0, bg(pNoise2, [[0, R.noise2.createView()]])); c2.dispatchWorkgroups(32, 32, 32); c2.end(); device.queue.submit([enc.finish()]); }
   R.pT = pT; R.pM = pM; R.pA = pA; R.pMeter = pMeter; R.pSky = pSky;
@@ -204,7 +205,10 @@ function buildClouds(P, enc){
       c.setPipeline(R.pJfaI); c.setBindGroup(0, bg(R.pJfaI, [[5, R.gp[l]], [6, R.ly], [12, mapV], [16, jv[0]]])); c.dispatchWorkgroups(80, 80);
       let a = 0; for (const sb of R.jfaSteps){ c.setPipeline(R.pJfaS); c.setBindGroup(0, bg(R.pJfaS, [[5, R.gp[l]], [15, jv[a]], [16, jv[1 - a]], [17, sb]])); c.dispatchWorkgroups(80, 80); a = 1 - a; }
       c.setPipeline(R.pJfaF); c.setBindGroup(0, bg(R.pJfaF, [[0, R.cu], [5, R.gp[l]], [6, R.ly], [12, mapV], [15, jv[a]], [18, m2]])); c.dispatchWorkgroups(80, 80); c.end(); }
-    enc.copyTextureToTexture({texture: R.cuMap2}, {texture: R.cuMap}, [640, 640, VOL.NLEV]); }
+    enc.copyTextureToTexture({texture: R.cuMap2}, {texture: R.cuMap}, [640, 640, VOL.NLEV]);
+    for (const db of R.blurDir){ const c = enc.beginComputePass(); c.setPipeline(R.pJfaB);
+      for (let l = 0; l < VOL.NLEV; l++){ c.setBindGroup(0, bg(R.pJfaB, [[0, R.cu], [5, R.gp[l]], [6, R.ly], [12, mapV], [17, db], [18, m2]])); c.dispatchWorkgroups(80, 80); }
+      c.end(); enc.copyTextureToTexture({texture: R.cuMap2}, {texture: R.cuMap}, [640, 640, VOL.NLEV]); } }
   if (r1 > r0) for (let l = 0; l < VOL.NLEV; l++){
     const c = enc.beginComputePass(); c.setPipeline(R.pGen);
     c.setBindGroup(0, bg(R.pGen, [[0, R.cu], [1, R.densV], [2, R.cuRec], [3, R.cuStart], [4, R.cuIdx], [5, R.gp[l]], [6, R.ly], [7, R.noise.createView()], [8, R.wrapSamp], [12, R.cuMapW], [13, R.samp], [14, R.paintTex.createView()]]));

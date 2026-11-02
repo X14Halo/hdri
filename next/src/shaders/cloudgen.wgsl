@@ -127,9 +127,13 @@ fn scField(xz: vec2f) -> vec2f {
   let open = (1.0 - smoothstep(0.0, 0.42, edge))*(0.45 + 0.55*clump);
   let cell = mix(mix(1.0, closed, smoothstep(0.0, 0.45, form)), open, smoothstep(0.55, 1.0, form));
   let det = fbm2s(xz, cs*0.45, 0.71);
-  // grouping: thicker, more continuous areas and broken or clear ones (10–40 km), so the deck is not the same everywhere
-  let meso = n2(xz, 38.0, 0.91) - 0.5 + 0.6*(n2(xz, 13.7, 0.29) - 0.5);
-  return vec2f(0.7*cell + 0.3*det + 0.6*meso, cell);
+  // grouping: thicker, more continuous areas and broken or clear ones (10–40 km), so the deck is not the same everywhere; and
+  // holes of every size a few km across
+  let meso = n2(xz, 38.0, 0.91) - 0.5 + 0.6*(n2(xz, 13.7, 0.29) - 0.5) + 0.45*(fbm2s(xz, 4.2, 0.19) - 0.5);
+  // (closed cells are joined to their neighbours: the deck breaks in irregular holes, not along every cell's border into
+  // separate puffs; open cells keep their pattern of rims and gaps)
+  let wc = mix(0.35, 0.7, smoothstep(0.45, 0.85, form));
+  return vec2f(wc*cell + 0.3*det + 0.6*meso, cell);
 }
 // ---------- altocumulus / altostratus: a sheet of cloudlets in rows across the wind (billows of the shear), in patches;
 // altostratus: a thick grey veil with soft undulations. Returns (coverage field, lump height)
@@ -226,7 +230,8 @@ fn cuField(xz: vec2f) -> vec2f {
   let Lc = max(4.0, 3.5*L);
   let cl = (gnoise2(xz/Lc + vec2f(3.3, 8.1), s + 60u) + 0.45*gnoise2(xz/(0.43*Lc) + vec2f(1.1, 2.2), s + 61u))/0.75;
   let cl0 = (gnoise2(vec2f(3.3, 8.1), s + 60u) + 0.45*gnoise2(vec2f(1.1, 2.2), s + 61u))/0.75;
-  o += (0.12 + 0.45*org)*(cl - cl0*exp(-dot(xz, xz)/(2.0*1.44*Lc*Lc)));
+  // (gently: strong grouping fused a group into one giant cloud standing alone in a clear sky)
+  o += (0.05 + 0.2*org)*(cl - cl0*exp(-dot(xz, xz)/(2.0*1.44*Lc*Lc)));
   if (LY.cu3.y > 0.0) { let c = dot(xz, vec2f(-LY.wl.y, LY.wl.x));
     o += 0.1*LY.cu3.y*cos(6.2831853*c/LY.cu3.z + 2.2*gnoise2(xz/9.0, s + 50u)); }
   return vec2f(f + o, fl + o);
@@ -270,6 +275,19 @@ fn jfaFinal(@builtin(global_invocation_id) id: vec3u) {
   if (m.x > LY.thr.w) { d = select(max(distance(vec2f(id.xy), vec2f(f32(s & 0xffffu), f32(s >> 16u))) - 0.5, 0.0)*tk, 64.0*tk, s == JFA_NONE); }
   textureStore(cuMap2, vec2u(id.xy), GP.x, vec4f(m.x, m.y, d, 0.0));
 }
+// the distance blurred (a tenth of the field scale): the exact distance has creases along each cloud's middle line, which
+// as a height made the tops and sides into faceted roofs with straight ridges; blurred, they round off. JS.x: 0 across, 1 down
+@compute @workgroup_size(8, 8, 1)
+fn jfaBlur(@builtin(global_invocation_id) id: vec3u) {
+  if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
+  let m = textureLoad(cuMap, vec2i(id.xy), i32(GP.x), 0);
+  let tk = 2.0*cuMapHW(GP.x)/CUMAP; let sg = clamp(0.1*LY.cu2.x/tk, 0.75, 6.0); let r = i32(ceil(2.5*sg));
+  let dir = select(vec2i(1, 0), vec2i(0, 1), JS.x == 1u); var a = 0.0; var w = 0.0;
+  for (var k = -r; k <= r; k++) {
+    let q = clamp(vec2i(id.xy) + dir*k, vec2i(0), vec2i(i32(CUMAP) - 1)); let wk = exp(-0.5*f32(k*k)/(sg*sg));
+    a += textureLoad(cuMap, q, i32(GP.x), 0).z*wk; w += wk; }
+  textureStore(cuMap2, vec2u(id.xy), GP.x, vec4f(m.x, m.y, a/w, 0.0));
+}
 // the cloud at p from the field: a flat base at the condensation level; above it the cloud reaches a height that grows with
 // the field's excess over the threshold: steep-sided at its margin (the edge of an updraft), deeper toward strong cores, up to
 // the top of the convection. Columns lean downwind with the shear and wander with height.
@@ -284,7 +302,8 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   // (and a finer, faster-changing wander: the sides bulge and tuck in every couple of hundred metres of height, so no part of
   // a cloud is a straight vertical extrusion of its outline — seen from below, extruded columns read as streaks radiating
   // from overhead)
-  let wq2 = RM1*vec3f(xz.x/(0.47*L), p.y/(0.21*L), xz.y/(0.47*L));
+  // (as fine in height as across: squeezed in height, the bulges stacked into horizontal striations along the sides)
+  let wq2 = RM1*vec3f(xz.x/(0.36*L), p.y/(0.36*L), xz.y/(0.36*L));
   xz += (vec2f(nz(wq2 + vec3f(0.33, 0.91, 0.12)), nz(wq2 + vec3f(0.78, 0.05, 0.64))) - 0.5)*L*(0.07 + 0.08*hy);
   // (the slope over ~a tenth of the field scale, not one texel: the finest octaves make the local slope steep and noisy, and
   // dividing by it put wide stretches of clear air just "outside" a surface, where the surface detail then grew a haze)
@@ -322,7 +341,8 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   // edge (fair weather: mounds about half as high as wide; congestus: towers; a small fragment stays small, not a thin tall
   // column). The distance comes from the map (painting more cloud adds to it as it widens the cloud)
   let dev = LY.cu.w; let Aw = 1.1 + 4.5*pow(dev, 1.5) + 6.0*pow(dev, 4.0); let R0 = 0.3*L;
-  let De = M.z + max(Fc - F, 0.0)/sp*0.5*L;
+  // (a merged group of clouds is not one thermal: its towers are no taller than single ones would be)
+  let De = min(M.z + max(Fc - F, 0.0)/sp*0.5*L, 0.6*L);
   let Td = 0.03 + Aw*pow(De + 1e-4, 0.75)*pow(R0, 0.25);
   // (turrets and dips: the column's depth varies by ±20% over a few hundred metres, so the cloud above a base is not uniformly
   // thick and the base seen from below shades into darker and lighter patches)
@@ -330,7 +350,10 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   var T = Hm*edge*core*(0.8 + 0.4*tn);
   let dT = (0.8 + 0.4*tn)*Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*(1.0 - wall)*k*pk/max(em, 1e-4), e < 1.0));
   var gT = min(dT/sp*length(g), 60.0);
-  let Tc = Td*(0.8 + 0.4*tn); if (Tc < T) { T = Tc; gT = min(0.75*Aw*pow(R0/(De + 1e-3), 0.25)*(0.8 + 0.4*tn), 60.0); }
+  // (taken softly: a hard minimum of the two heights left a seam where one took over from the other)
+  let Tc = Td*(0.8 + 0.4*tn); let gTc = min(0.75*Aw*pow(R0/(De + 1e-3), 0.25)*(0.8 + 0.4*tn), 60.0);
+  let kS = 0.3*min(T, Tc) + 0.02; let hS = clamp(0.5 + 0.5*(T - Tc)/kS, 0.0, 1.0);
+  T = mix(T, Tc, hS) - kS*hS*(1.0 - hS); gT = mix(gT, gTc, hS);
   // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
   return vec3f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e, sf);
 }

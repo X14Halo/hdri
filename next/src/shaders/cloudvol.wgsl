@@ -64,6 +64,11 @@ fn distHint(q: vec3f) -> f32 {
 fn nzs(q: vec3f) -> vec4f { return textureSampleLevel(noiseTex, wrapSamp, q, 0.0); }
 // how much of the finest detail this sample can show (1 near, fading where a pixel spans more than ~15 m; the sky sets it)
 var<private> detailLod: f32 = 1.0;
+// the size of a pixel where this sample is (km; 0 where there is no pixel, e.g. the light volume): each octave of surface
+// detail fades out where it would be finer than about two pixels. Unfiltered, a tiling noise sampled finer than the pixels
+// aliases into regular stripes and moiré across distant clouds
+var<private> pixKm: f32 = 0.0;
+fn octW(size: f32) -> f32 { return 1.0 - smoothstep(0.25, 0.6, pixKm/max(size, 1e-4)); }
 // a smooth random vector field (from the volume's smooth Perlin channel), about −0.5…0.5
 fn wv(q: vec3f, s: f32, o: vec3f) -> vec3f { return vec3f(nzs(q/s + o).a, nzs(q/s + o + vec3f(0.37, 0.11, 0.53)).a, nzs(q/s + o + vec3f(0.71, 0.59, 0.23)).a) - 0.5; }
 fn t3D(q: vec3f) -> vec4f { return textureSampleLevel(detailTex, wrapSamp, q, 0.0); }
@@ -89,7 +94,7 @@ fn cuSurface(q0: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, 
   let qw = q + wv(q, 1.3*S, vec3f(0.11, 0.53, 0.29))*vec3f(0.35, 0.15, 0.35)*S*(0.5 + hfac);
   let qv = qw*vec3f(1.0, select(0.7, 1.0, lay), 1.0);   // (convective lobes a little taller than wide)
   // puffs on puffs: big lobes ~2.6 S, smaller lobes ~0.9 S on them
-  let B1 = pwShape(qv/(2.6*S) + vec3f(0.37, 0.11, 0.73)); let B2 = pwShape(qv/(0.9*S) + vec3f(0.83, 0.47, 0.19));
+  let B1 = pwShape(qv/(2.6*S) + vec3f(0.37, 0.11, 0.73)); let B2 = mix(0.6, pwShape(qv/(0.9*S) + vec3f(0.83, 0.47, 0.19)), octW(0.9*S));
   let big = B1*(0.35 + 0.8*B2);
   var f = d - A*(1.0 - min(big, 1.0)) + 0.04;
   let f0 = f;
@@ -97,9 +102,11 @@ fn cuSurface(q0: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, 
   let d1 = t3D(qw/(1.2*S) + vec3f(0.0, 0.29, 0.0));
   let d2 = t3D((qw + (d1.gba - 0.5)*0.11*S)/(0.4*S) + vec3f(0.31, 0.53, 0.17));
   let d3 = t3D((qw + (d1.rgb - 0.5)*0.05*S + (d2.gba - 0.5)*0.035*S)/(0.13*S) + vec3f(0.71, 0.13, 0.43));
-  let W1 = d1.r*0.625 + d1.g*0.25 + d1.b*0.125; let W2 = d2.r*0.625 + d2.g*0.25 + d2.b*0.125; let W3 = d3.r*0.625 + d3.g*0.25 + d3.b*0.125;
+  let o1 = octW(1.2*S); let o2 = octW(0.4*S); let o3 = octW(0.13*S);
+  let W1 = mix(0.56, d1.r*0.625 + d1.g*0.25 + d1.b*0.125, o1); let W2 = mix(0.56, d2.r*0.625 + d2.g*0.25 + d2.b*0.125, o2); let W3 = mix(0.56, d3.r*0.625 + d3.g*0.25 + d3.b*0.125, o3);
+  let a1 = mix(0.5, d1.a, o1); let a2 = mix(0.5, d2.a, o2); let a3 = mix(0.5, d3.a, o3);
   var billow = (W1 - 0.56)*0.55 + (W2 - 0.56)*0.3 + (W3 - 0.56)*0.15;
-  var wisp = (d1.a - 0.5)*0.5 + (d2.a - 0.5)*0.3 + (d3.a - 0.5)*0.2;
+  var wisp = (a1 - 0.5)*0.5 + (a2 - 0.5)*0.3 + (a3 - 0.5)*0.2;
   if (detailLod > 0.01) {   // a ~45 m octave, close to the camera only
     let d4 = t3D((qw + (d2.rgb - 0.5)*0.02*S)/(0.042*S) + vec3f(0.19, 0.61, 0.61));
     billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*0.12*detailLod; wisp += (d4.a - 0.5)*0.16*detailLod; }
@@ -110,11 +117,11 @@ fn cuSurface(q0: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, 
   var disp = mix(wisp, billow, bw)*amp*(2.4 + 1.2*decay);
   if (disp > 0.0) { disp *= 0.4*smoothstep(-0.1*amp, 0.02, f); }   // detail mostly cuts in; it pushes out only near the surface
   f += disp;
-  f -= (0.06 + 0.1*decay)*CU.band.w*(1.0 - smoothstep(0.0, 0.25, f))*max(d2.a - 0.35, 0.0);
+  f -= (0.06 + 0.1*decay)*CU.band.w*(1.0 - smoothstep(0.0, 0.25, f))*max(a2 - 0.35, 0.0);
   // the margin itself: fringes and notches within a band whose width follows how ragged this part is
   let band = exp(-(f*f)/(0.0012 + 0.0024*rag));
-  f += ((d2.a - 0.5)*0.6 + (d3.a - 0.5)*0.4 + (W3 - 0.56)*0.5)*1.5*amp*rag*band*CU.band.w;
-  f -= (0.05 + 0.04*rag)*CU.band.w*(1.0 - smoothstep(0.0, 0.12, f))*max(d3.a - 0.45, 0.0)*2.0;
+  f += ((a2 - 0.5)*0.6 + (a3 - 0.5)*0.4 + (W3 - 0.56)*0.5)*1.5*amp*rag*band*CU.band.w;
+  f -= (0.05 + 0.04*rag)*CU.band.w*(1.0 - smoothstep(0.0, 0.12, f))*max(a3 - 0.45, 0.0)*2.0;
   // the edge itself: hard on growing tops, a ramp of tens of metres where the cloud is mixing (liquid water fades out)
   // (tens of metres: liquid water ends within a few tens of metres of a cumulus's surface; the breakup of the outline is the
   // fray and the notches above, not a blur — a wide ramp read as smoke from below)

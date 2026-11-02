@@ -15,7 +15,7 @@ function fbm2(x, y, seed, oct){ let s = 0, a = 0.5, n = 0; for (let i = 0; i < o
 
 // ---------- the volume ----------
 // camera-centred levels, each twice as wide as the one before; all span the same altitudes (0 … ZTOP km above the ground)
-const VOL = {E0: 16, ZTOP: 16, NLEV: 6, SDF_LEVELS: 2, GRID: 2, DOMAIN: 512};
+const VOL = {E0: 16, ZTOP: 16, NLEV: 6, SDF_LEVELS: 3, GRID: 2, DOMAIN: 512};
 // altitude ↔ slice (as altToSlice / sliceToAlt in cloudu.wgsl)
 const VZS = 6, VFZ = 0.75;
 const altToSlice = (alt, nz) => alt < VZS ? alt/VZS*VFZ*nz : (VFZ + (alt - VZS)/(VOL.ZTOP - VZS)*(1 - VFZ))*nz;   // km; levels below SDF_LEVELS hold distances, the rest coverage
@@ -141,7 +141,7 @@ function cuFieldParams(P){
   const margin = 0.6*L + shear*Hm + 0.5;
   // showers from congestus onward; rain evaporates on its way down in dry air (virga), reaches the ground in moist air
   const ss = x => x <= 0 ? 0 : x >= 1 ? 1 : x*x*(3 - 2*x);
-  const rain = clamp(P.cuRain ?? 1, 0, 1)*ss((dev - 0.4)/0.3);
+  const rain = clamp(P.cuRain ?? 1, 0, 1)*ss((dev - 0.55)/0.25);   // (from congestus on: not from the moderate ones of a sunny day)
   const rh = clamp(P.humidity ?? 50, 0, 100)/100, fallLen = base*(0.4 + 1.4*rh*rh);
   // anvils on deep convection, drawn out downwind by the upper winds
   const anvil = clamp(P.cuAnvil ?? 1, 0, 1)*ss((dev - 0.65)/0.25);
