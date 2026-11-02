@@ -134,7 +134,7 @@ const cuIsField = P => P.cuOn && P.cuCover > 0.001 && P.cuModel !== 'cells';
 function cuFieldParams(P){
   const dev = clamp(P.cuDev, 0, 1), base = P.cuBase;
   const Hm = 0.9 + 1.6*dev + 9*Math.pow(dev, 2.2);           // depth of the convection (to the inversion / the tropopause)
-  const L = 1.3*(P.cuSize || 1)*(1 + 2.2*dev);                // field scale: single clouds ~0.3–0.6 of it across (fair weather 0.3–1 km, congestus 2–4 km)
+  const L = 1.3*(P.cuSize || 1)*(1 + 1.4*dev);                // field scale: single clouds ~0.3–0.6 of it across (fair weather 0.3–1 km, congestus 1–3 km)
   const shear = 0.35*(P.cuShear ?? 0.5);
   const Rc = clamp(0.4*L*(1 + dev), 0.3, 2.4);               // the scale of the surface detail (lumps, billows)
   const margin = 0.6*L + shear*Hm + 0.5;

@@ -204,16 +204,17 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec2f {
   let F = cuMapF(xz, l);
   let g = vec2f(cuMapF(xz + vec2f(h, 0.0), l) - cuMapF(xz - vec2f(h, 0.0), l), cuMapF(xz + vec2f(0.0, h), l) - cuMapF(xz - vec2f(0.0, h), l))/(2.0*h);
   let thr = LY.thr.w; let sp = max(LY.cu3.w - thr, 1e-3); let e = (F - thr)/sp;
-  // column depth: √ near the margin (near-vertical sides), then a power of the excess that steepens with development, so
-  // fair-weather fields are many shallow clouds of similar depth and deep convection has a few towers in its strongest cores
-  let eS = 0.1; let k = mix(0.5, 1.7, LY.cu.w);
-  // (outside the footprint: the horizontal distance to its edge, but above the height its steep margin reaches, at least a
-  // share of the height above that: a plain extrusion of the footprint's edge put "near the surface" curtains of clear air
-  // up to the top of the convection, which the surface detail then filled with a haze)
-  if (e <= 0.0) { let Tw = Hm*pow(eS, k); return vec2f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e); }
-  let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let core = pow(max(em, 1e-4), k);
+  // column depth: a steep wall at the margin (the edge of an updraft: a cumulus is about as deep at its edge as a little way
+  // in, not a thin skirt), up to a share of the convection's depth, then domed higher toward the strong cores, steeply so with
+  // development: fair-weather fields are many flat-based mounds of similar depth, deep convection a few towers in its cores
+  let eS = 0.04; let k = mix(0.5, 1.7, LY.cu.w); let wall = mix(0.4, 0.12, LY.cu.w);
+  // (outside the footprint: the horizontal distance to its edge, but above the height its wall reaches, at least a share of
+  // the height above that: a plain extrusion of the footprint's edge put "near the surface" curtains of clear air up to the
+  // top of the convection, which the surface detail then filled with a haze)
+  if (e <= 0.0) { let Tw = Hm*wall; return vec2f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e); }
+  let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let pk = pow(max(em, 1e-4), k); let core = wall + (1.0 - wall)*pk;
   let T = Hm*edge*core;
-  let dT = Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*k*core/max(em, 1e-4), e < 1.0));
+  let dT = Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*(1.0 - wall)*k*pk/max(em, 1e-4), e < 1.0));
   let gT = min(dT/sp*length(g), 60.0);
   // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
   return vec2f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e);
@@ -278,7 +279,8 @@ fn evalAt(p: vec3f) -> Hit {
       // of big ones hold a smaller share of their adiabatic water (mixed fraction ~D/(D + 0.25 km); σ ∝ LWC^(2/3))
       let sx = p.xz/(3.7*LY.cu2.x);
       let st = smoothstep(0.32, 0.58, nz(vec3f(sx.x, 0.47, sx.y)) + 0.25*r.y);
-      let Tl = LY.cu.z*pow(clamp(r.y, 0.0, 1.0), mix(0.5, 1.7, LY.cu.w))*0.8 + 0.08;
+      let wl = mix(0.4, 0.12, LY.cu.w);
+      let Tl = LY.cu.z*(wl + (1.0 - wl)*pow(clamp(r.y, 0.0, 1.0), mix(0.5, 1.7, LY.cu.w)))*min(r.y/0.04, 1.0)*0.8 + 0.08;
       let Rcf = LY.cu4.y; let dil = pow(Tl/(Tl + 0.25), 0.6667)/pow(Rcf/(Rcf + 0.25), 0.6667);
       best = Hit(r.x, LY.cu2.z*mix(0.45, 1.0, st)*min(dil, 1.0), clamp(LY.cu.y/8.0, 0.0, 1.0), 0.5*clamp(Rcf/2.4, 0.0, 1.0));
     }
