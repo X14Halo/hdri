@@ -230,8 +230,11 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   // top of the convection, which the surface detail then filled with a haze)
   if (e <= 0.0) { let Tw = Hm*wall; return vec3f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e, sf); }
   let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let pk = pow(max(em, 1e-4), k); let core = wall + (1.0 - wall)*pk;
-  let T = Hm*edge*core;
-  let dT = Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*(1.0 - wall)*k*pk/max(em, 1e-4), e < 1.0));
+  // (turrets and dips: the column's depth varies by ±20% over a few hundred metres, so the cloud above a base is not uniformly
+  // thick and the base seen from below shades into darker and lighter patches)
+  let tn = nz(RM2*vec3f(xz.x/(0.55*L), 0.37, xz.y/(0.55*L)));
+  let T = Hm*edge*core*(0.8 + 0.4*tn);
+  let dT = (0.8 + 0.4*tn)*Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*(1.0 - wall)*k*pk/max(em, 1e-4), e < 1.0));
   let gT = min(dT/sp*length(g), 60.0);
   // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
   return vec3f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e, sf);

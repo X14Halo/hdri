@@ -37,7 +37,7 @@ fn densMacro(q: vec3f) -> f32 {
 }
 // signed distance to the nearest cloud surface (km, level 0–2 only; > 0 inside), for stepping through empty air
 // how far the fine detail can push a cumulus surface outward (km), from the cloud's size code
-fn cuPush(a: f32) -> f32 { return 0.09; }
+fn cuPush(a: f32) -> f32 { return select(0.09, 0.15, a < 0.5); }   // (cumulus: down to the ragged fragments under its base)
 // (the far levels hold coverage, not distances: there an empty voxel lets the ray skip half a voxel, anything else is sampled)
 fn hintL(q: vec3f, l: u32) -> f32 {
   let v = rawCloud(q.xz, q.y, l);
@@ -147,8 +147,21 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       let shellW = clamp(0.12*Rc, 0.03, 0.18)*(1.0 + decay)*select(1.0, 0.6, v.a >= 0.5);
       let sh = smoothstep(0.0, shellW, de);
       let edge = 0.45 + 0.55*sh;
-      // inside: water content varies from lobe to lobe (dark folds, bright bulges)
-      return sig*cuSigmaZ(z)*cuDil(v.a)*(0.65 + 0.7*su.z)*edge*smoothstep(0.0, soft, de);
+      // inside: water content varies from lobe to lobe (dark folds, bright bulges); in cumulus strongly (updraft cores against
+      // diluted downdraft pockets, roughly 2–3× apart), which is also what gives a base seen from below its darker and lighter
+      // patches
+      let body = sig*cuSigmaZ(z)*cuDil(v.a)*select(0.5 + 1.0*su.z, 0.65 + 0.7*su.z, v.a >= 0.5)*edge*smoothstep(0.0, soft, de);
+      // ragged fragments hanging under the base (fractus, scud: air dragged up into the condensation level by eddies and
+      // condensing patchily), from just below the base to ~150 m under it, beside and under the cloud only; darker than the base
+      // (less light reaches under it), they give a base seen from below its texture and break up its edge
+      if (v.a < 0.5 && z < 0.05 && z > -0.17 && d > -0.15) {
+        let qs = q*vec3f(1.0, 1.7, 1.0);
+        let sn = t3D(RM1*qs/0.19 + vec3f(0.27, 0.61, 0.09)).a; let sb = t3D(RM2*qs/0.071 + vec3f(0.55, 0.13, 0.81));
+        let hang = smoothstep(-0.17, -0.05, z)*(1.0 - smoothstep(0.0, 0.05, z))*smoothstep(-0.15, -0.03, d);
+        let scud = sig*30.0*smoothstep(0.56, 0.8, 0.7*sn + 0.3*(sb.r*0.625 + sb.g*0.375))*hang*CU.band.w;
+        return max(body, scud);
+      }
+      return body;
     }
     if (v.a > 0.8) {
       // ice: fibres drawn out along the wind (crystals spread by shear into long thin strands), soft-edged and wispy
