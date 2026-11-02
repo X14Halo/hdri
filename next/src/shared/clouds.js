@@ -162,7 +162,11 @@ function layerUniforms(P, thr){
       return [on ? P.cuCover : 0, f.base, f.Hm, f.dev,   f.L, P.cuSeed, P.cuDens, f.margin,
         clamp(P.cuOrg, 0, 1), clamp(P.cuStreets, 0, 1), f.rollSp, thr.cuHi ?? 0.5,   f.shear, f.Rc, clamp(P.cuClear || 0, 0, 1), 0.9*(f.base + 0.4*f.Hm),
         f.rain, f.fallLen, f.anvil, f.anvilLen]; })(),
-    P.paint ? 1 : 0, clamp(P.paintStr ?? 1, 0, 2), (P.azOff || 0)*Math.PI/180, 0]);
+    P.paint ? 1 : 0, clamp(P.paintStr ?? 1, 0, 2), (P.azOff || 0)*Math.PI/180, 0,
+    ...cloudDrift(P), 0, 0]);
+}
+// how far the clouds have moved with the wind (km): the wind (km/h) over the timelapse's elapsed hours
+function cloudDrift(P){ const h = P.tlHours || 0; return [(P.windX || 0)*h, (P.windZ || 0)*h];
 }
 // altitude range a layer can occupy (for the build slab and the renderer's cloud band)
 function layerBand(P){

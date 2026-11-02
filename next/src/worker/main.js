@@ -71,7 +71,7 @@ async function init(m){
   // (separate per-level uniforms for each pass kind: writeBuffer lands before the whole command buffer runs)
   R.gp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
   R.lp = Array.from({length: VOL.NLEV}, () => device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST}));
-  R.ly = device.createBuffer({size: 224, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+  R.ly = device.createBuffer({size: 240, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   R.fieldBuf = device.createBuffer({size: 256*256*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
   R.fgp = device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
   // the cumulus field, mapped once per level (640² texels over the level and a margin)
@@ -223,7 +223,7 @@ async function measureFields(P, ks){
 }
 function writeCU(P){ const [nx, nz, lx, lz] = R.volRes; const dp = dropletPhase(P.cuDrop || 14);
   device.queue.writeBuffer(R.cu, 0, new Float32Array([VOL.E0, VOL.ZTOP, VOL.NLEV, VOL.SDF_LEVELS, nx, nz, lx, lz,
-    S.band ? S.band[0] : 0, S.band ? S.band[1] : 0, S.cloudOn ? 1 : 0, P.cuErode ?? 1, dp.gHG, dp.gD, dp.a, dp.wD, 0.5, 0.45, 0.8, (P.cuAmb ?? 1), ...(() => { const wl = Math.hypot(P.windX, P.windZ) || 1; return [P.windX/wl, P.windZ/wl, 1.2*(P.ciCell || 1.5), clamp(P.cuDev, 0, 1)]; })()])); }
+    S.band ? S.band[0] : 0, S.band ? S.band[1] : 0, S.cloudOn ? 1 : 0, P.cuErode ?? 1, dp.gHG, dp.gD, dp.a, dp.wD, ...cloudDrift(P), 0, (P.cuAmb ?? 1), ...(() => { const wl = Math.hypot(P.windX, P.windZ) || 1; return [P.windX/wl, P.windZ/wl, 1.2*(P.ciCell || 1.5), clamp(P.cuDev, 0, 1)]; })()])); }
 function lightClouds(enc){ const [, , lx, lz] = R.volRes;
   for (let l = 0; l < VOL.NLEV; l++){ device.queue.writeBuffer(R.lp[l], 0, new Uint32Array([l, 0, 0, 0]));
     const c = enc.beginComputePass(); c.setPipeline(R.pLight);
@@ -244,7 +244,7 @@ function applyParams(){
   device.queue.writeBuffer(R.frame, 0, fr.frame);
   const enc = device.createCommandEncoder();
   // clouds: rebuild the volume when a cloud setting changed; relight it when the clouds or the sun or moon moved
-  const cuKey = JSON.stringify(Object.keys(P).filter(k => /^(cu|wind|sc|ac|ci|paint|humidity$|azOff$)/.test(k)).map(k => P[k])) + R.volQ;
+  const cuKey = JSON.stringify(Object.keys(P).filter(k => /^(cu|wind|sc|ac|ci|paint|humidity$|azOff$|tlHours$)/.test(k)).map(k => P[k])) + R.volQ;
   const nf = needFields(P); if (nf.length && !S.fieldBusy) measureFields(P, nf);
   const t0 = performance.now(); let rebuilt = false;
   if (cuKey !== S.cuKey && !S.fieldBusy){ S.cuKey = cuKey; buildClouds(P, enc); rebuilt = true; } else writeCU(P);
@@ -357,6 +357,7 @@ async function readback(){
 function passData(u, mask, pt, haze){ const b = new ArrayBuffer(64); new Uint32Array(b, 0, 8).set(u); new Float32Array(b, 32, 8).set([...mask, pt ? 1 : 0, haze ? haze[0] : 0, haze ? haze[1] : 0, 0]); return b; }
 function startExport(m){
   if (S.exp || !R.accum) return;
+  if (S.paramsDirty) applyParams();   // (settings sent just before, e.g. a timelapse frame's, take effect first)
   const W = m.W, H = W/2, band = Math.max(8, Math.min(H, Math.floor(64*1024*1024/(W*16)/8)*8));
   const buf = device.createBuffer({size: W*band*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});
   const bgs = R.passBufs.map(pb => bg(R.pSky, [[0, R.frame], [1, R.transV], [2, R.msV], [3, R.samp], [4, R.amb], [5, pb], [6, buf],

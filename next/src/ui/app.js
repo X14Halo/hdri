@@ -167,6 +167,13 @@ const SECTIONS = [
     {k:'ciDens', label:'Optical thickness', min:0.2, max:4, step:0.01, fmt:v => `×${v.toFixed(2)}`, show:() => P.ciOn},
     {type:'buttons', btns:[['New pattern', () => { P.ciSeed = (P.ciSeed*7919 + 31) % 100003; changed(); }]], show:() => P.ciOn},
   ]},
+  {title:'Timelapse', items:[
+    {k:'tlFrames', label:'Frames', min:2, max:240, step:1, fmt:v => `${Math.round(v)}`},
+    {k:'tlSpan', label:'Time span', min:1, max:720, step:1, log:true, fmt:v => v < 60 ? `${Math.round(v)} min` : `${(v/60).toFixed(1)} h`},
+    {k:'tlRes', label:'Frame size', type:'select', opts:[[1024, '1K · 1024 × 512'], [2048, '2K · 2048 × 1024'], [4096, '4K · 4096 × 2048']]},
+    {type:'buttons', btns:[['Render timelapse', () => startTimelapse()], ['Cancel', () => cancelTimelapse()]]},
+    {type:'note', html:'<span id="tlInfo">The clouds drift with the wind over the span; with <i>Place, date and time</i> set, the sun and moon move too (set by hand, they stay put). Samples and file type as in Export. Frames come as EXRs in one zip.</span>'},
+  ]},
   {title:'Export', items:[
     {k:'outRes', label:'Size', type:'select', opts:[[2048, '2K · 2048 × 1024'], [4096, '4K · 4096 × 2048'], [8192, '8K · 8192 × 4096'], [16384, '16K · 16384 × 8192']]},
     {k:'outSpp', label:'Samples per pixel', type:'select', opts:[[16, '16 (draft)'], [32, '32'], [64, '64'], [128, '128'], [256, '256 (final)']]},
@@ -422,6 +429,49 @@ function startHaze(){
   $('#expInfo').textContent = `Rendering the haze at ${HAZE_D.length} distances…`;
   worker.postMessage({type:'export', W, spp, units: P.units, haze: HAZE_D});
 }
+// ---------- timelapse: frames over a span of time — the clouds drifting with the wind and, with a place set, the sun moving ----------
+// (each frame rendered like an export and written into one zip as it is done, so memory holds one frame at a time)
+let TL = null;
+async function startTimelapse(){
+  if (TL || EXP || !worker || !ready) return;
+  const n = clamp(Math.round(+P.tlFrames || 24), 2, 600), span = (+P.tlSpan || 30)/60, W = +P.tlRes || 1024, H = W/2, spp = +P.outSpp;
+  const base = {...P}, t0h = (() => { const [hh, mm] = (P.time || '12:00').split(':').map(Number); return hh + mm/60; })();
+  TL = {cancelled: false}; const files = [], t0 = performance.now(); let half = P.format === 'exr16';
+  try {
+    for (let i = 0; i < n && !TL.cancelled; i++){
+      const th = span*i/(n - 1);
+      P.tlHours = th;
+      if (P.mode === 'location'){ const tt = t0h + th, d = Math.floor(tt/24), hh = ((tt % 24) + 24) % 24; P.time = `${String(Math.floor(hh)).padStart(2, '0')}:${String(Math.floor((hh % 1)*60 + 1e-6)).padStart(2, '0')}`;
+        if (d){ const dt = new Date(base.date + 'T00:00:00Z'); dt.setUTCDate(dt.getUTCDate() + d); P.date = dt.toISOString().slice(0, 10); } }
+      sendParams();
+      const X = await new Promise(res => { EXP = {W, H, rgb: new Float32Array(W*H*3), rgbL: null, format: half ? 'exr16' : 'exr32', name: '', t0: performance.now(), onDone: res};
+        worker.postMessage({type:'export', W, spp, units: P.units, pt: P.cloudLight === 'pt'}); });
+      if (TL.cancelled) break;
+      const parts = await encodeEXR(X.rgb, W, H, half);
+      files.push({name: `frame_${String(i + 1).padStart(4, '0')}.exr`, data: new Uint8Array(await new Blob(parts).arrayBuffer())});
+      const el = (performance.now() - t0)/1000; $('#tlInfo').textContent = `Frame ${i + 1} of ${n} done, about ${fmtSecs(el/(i + 1)*(n - i - 1))} left`;
+    }
+  } finally { Object.assign(P, {tlHours: 0, time: base.time, date: base.date}); sendParams(); syncUI(); }
+  if (TL.cancelled){ TL = null; $('#tlInfo').textContent = 'Timelapse cancelled.'; return; }
+  TL = null;
+  const blob = zipMany(files), name = `timelapse_${n}f_${Math.round(span*60)}min`;
+  const dl = await claudeDownloads();
+  if (dl){ try { await dl.save({filename: name + '.zip', data: blob}); } catch (e){ $('#tlInfo').textContent = `Could not save the file (${e && e.code || e}).`; return; } }
+  else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name + '.zip'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000); }
+  $('#tlInfo').textContent = `${n} frames over ${Math.round(span*60)} minutes rendered in ${fmtSecs((performance.now() - t0)/1000)} and downloaded as a zip of EXRs.`;
+}
+function cancelTimelapse(){ if (!TL) return; TL.cancelled = true; cancelExport(); }
+// a zip of several files, stored
+function zipMany(files){
+  const parts = [], cen = []; let off = 0;
+  for (const f of files){ const nm = new TextEncoder().encode(f.name), crc = crc32(f.data), n = f.data.length;
+    const loc = new DataView(new ArrayBuffer(30)); loc.setUint32(0, 0x04034b50, true); loc.setUint16(4, 20, true); loc.setUint32(14, crc, true); loc.setUint32(18, n, true); loc.setUint32(22, n, true); loc.setUint16(26, nm.length, true);
+    const c = new DataView(new ArrayBuffer(46)); c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint32(16, crc, true); c.setUint32(20, n, true); c.setUint32(24, n, true); c.setUint16(28, nm.length, true); c.setUint32(42, off, true);
+    parts.push(loc, nm, f.data); cen.push(c, nm); off += 30 + nm.length + n; }
+  const cdLen = cen.reduce((a, x) => a + x.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22)); end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cdLen, true); end.setUint32(16, off, true);
+  return new Blob([...parts, ...cen, end], {type: 'application/zip'});
+}
 let SMX = null;
 function startMatte(){
   if (SMX || !worker || !ready) return;
@@ -447,6 +497,7 @@ function cancelExport(){ if (!EXP) return; worker.postMessage({type:'exportCance
 const fmtSecs = s => { s = Math.max(0, Math.round(s)); return s >= 60 ? `${Math.floor(s/60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
 async function finishExport(secs){
   const X = EXP; if (!X) return; EXP = null;
+  if (X.onDone){ X.onDone(X); return; }   // (timelapse frames)
   $('#expInfo').textContent = 'Encoding…';
   const src = X.names ? X.names.map((name, i) => ({name, rgb: X.rgbL[i]})) : X.rgbL ? [{name: '', rgb: null}, ...['sun', 'sky', 'moon', 'night'].map((name, i) => ({name, rgb: X.rgbL[i]}))] : X.rgb;
   const parts = X.format === 'hdr' ? encodeHDR(X.rgb, X.W, X.H) : await encodeEXR(src, X.W, X.H, X.format === 'exr16', f => { $('#expInfo').textContent = `Encoding… ${Math.round(f*100)}%`; });

@@ -32,8 +32,9 @@ fn paintBias(p: vec3f) -> f32 {
 // of height), y size code of the surface detail, z clearing over the camera (0 off … 1), w its radius km
 // cu5: x showers (rain under the strong cores, 0…1), y how far rain falls before it has evaporated km, z anvils (0…1), w anvil
 // length downwind km
-// pnt: painted cloud — x on, y strength, z the view's azimuth offset (rad)
-struct Layers { sc: vec4f, sc2: vec4f, ac: vec4f, ac2: vec4f, ci: vec4f, ci2: vec4f, wind: vec4f, thr: vec4f, cu: vec4f, cu2: vec4f, cu3: vec4f, cu4: vec4f, cu5: vec4f, pnt: vec4f }
+// pnt: painted cloud — x on, y strength, z the view's azimuth offset (rad); drift: xy how far the clouds have moved with the
+// wind (km; timelapses)
+struct Layers { sc: vec4f, sc2: vec4f, ac: vec4f, ac2: vec4f, ci: vec4f, ci2: vec4f, wind: vec4f, thr: vec4f, cu: vec4f, cu2: vec4f, cu3: vec4f, cu4: vec4f, cu5: vec4f, pnt: vec4f, drift: vec4f }
 
 // (levelE comes from cloudu.wgsl)
 const GRID: f32 = 2.0; const DOMAIN: f32 = 512.0; const NC: u32 = 256u;
@@ -199,12 +200,13 @@ fn cuField(xz: vec2f) -> vec2f {
 // the map of the field for level l (its texels span the level plus a margin for the lean and wander of the towers)
 fn cuMapHW(l: u32) -> f32 { return 0.5*levelE(l) + LY.cu2.w; }
 const CUMAP: f32 = 640.0;
-fn cuMapF(xz: vec2f, l: u32) -> vec2f { let uv = xz/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).rg; }
+// (xz in the field's own coordinates, which drift with the wind; the maps stay centred on the camera)
+fn cuMapF(xz: vec2f, l: u32) -> vec2f { let uv = (xz + LY.drift.xy)/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).rg; }
 @compute @workgroup_size(8, 8, 1)
 fn cuMapMain(@builtin(global_invocation_id) id: vec3u) {
   if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
   let hw = cuMapHW(GP.x); let xz = ((vec2f(id.xy) + 0.5)/CUMAP*2.0 - 1.0)*hw;
-  textureStore(cuMapOut, vec2u(id.xy), GP.x, vec4f(cuField(xz), 0.0, 0.0));
+  textureStore(cuMapOut, vec2u(id.xy), GP.x, vec4f(cuField(xz - LY.drift.xy), 0.0, 0.0));
 }
 // the cloud at p from the field: a flat base at the condensation level; above it the cloud reaches a height that grows with
 // the field's excess over the threshold: steep-sided at its margin (the edge of an updraft), deeper toward strong cores, up to
@@ -231,8 +233,9 @@ fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
   // (an optional clearing over the camera: the field lowered in a soft disc around the zenith, so a panorama is not filled by
   // one cloud overhead; off by default)
   var Fc = F;
-  if (LY.cu4.z > 0.0) { let R = LY.cu4.w; let G = 1.5*LY.cu4.z*sp*exp(-dot(xz, xz)/(2.0*R*R)); Fc -= G; g += G*xz/(R*R); }
-  Fc += 1.3*sp*paintBias(p);
+  let xl = xz + LY.drift.xy;   // (where this is relative to the camera)
+  if (LY.cu4.z > 0.0) { let R = LY.cu4.w; let G = 1.5*LY.cu4.z*sp*exp(-dot(xl, xl)/(2.0*R*R)); Fc -= G; g += G*xl/(R*R); }
+  Fc += 1.3*sp*paintBias(p + vec3f(LY.drift.x, 0.0, LY.drift.y));
   let e = (Fc - thr)/sp;
   // how big a thermal this cloud sits on: from the broad part of the field. Clouds made only by its fine octaves are
   // fragments (small, shallow, diluted); those on a broad strong thermal are deep, with walls
@@ -307,7 +310,9 @@ fn cuAnvilEval(p: vec3f, l: u32) -> vec3f {
 }
 
 struct Hit { d: f32, sig: f32, v: f32, r: f32 }
-fn evalAt(p: vec3f) -> Hit {
+fn evalAt(p0: vec3f) -> Hit {
+  // (the clouds' own coordinates: drifted with the wind)
+  let p = p0 - vec3f(LY.drift.x, 0.0, LY.drift.y);
   var best = Hit(-1.0, 0.0, 0.0, 0.0);
   // the layers (alpha codes the style for the renderer: < 0.5 cumulus by size, 0.5–0.62 lumpy water layers by lump size,
   // 0.7 smooth water sheets, 0.9 ice)
@@ -318,7 +323,7 @@ fn evalAt(p: vec3f) -> Hit {
     let hy = p.y*1.7; let wob = vec2f(n2(p.xz, 0.8, 0.31 + hy) - 0.5, n2(p.xz, 0.8, 0.77 + hy) - 0.5)*0.35;
     // (some cells grow thicker and wetter than others: a deck seen from below is a mosaic of darker and lighter cells)
     let vth = n2(p.xz, LY.sc2.x*2.3, 0.83);
-    var f = scField(p.xz + wob); f.x += 0.5*paintBias(p); let th = LY.sc.z*(0.6 + 0.8*vth); let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
+    var f = scField(p.xz + wob); f.x += 0.5*paintBias(p0); let th = LY.sc.z*(0.6 + 0.8*vth); let m = smoothstep(LY.thr.x - 0.03, LY.thr.x + 0.28, f.x);
     // (a deck under an inversion: the top nearly flat, ±20–50 m, a little lower at the thin cell rims; the base undulating
     // ±50–150 m and rising toward the gaps)
     // (cells are pillows: full depth in their middles, thinning to their rims mostly by the base rising, so the deck reads
@@ -336,7 +341,7 @@ fn evalAt(p: vec3f) -> Hit {
     // its 8-bit storage cannot draw contours)
   }
   if (LY.ac.x > 0.0 && p.y > LY.ac.y - 0.3 && p.y < LY.ac.y + LY.ac.z + 0.3) {
-    var f = acField(p.xz); f.x += 0.5*paintBias(p); let th = LY.ac.z; let form = LY.ac.w;
+    var f = acField(p.xz); f.x += 0.5*paintBias(p0); let th = LY.ac.z; let form = LY.ac.w;
     let top = LY.ac.y + th*mix(0.85 + 0.15*f.y, 0.35 + 0.65*f.y, form);
     let bot = LY.ac.y + th*mix(0.05*(1.0 - f.y), 0.35*(1.0 - f.y), form);
     let dv = min(p.y - bot, top - p.y); let dh = (f.x - LY.thr.y)*LY.ac2.x*0.3;
@@ -348,7 +353,7 @@ fn evalAt(p: vec3f) -> Hit {
     // below the generating level the ice falls in streaks; a streak at depth dz traces back to a head displaced downwind
     let topI = LY.ci.y + LY.ci.z; let dz = max(topI - p.y, 0.0);
     let back = LY.wind.xy*LY.wind.z*pow(dz, 1.3);
-    var f = ciField(p.xz + back); f.x += 0.4*paintBias(p);
+    var f = ciField(p.xz + back); f.x += 0.4*paintBias(p0);
     let inLayer = 1.0 - smoothstep(LY.ci.z*0.6, LY.ci.z, dz);
     let tail = exp(-max(dz - LY.ci.z*0.6, 0.0)/max(LY.wind.w*0.45, 0.05))*smoothstep(0.0, 0.3, LY.ci.w);
     let prof = max(inLayer, tail*f.y);

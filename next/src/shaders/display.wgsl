@@ -72,7 +72,8 @@ fn lookdev(fc: vec2f) -> vec4f {
     let X2R = mat3x3f(3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314, 0.0415560, 1.0572252);
     let R2X = mat3x3f(0.4124564, 0.2126729, 0.0193339, 0.3575761, 0.7151522, 0.1191920, 0.1804375, 0.0721750, 0.9503041);
     let e = max(X2R*irradiance(-fwd), vec3f(0.0));
-    return vec4f(R2X*(CHART[k]*e/PI), 1.0);
+    var chart = CHART;   // (a function-scope copy: indexed at run time)
+    return vec4f(R2X*(chart[k]*e/PI), 1.0);
   }
   return vec4f(0.0);
 }
