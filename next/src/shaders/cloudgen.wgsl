@@ -159,65 +159,82 @@ fn gnoise2(p: vec2f, s: u32) -> f32 {
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 fn cuMeso(xz: vec2f, s: u32) -> f32 { return gnoise2(xz/26.0 + vec2f(3.1, 7.7), s + 40u) + 0.5*gnoise2(xz/11.3 + vec2f(1.9, 4.3), s + 41u); }
-fn cuField(xz: vec2f) -> f32 {
+// returns (the field, its broad part: the first two octaves and the grouping, i.e. the strength of the thermal a cloud sits on)
+fn cuField(xz: vec2f) -> vec2f {
   let L = LY.cu2.x; let s = u32(LY.cu2.y)*97u + 11u;
   var p = xz/L;
   // two warps: the big one bends the groups into irregular, merging complexes; the smaller one makes outlines wander
   p += 0.65*vec2f(gnoise2(p*0.31 + vec2f(5.2, 1.3), s + 1u), gnoise2(p*0.31 + vec2f(1.7, 9.2), s + 2u));
   p += 0.3*vec2f(gnoise2(p*1.13 + vec2f(2.9, 6.1), s + 3u), gnoise2(p*1.13 + vec2f(8.3, 0.7), s + 4u));
-  // fBm: each octave turned and scaled by an irrational step, so no direction or size is preferred and nothing repeats
+  // fBm: each octave turned and scaled by an irrational step, so no direction or size is preferred and nothing repeats; the
+  // fine octaves strong enough that outlines are fractal (lobed and notched at every scale, as measured cumulus perimeters are)
   var f = 0.0; var a = 1.0; var na = 0.0; var q = p;
-  for (var i = 0u; i < 5u; i++) { f += a*gnoise2(q, s + 10u + i); na += a; q = rot(q, 0.6435)*2.137 + vec2f(3.17, 7.93); a *= 0.52; }
-  f /= na;
+  var fl = 0.0;
+  for (var i = 0u; i < 6u; i++) { f += a*gnoise2(q, s + 10u + i); na += a; q = rot(q, 0.6435)*2.137 + vec2f(3.17, 7.93); a *= 0.58; if (i == 1u) { fl = f; } }
+  f /= na; fl /= na;
+  var o = 0.0;
   // grouping: mesoscale moisture (20–50 km; it shifts how many clouds form, a little, without fusing them into one mass), with
   // the camera's own neighbourhood kept average (the cover setting describes the
   // sky you are under); streets: rolls lined up with the wind, ~2–3 boundary-layer depths apart, wandering
   let org = LY.cu3.x;
-  if (org > 0.0) { f += 0.2*org*(cuMeso(xz, s) - cuMeso(vec2f(0.0), s)*exp(-dot(xz, xz)/1800.0)); }
+  if (org > 0.0) { o += 0.2*org*(cuMeso(xz, s) - cuMeso(vec2f(0.0), s)*exp(-dot(xz, xz)/1800.0)); }
   if (LY.cu3.y > 0.0) { let c = dot(xz, vec2f(-LY.wind.y, LY.wind.x));
-    f += 0.1*LY.cu3.y*cos(6.2831853*c/LY.cu3.z + 2.2*gnoise2(xz/9.0, s + 50u)); }
-  return f;
+    o += 0.1*LY.cu3.y*cos(6.2831853*c/LY.cu3.z + 2.2*gnoise2(xz/9.0, s + 50u)); }
+  return vec2f(f + o, fl + o);
 }
 // the map of the field for level l (its texels span the level plus a margin for the lean and wander of the towers)
 fn cuMapHW(l: u32) -> f32 { return 0.5*levelE(l) + LY.cu2.w; }
 const CUMAP: f32 = 640.0;
-fn cuMapF(xz: vec2f, l: u32) -> f32 { let uv = xz/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).r; }
+fn cuMapF(xz: vec2f, l: u32) -> vec2f { let uv = xz/(2.0*cuMapHW(l)) + 0.5; return textureSampleLevel(cuMap, clampSamp, uv, i32(l), 0.0).rg; }
 @compute @workgroup_size(8, 8, 1)
 fn cuMapMain(@builtin(global_invocation_id) id: vec3u) {
   if (f32(id.x) >= CUMAP || f32(id.y) >= CUMAP) { return; }
   let hw = cuMapHW(GP.x); let xz = ((vec2f(id.xy) + 0.5)/CUMAP*2.0 - 1.0)*hw;
-  textureStore(cuMapOut, vec2u(id.xy), GP.x, vec4f(cuField(xz), 0.0, 0.0, 0.0));
+  textureStore(cuMapOut, vec2u(id.xy), GP.x, vec4f(cuField(xz), 0.0, 0.0));
 }
 // the cloud at p from the field: a flat base at the condensation level; above it the cloud reaches a height that grows with
 // the field's excess over the threshold: steep-sided at its margin (the edge of an updraft), deeper toward strong cores, up to
-// the top of the convection. Columns lean downwind with the shear and wander with height. Returns (signed distance km, excess)
-fn cuFieldEval(p: vec3f, l: u32) -> vec2f {
-  let base = LY.cu.y; let Hm = LY.cu.z; let y = p.y - base;
-  if (y < -0.45 || y > Hm + 0.35) { return vec2f(-1.0, 0.0); }
-  let L = LY.cu2.x; let hy = clamp(y/max(Hm, 0.3), 0.0, 1.0);
-  var xz = p.xz - LY.wind.xy*LY.cu4.x*max(y, 0.0);
+// the top of the convection. Columns lean downwind with the shear and wander with height.
+// Returns (signed distance km, excess, size: 0 a fragment off a weak thermal … 1 part of a big one)
+fn cuFieldEval(p: vec3f, l: u32) -> vec3f {
+  let base = LY.cu.y; let Hm = LY.cu.z; let y0 = p.y - base;
+  if (y0 < -0.45 || y0 > Hm + 0.35) { return vec3f(-1.0, 0.0, 0.0); }
+  let L = LY.cu2.x; let hy = clamp(y0/max(Hm, 0.3), 0.0, 1.0);
+  var xz = p.xz - LY.wind.xy*LY.cu4.x*max(y0, 0.0);
   let wq = vec3f(xz.x/(1.37*L), p.y/(0.83*L), xz.y/(1.37*L));
   xz += (vec2f(nz(wq + vec3f(0.61, 0.23, 0.87)), nz(wq + vec3f(0.17, 0.71, 0.37))) - 0.5)*L*(0.12 + 0.3*hy);
+  // (and a finer, faster-changing wander: the sides bulge and tuck in every couple of hundred metres of height, so no part of
+  // a cloud is a straight vertical extrusion of its outline — seen from below, extruded columns read as streaks radiating
+  // from overhead)
+  let wq2 = RM1*vec3f(xz.x/(0.47*L), p.y/(0.21*L), xz.y/(0.47*L));
+  xz += (vec2f(nz(wq2 + vec3f(0.33, 0.91, 0.12)), nz(wq2 + vec3f(0.78, 0.05, 0.64))) - 0.5)*L*(0.07 + 0.08*hy);
   // (the slope over ~a tenth of the field scale, not one texel: the finest octaves make the local slope steep and noisy, and
   // dividing by it put wide stretches of clear air just "outside" a surface, where the surface detail then grew a haze)
   let hw = cuMapHW(l); let h = max(2.0*hw/CUMAP, 0.1*L);
-  let F = cuMapF(xz, l);
-  let g = vec2f(cuMapF(xz + vec2f(h, 0.0), l) - cuMapF(xz - vec2f(h, 0.0), l), cuMapF(xz + vec2f(0.0, h), l) - cuMapF(xz - vec2f(0.0, h), l))/(2.0*h);
+  let M = cuMapF(xz, l); let F = M.x;
+  let g = vec2f(cuMapF(xz + vec2f(h, 0.0), l).x - cuMapF(xz - vec2f(h, 0.0), l).x, cuMapF(xz + vec2f(0.0, h), l).x - cuMapF(xz - vec2f(0.0, h), l).x)/(2.0*h);
   let thr = LY.thr.w; let sp = max(LY.cu3.w - thr, 1e-3); let e = (F - thr)/sp;
+  // how big a thermal this cloud sits on: from the broad part of the field. Clouds made only by its fine octaves are
+  // fragments (small, shallow, diluted); those on a broad strong thermal are deep, with walls
+  let sf = smoothstep(-0.2, 0.25, (M.y - thr)/sp);
   // column depth: a steep wall at the margin (the edge of an updraft: a cumulus is about as deep at its edge as a little way
   // in, not a thin skirt), up to a share of the convection's depth, then domed higher toward the strong cores, steeply so with
   // development: fair-weather fields are many flat-based mounds of similar depth, deep convection a few towers in its cores
-  let eS = 0.04; let k = mix(0.5, 1.7, LY.cu.w); let wall = mix(0.4, 0.12, LY.cu.w);
+  let eS = 0.04; let k = mix(0.5, 1.7, LY.cu.w); let wall = mix(0.4, 0.12, LY.cu.w)*mix(0.3, 1.0, sf);
+  // the base: level (the condensation level), undulating a few tens of metres, and curving up into the sides over the outer
+  // part of the cloud (seen from below, a dark flat middle and rounded, lighter margins rather than a cut-off sheet)
+  let bn = (nz(vec3f(p.x/0.43, 0.29, p.z/0.43)) - 0.5)*0.05 + (nz(vec3f(p.x/0.13, 0.67, p.z/0.13)) - 0.5)*0.02;
+  let y = y0 - bn - 0.18*Hm*wall*(1.0 - smoothstep(0.0, 5.0*eS, max(e, 0.0)));
   // (outside the footprint: the horizontal distance to its edge, but above the height its wall reaches, at least a share of
   // the height above that: a plain extrusion of the footprint's edge put "near the surface" curtains of clear air up to the
   // top of the convection, which the surface detail then filled with a haze)
-  if (e <= 0.0) { let Tw = Hm*wall; return vec2f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e); }
+  if (e <= 0.0) { let Tw = Hm*wall; return vec3f(min(min((F - thr)/max(length(g), 0.02), -0.35*(y - Tw)), y), e, sf); }
   let em = min(e, 1.0); let edge = sqrt(min(e/eS, 1.0)); let pk = pow(max(em, 1e-4), k); let core = wall + (1.0 - wall)*pk;
   let T = Hm*edge*core;
   let dT = Hm*(select(0.0, 0.5*edge/max(e, 1e-4), e < eS)*core + select(0.0, edge*(1.0 - wall)*k*pk/max(em, 1e-4), e < 1.0));
   let gT = min(dT/sp*length(g), 60.0);
   // (the distance to the local tangent plane; above the cloud, at least a share of the height above it, for the same reason)
-  return vec2f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e);
+  return vec3f(min(y, select((T - y)/sqrt(1.0 + gT*gT), min((T - y)/sqrt(1.0 + gT*gT), -0.35*(y - T)), y > T)), e, sf);
 }
 
 struct Hit { d: f32, sig: f32, v: f32, r: f32 }
@@ -277,11 +294,13 @@ fn evalAt(p: vec3f) -> Hit {
       // stage and dilution: some parts of the field are dissolving (thinned by mixing: lower extinction, softer, more eaten
       // edges); and a thermal entrains surrounding air at a rate ∝ 1/its size, so small, shallow clouds and the thin margins
       // of big ones hold a smaller share of their adiabatic water (mixed fraction ~D/(D + 0.25 km); σ ∝ LWC^(2/3))
+      // (varying in 3D, not by column: a column-wise pattern seen from below streaks out from overhead)
       let sx = p.xz/(3.7*LY.cu2.x);
-      let st = smoothstep(0.32, 0.58, nz(vec3f(sx.x, 0.47, sx.y)) + 0.25*r.y);
-      let wl = mix(0.4, 0.12, LY.cu.w);
-      let Tl = LY.cu.z*(wl + (1.0 - wl)*pow(clamp(r.y, 0.0, 1.0), mix(0.5, 1.7, LY.cu.w)))*min(r.y/0.04, 1.0)*0.8 + 0.08;
-      let Rcf = LY.cu4.y; let dil = pow(Tl/(Tl + 0.25), 0.6667)/pow(Rcf/(Rcf + 0.25), 0.6667);
+      let st = smoothstep(0.32, 0.58, nz(RM2*vec3f(sx.x, p.y/(1.9*LY.cu2.x), sx.y)) + 0.25*r.y);
+      // (by the size of the thermal the cloud sits on, not by closeness to its edge: the margins of a big cloud are its mixing
+      // shell, handled by the renderer, and diluting them too made every outline a translucent smear)
+      let De = mix(0.12, 1.2, r.z)*(1.0 + LY.cu.w);
+      let Rcf = LY.cu4.y; let dil = pow(De/(De + 0.25), 0.6667)/pow(Rcf/(Rcf + 0.25), 0.6667);
       best = Hit(r.x, LY.cu2.z*mix(0.45, 1.0, st)*min(dil, 1.0), clamp(LY.cu.y/8.0, 0.0, 1.0), 0.5*clamp(Rcf/2.4, 0.0, 1.0));
     }
   }
@@ -338,6 +357,6 @@ fn fieldMain(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= 256u || id.y >= 256u) { return; }
   let xz = (vec2f(id.xy) + 0.5)/256.0*64.0 - 32.0;
   var c = 0.0;
-  if (GP.x == 0u) { c = scField(xz).x; } else if (GP.x == 1u) { c = acField(xz).x; } else if (GP.x == 2u) { c = ciField(xz).x; } else { c = cuField(xz); }
+  if (GP.x == 0u) { c = scField(xz).x; } else if (GP.x == 1u) { c = acField(xz).x; } else if (GP.x == 2u) { c = ciField(xz).x; } else { c = cuField(xz).x; }
   fieldOut[id.y*256u + id.x] = c;
 }

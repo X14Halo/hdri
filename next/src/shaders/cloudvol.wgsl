@@ -100,10 +100,12 @@ fn cuSurface(q: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, l
   f -= (0.06 + 0.1*decay)*CU.band.w*(1.0 - smoothstep(0.0, 0.25, f))*max(d2.a - 0.35, 0.0);
   // the margin itself: fringes and notches within a band whose width follows how ragged this part is
   let band = exp(-(f*f)/(0.0012 + 0.0024*rag));
-  f += ((d2.a - 0.5)*0.6 + (d3.a - 0.5)*0.4 + (W3 - 0.56)*0.5)*amp*rag*band*CU.band.w;
+  f += ((d2.a - 0.5)*0.6 + (d3.a - 0.5)*0.4 + (W3 - 0.56)*0.5)*1.5*amp*rag*band*CU.band.w;
   f -= (0.05 + 0.04*rag)*CU.band.w*(1.0 - smoothstep(0.0, 0.12, f))*max(d3.a - 0.45, 0.0)*2.0;
   // the edge itself: hard on growing tops, a ramp of tens of metres where the cloud is mixing (liquid water fades out)
-  let soft = mix(0.11, 0.012, clamp(topCrisp*mix(0.7, 1.0, hfac), 0.0, 1.0))*(1.0 + 0.8*decay);
+  // (tens of metres: liquid water ends within a few tens of metres of a cumulus's surface; the breakup of the outline is the
+  // fray and the notches above, not a blur — a wide ramp read as smoke from below)
+  let soft = mix(0.045, 0.012, clamp(topCrisp*mix(0.7, 1.0, hfac), 0.0, 1.0))*(1.0 + 0.8*decay);
   let iv = smoothstep(0.2, 0.85, W1*0.6 + B2*0.4);
   return vec3f(f, soft, iv);
 }
@@ -130,7 +132,7 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       let Rc = clamp(select((v.a - 0.5)/0.12*1.2, v.a/0.5*2.4, v.a < 0.5), 0.05, 2.4);
       // the flat base stays nearly intact, but the cloud's sides are lumpy right down to it (they make its outline seen from
       // below): erosion is held back only where the base, not a side, is the nearest surface
-      let z = q.y - v.b*CU_BSCALE; let hfac = 0.2 + 0.8*max(smoothstep(0.03, 0.35, z), smoothstep(0.01, 0.07, z - max(d, 0.0)));
+      let z = q.y - v.b*CU_BSCALE; let hfac = 0.42 + 0.58*max(smoothstep(0.03, 0.35, z), smoothstep(0.01, 0.07, z - max(d, 0.0)));
       // erosion: subtractive (the surface is cut back between lumps, never inflated), deeper on big clouds
       // decaying clouds (low extinction factor): blurred, more deeply eaten edges
       let decay = clamp((0.8 - sig)/0.45, 0.0, 1.0);
@@ -142,7 +144,7 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       // the mixing shell: dry air is stirred into a cloud's outer part (inhomogeneous mixing: fewer droplets, the same size),
       // so its water content falls over the outer ~10–20% of its size (more on dissolving clouds), patchily: translucent,
       // ragged edges rather than a hard surface; the cores keep their full density
-      let shellW = clamp(0.18*Rc, 0.04, 0.25)*(1.0 + decay)*select(1.0, 0.6, v.a >= 0.5);
+      let shellW = clamp(0.12*Rc, 0.03, 0.18)*(1.0 + decay)*select(1.0, 0.6, v.a >= 0.5);
       let sh = smoothstep(0.0, shellW, de);
       let edge = 0.45 + 0.55*sh;
       // inside: water content varies from lobe to lobe (dark folds, bright bulges)
