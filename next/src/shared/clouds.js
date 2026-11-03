@@ -173,7 +173,16 @@ function layerUniforms(P, thr){
         f.rain, f.fallLen, f.anvil, f.anvilLen]; })(),
     P.paint ? 1 : 0, clamp(P.paintStr ?? 1, 0, 2), (P.azOff || 0)*Math.PI/180, P.tlHours || 0,
     ...cloudDrift(P),   loD[0], loD[1], shD[0], shD[1],
-    cuIsField(P) ? clamp(P.cuMamma ?? 0.5, 0, 1)*cuFieldParams(P).anvil : 0, 0, 0, 0]);
+    cuIsField(P) ? clamp(P.cuMamma ?? 0.5, 0, 1)*cuFieldParams(P).anvil : 0, cuGroupCut(P), 0, 0]);
+}
+// grouping: the share of the sky where cumulus may form at all (the rest kept clear), as a cut on the grouping field (whose
+// spread is ~0.30, roughly normal). With more grouping, a smaller share holds the same cover, so clouds gather and join into
+// masses there with clear sky between, instead of an even sprinkle of separate puffs out to the horizon
+function cuGroupCut(P){
+  const k = 0.6 + 0.4*clamp(P.cuOrg ?? 0.5, 0, 1), frac = 1 + (clamp((P.cuCover || 0)/0.62, 0.1, 1) - 1)*k;
+  if (frac > 0.995) return -9;
+  const x = 2*(1 - frac) - 1, a = 0.147, l = Math.log(1 - x*x), t = 2/(Math.PI*a) + l/2;   // (Winitzki's inverse error function)
+  return 0.30*Math.SQRT2*Math.sign(x)*Math.sqrt(Math.sqrt(t*t - l/a) - t);
 }
 // how far the clouds have moved with the wind (km): the wind (km/h) over the timelapse's elapsed hours
 // (low wind and upper wind, each over the elapsed hours; layers in between drift with the wind at their height)
@@ -187,4 +196,4 @@ function layerBand(P){
   if (P.ciOn && P.ciCover > 0.001){ lo = Math.min(lo, P.ciBase - (P.ciForm > 0.2 ? P.ciFall : 0)); hi = Math.max(hi, P.ciBase + P.ciThick); }
   return hi > 0 ? [Math.max(lo, 0), hi] : null;
 }
-const LAYER_KEYS = {cu: /^(cu(Model|Size|Dev|Org|Streets|Seed|Base)|wind[XZ])$/, sc: /^sc(Form|Cell|Seed|Base|Thick)$/, ac: /^ac(Form|Cell|Seed|Base|Thick)$/, ci: /^ci(Form|Cell|Seed|Base|Thick)$/};
+const LAYER_KEYS = {cu: /^(cu(Model|Size|Dev|Org|Streets|Seed|Base|Cover)|wind[XZ])$/, sc: /^sc(Form|Cell|Seed|Base|Thick)$/, ac: /^ac(Form|Cell|Seed|Base|Thick)$/, ci: /^ci(Form|Cell|Seed|Base|Thick)$/};

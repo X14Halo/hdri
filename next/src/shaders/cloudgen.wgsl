@@ -227,11 +227,14 @@ fn cuField(xz: vec2f) -> vec2f {
   // clusters (a few km): cumulus come in groups with clear sky between, never sprinkled evenly — where the boundary layer is
   // a little moister or the ground warmer, many clouds of all sizes and the big ones; elsewhere a few small ones or none.
   // Always some, more with Grouping; the camera's own few km kept average (the cover describes the sky you are under)
-  let Lc = max(4.0, 3.5*L);
-  let cl = (gnoise2(xz/Lc + vec2f(3.3, 8.1), s + 60u) + 0.45*gnoise2(xz/(0.43*Lc) + vec2f(1.1, 2.2), s + 61u))/0.75;
-  let cl0 = (gnoise2(vec2f(3.3, 8.1), s + 60u) + 0.45*gnoise2(vec2f(1.1, 2.2), s + 61u))/0.75;
-  // (gently: strong grouping fused a group into one giant cloud standing alone in a clear sky)
-  o += (0.05 + 0.2*org)*(cl - cl0*exp(-dot(xz, xz)/(2.0*1.44*Lc*Lc)));
+  // (where the field is below the cut, cumulus is held back: the sky there stays clear but for the odd strong thermal; where
+  // it is above, clouds form more densely and join into masses. Raising the field everywhere instead fused a group into one
+  // giant cloud; a gentle raise left an even sprinkle)
+  let Lc = max(8.0, 6.0*L);
+  let cl = (gnoise2(xz/Lc + vec2f(3.3, 8.1), s + 60u) + 0.3*gnoise2(xz/(0.43*Lc) + vec2f(1.1, 2.2), s + 61u))/0.75;
+  let cl0 = (gnoise2(vec2f(3.3, 8.1), s + 60u) + 0.3*gnoise2(vec2f(1.1, 2.2), s + 61u))/0.75;
+  let clc = cl - (cl0 - max(LY.cu6.y + 0.15, cl0))*exp(-dot(xz, xz)/(2.0*0.36*Lc*Lc));   // (the camera's own few km never in a held-back gap)
+  o -= 0.23*(1.0 - smoothstep(LY.cu6.y - 0.1, LY.cu6.y + 0.1, clc));
   if (LY.cu3.y > 0.0) { let c = dot(xz, vec2f(-LY.wl.y, LY.wl.x));
     o += 0.1*LY.cu3.y*cos(6.2831853*c/LY.cu3.z + 2.2*gnoise2(xz/9.0, s + 50u)); }
   return vec2f(f + o, fl + o);

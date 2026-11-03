@@ -72,9 +72,15 @@ fn octW(size: f32) -> f32 { return 1.0 - smoothstep(0.25, 0.6, pixKm/max(size, 1
 // a smooth random vector field (from the volume's smooth Perlin channel), about −0.5…0.5
 fn wv(q: vec3f, s: f32, o: vec3f) -> vec3f { return vec3f(nzs(q/s + o).a, nzs(q/s + o + vec3f(0.37, 0.11, 0.53)).a, nzs(q/s + o + vec3f(0.71, 0.59, 0.23)).a) - 0.5; }
 fn t3D(q: vec3f) -> vec4f { return textureSampleLevel(detailTex, wrapSamp, q, 0.0); }
+// the noise volumes tile (one tile holds only 4–16 cells per side), so an octave read straight from them repeats every tile
+// (every ~50–600 m on a cloud): the same notches marching along an edge, the same lumps stepping across a base. Each octave
+// is read twice instead, the second time turned and scaled by irrational amounts, and the two summed keeping the contrast:
+// no two places then show the same pattern
+fn t3Dm(q: vec3f) -> vec4f { let m = vec4f(0.56, 0.56, 0.56, 0.5); return m + (t3D(q) + t3D(RM1*q*1.3819 + vec3f(0.53, 0.17, 0.71)) - 2.0*m)*0.7071; }
+fn nzsm(q: vec3f) -> vec4f { return 0.5 + (nzs(q) + nzs(RM2*q*1.2713 + vec3f(0.29, 0.83, 0.41)) - 1.0)*0.7071; }
 fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 { return c + (v - a)/(b - a)*(d - c); }
 // the billowy shape noise: Perlin–Worley, carved by the cellular fBm (lobes with sharp creases between them)
-fn pwShape(q: vec3f) -> f32 { let s = nzs(q); return clamp(remap(s.r, s.g*0.6 + s.b*0.4 - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0); }
+fn pwShape(q: vec3f) -> f32 { let s = nzsm(q); return clamp(remap(s.r, s.g*0.6 + s.b*0.4 - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0); }
 // The cloud's surface, in the way the first tool built it (which read as natural): the macro shape (the volume's signed
 // distance) is carved into lobes by shape noise at two scales, puffs on puffs, then displaced by a cascade of finer octaves:
 // cellular billows (rounded, the cauliflower) and curly wisps (shredded). Each finer octave is carried round by the eddies of
@@ -99,29 +105,33 @@ fn cuSurface(q0: vec3f, d: f32, z: f32, Rc: f32, A: f32, decay: f32, hfac: f32, 
   var f = d - A*(1.0 - min(big, 1.0)) + 0.04;
   let f0 = f;
   // the cascade: billows (cellular fBm) and wisps (curly fBm) at 1.2, 0.4 and 0.13 S, the finer ones advected by the coarser
-  let d1 = t3D(qw/(1.2*S) + vec3f(0.0, 0.29, 0.0));
-  let d2 = t3D((qw + (d1.gba - 0.5)*0.11*S)/(0.4*S) + vec3f(0.31, 0.53, 0.17));
-  let d3 = t3D((qw + (d1.rgb - 0.5)*0.05*S + (d2.gba - 0.5)*0.035*S)/(0.13*S) + vec3f(0.71, 0.13, 0.43));
+  let d1 = t3Dm(qw/(1.2*S) + vec3f(0.0, 0.29, 0.0));
+  let d2 = t3Dm((qw + (d1.gba - 0.5)*0.11*S)/(0.4*S) + vec3f(0.31, 0.53, 0.17));
+  let d3 = t3Dm((qw + (d1.rgb - 0.5)*0.05*S + (d2.gba - 0.5)*0.035*S)/(0.13*S) + vec3f(0.71, 0.13, 0.43));
   let o1 = octW(1.2*S); let o2 = octW(0.4*S); let o3 = octW(0.13*S);
   let W1 = mix(0.56, d1.r*0.625 + d1.g*0.25 + d1.b*0.125, o1); let W2 = mix(0.56, d2.r*0.625 + d2.g*0.25 + d2.b*0.125, o2); let W3 = mix(0.56, d3.r*0.625 + d3.g*0.25 + d3.b*0.125, o3);
   let a1 = mix(0.5, d1.a, o1); let a2 = mix(0.5, d2.a, o2); let a3 = mix(0.5, d3.a, o3);
   var billow = (W1 - 0.56)*0.55 + (W2 - 0.56)*0.3 + (W3 - 0.56)*0.15;
-  var wisp = (a1 - 0.5)*0.5 + (a2 - 0.5)*0.3 + (a3 - 0.5)*0.2;
+  var wisp = (a1 - 0.5)*0.55 + (a2 - 0.5)*0.32 + (a3 - 0.5)*0.13;
   if (detailLod > 0.01) {   // a ~45 m octave, close to the camera only
     let d4 = t3D((qw + (d2.rgb - 0.5)*0.02*S)/(0.042*S) + vec3f(0.19, 0.61, 0.61));
     billow += ((d4.r*0.625 + d4.g*0.25 + d4.b*0.125) - 0.56)*0.12*detailLod; wisp += (d4.a - 0.5)*0.16*detailLod; }
   let amp = (0.09 + 0.1*S)*CU.band.w*select(1.0, 0.6, lay);
   // margins: billows give way to wisps, so edges fray rather than ending in smooth balls
   let edgeB = 1.0 - smoothstep(0.0, 0.07, f0);
-  let bw = clamp(hfac*(1.0 - 0.6*decay)*(1.0 - 0.45*edgeB*rag), 0.0, 1.0);
+  // (a living cumulus keeps its billowed outline right to the edge; only dissolving parts turn to wisps)
+  let bw = clamp(hfac*(1.0 - 0.6*decay)*(1.0 - 0.15*edgeB*rag), 0.0, 1.0);
   var disp = mix(wisp, billow, bw)*amp*(2.4 + 1.2*decay);
   if (disp > 0.0) { disp *= 0.4*smoothstep(-0.1*amp, 0.02, f); }   // detail mostly cuts in; it pushes out only near the surface
   f += disp;
   f -= (0.06 + 0.1*decay)*CU.band.w*(1.0 - smoothstep(0.0, 0.25, f))*max(a2 - 0.35, 0.0);
-  // the margin itself: fringes and notches within a band whose width follows how ragged this part is
+  // the margin itself: fringes and notches within a band whose width follows how ragged this part is — gentle on a growing
+  // cloud (a crisp, lobed outline, as real cumulus show), strong only where it is dissolving: an even fray on every edge read
+  // as noise laid over the clouds
+  let fr = mix(0.35, 1.0, decay);
   let band = exp(-(f*f)/(0.0012 + 0.0024*rag));
-  f += ((a2 - 0.5)*0.6 + (a3 - 0.5)*0.4 + (W3 - 0.56)*0.5)*1.5*amp*rag*band*CU.band.w;
-  f -= (0.05 + 0.04*rag)*CU.band.w*(1.0 - smoothstep(0.0, 0.12, f))*max(a3 - 0.45, 0.0)*2.0;
+  f += ((a2 - 0.5)*0.7 + (a3 - 0.5)*0.3 + (W3 - 0.56)*0.5)*1.5*amp*rag*band*CU.band.w*fr;
+  f -= (0.05 + 0.04*rag)*CU.band.w*(1.0 - smoothstep(0.0, 0.12, f))*max(a3 - 0.45, 0.0)*2.0*fr;
   // the edge itself: hard on growing tops, a ramp of tens of metres where the cloud is mixing (liquid water fades out)
   // (tens of metres: liquid water ends within a few tens of metres of a cumulus's surface; the breakup of the outline is the
   // fray and the notches above, not a blur — a wide ramp read as smoke from below)
@@ -177,9 +187,10 @@ fn densFullL(q: vec3f, l: u32) -> f32 {
       // (less light reaches under it), they give a base seen from below its texture and break up its edge
       if (v.a < 0.5 && z < 0.05 && z > -0.17 && d > -0.15) {
         let qs = cloudQ(q)*vec3f(1.0, 1.7, 1.0);
-        let sn = t3D(RM1*qs/0.19 + vec3f(0.27, 0.61, 0.09)).a; let sb = t3D(RM2*qs/0.071 + vec3f(0.55, 0.13, 0.81));
+        // (ragged wisps a couple of hundred metres across, not a speckle: fine-scale scud read from below as dark dots)
+        let sn = t3Dm(RM1*qs/0.31 + vec3f(0.27, 0.61, 0.09)).a; let sb = t3Dm(RM2*qs/0.12 + vec3f(0.55, 0.13, 0.81));
         let hang = smoothstep(-0.17, -0.05, z)*(1.0 - smoothstep(0.0, 0.05, z))*smoothstep(-0.15, -0.03, d);
-        let scud = sig*30.0*smoothstep(0.56, 0.8, 0.7*sn + 0.3*(sb.r*0.625 + sb.g*0.375))*hang*CU.band.w;
+        let scud = sig*30.0*smoothstep(0.6, 0.85, 0.85*sn + 0.15*(sb.r*0.625 + sb.g*0.375))*hang*CU.band.w;
         return max(body, scud);
       }
       return body;
